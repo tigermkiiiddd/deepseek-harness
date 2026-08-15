@@ -245,7 +245,7 @@
     - id: ui-subagent
       name: '@deepseek-ai/dsh-client-ui-subagent'
 
-    # Team view: sidebar action + overlay panel over the /api/team bridge.
+    # Team view: sidebar action + overlay panel over the host team.* API domain.
     - id: ui-team
       name: '@deepseek-ai/dsh-client-ui-team'
 

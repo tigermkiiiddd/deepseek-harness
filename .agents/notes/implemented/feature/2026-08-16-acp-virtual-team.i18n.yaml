@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-16-acp-virtual-team.md
+2026-08-16-acp-virtual-team.md: 5aff7522e06ea13b9102aa497e6e449d5f137eb0
+2026-08-16-acp-virtual-team.zh.md: 3aea2beeb1e1acc88c7ca8b9d7d5978e7e6df8b9
