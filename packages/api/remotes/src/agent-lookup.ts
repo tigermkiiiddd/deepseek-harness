@@ -100,13 +100,12 @@ export async function inspectApiRemoteSession(
     throw new Error('session persistence is not configured (load a dsh-session-persistence backend)')
   }
   const meta = (await persistence.list()).find(candidate => candidate.id === sessionId)
-  if (meta === undefined || meta.cwd === undefined) {
+  // A missing `header.cwd` is a free (dynamic-cwd) session, not an absent
+  // one: it persists in the `_no-cwd` project bucket by design.
+  if (meta === undefined) {
     throw new ApiRemoteSessionNotFound(`session "${sessionId}" not found`)
   }
   const inspected = await persistence.inspect(sessionId)
-  if (inspected.meta.cwd === undefined) {
-    throw new ApiRemoteSessionNotFound(`session "${sessionId}" not found`)
-  }
   return { meta: inspected.meta, events: [...inspected.events] }
 }
 

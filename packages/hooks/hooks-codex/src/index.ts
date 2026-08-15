@@ -18,7 +18,7 @@ import z from '@deepseek-ai/schemastery'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
-import type { UserMessage } from '@deepseek-ai/dsh-session'
+import { currentSessionCwd, type UserMessage } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type { PostToolDecision, PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import {
@@ -125,7 +125,7 @@ export function apply(ctx: Context, config: Config): void {
     const outputs: HookOutput[] = []
     // Run hooks in the agent's session workspace so relative paths address the
     // user's project rather than the server launch directory.
-    const workdir = opts.agent?.session.header.cwd
+    const workdir = opts.agent === undefined ? undefined : currentSessionCwd(opts.agent.session)
     for (const group of groups) {
       // Codex always interprets matchers as regexes; it has no literal fast path.
       if (!matchesMatcher(group.matcher, matchQuery, 'codex')) continue
@@ -295,7 +295,7 @@ function base(ctx: Context, agent: Agent | undefined, event: string, model: stri
     transcript_path: agent === undefined
       ? null
       : ctx.get('sessionPersistence')?.locate(agent.session.header)?.path ?? null,
-    cwd: agent?.session.header.cwd ?? process.cwd(),
+    cwd: agent === undefined ? process.cwd() : currentSessionCwd(agent.session) ?? process.cwd(),
     hook_event_name: event,
     model,
     permission_mode: 'default',

@@ -27,6 +27,7 @@ import type { RetainedItems } from '@deepseek-ai/dsh-output-retention'
 import type { SubprocessHandle, SubprocessOutcome, SubprocessOutputRead, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import type { SaveTextSpill, SpillRef } from '@deepseek-ai/dsh-spill'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
+import { currentSessionCwd } from '@deepseek-ai/dsh-session'
 
 /**
  * Default cap on the complete raw `rg` stdout the tools will parse (the
@@ -79,6 +80,7 @@ export type SearchErrorCode =
   | 'SEARCH_FAILED'
   | 'SEARCH_RAW_OUTPUT_OVERFLOW'
   | 'SEARCH_ABORTED'
+  | 'SEARCH_NO_CWD'
 
 /**
  * Typed search failure. Extends {@link HarnessError} so it carries a stable
@@ -220,8 +222,18 @@ export async function runRipgrep(
   if (exec.signal.aborted) {
     throw new SearchError(`${toolName} was aborted before completion (tool timeout or caller cancellation)`, 'SEARCH_ABORTED')
   }
-  const cwd = exec.agent?.session.header.cwd
-  const workdir = cwd ?? process.cwd()
+  const session = exec.agent?.session
+  const workdir = (() => {
+    if (session === undefined) return process.cwd()
+    const cwd = currentSessionCwd(session)
+    if (cwd === undefined) {
+      throw new SearchError(
+        'no session working directory: pass an absolute path, or set one with the set_cwd tool',
+        'SEARCH_NO_CWD',
+      )
+    }
+    return cwd
+  })()
   let handle: SubprocessHandle
   try {
     handle = ctx.subprocess.spawn({

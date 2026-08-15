@@ -272,10 +272,31 @@ describe('agent loop', () => {
     expect(adapter.requests[0]!.system).toBe('You are an AI agent powered by DeepSeek Harness.\n\nWorking in /work/space.')
   })
 
+  it('renders a free-session note for {{cwd}} when the session has no directory', async () => {
+    // A free session (create without meta.cwd) must not fail the assembly:
+    // {{cwd}} renders the free-session note, and a later set_cwd event is
+    // reflected in the next turn's prompt.
+    const adapter = new MockAdapter([textResponse('ok'), textResponse('ok again')])
+    const ctx = await harness(adapter, 'Working in {{cwd}}.')
+    const agent = ctx.agentLoop.create(SessionId('s-free'), { provider: 'mock', model: 'mock' })
+
+    send(agent, 'hi')
+    await waitForIdle(ctx, agent)
+    expect(adapter.requests[0]!.system).toBe('You are an AI agent powered by DeepSeek Harness.\n\nWorking in not assigned (free session: no fixed directory; relative paths are refused until you set one with the set_cwd tool).')
+
+    agent.session.append('session/cwd', { cwd: '/picked/later' })
+    send(agent, 'again')
+    await waitForIdle(ctx, agent)
+    expect(adapter.requests[1]!.system).toBe('You are an AI agent powered by DeepSeek Harness.\n\nWorking in /picked/later.')
+  })
+
   it('contains a strict-variable render failure: the turn errors, the loop keeps serving turns', async () => {
-    // A missing cwd variable must fail one turn without preventing a later valid turn.
+    // A missing variable value must fail one turn without preventing a later
+    // valid turn. (cwd can no longer play the missing role: a session without
+    // a directory is a free session and renders its note instead.)
     const adapter = new MockAdapter([textResponse('ok after rescue')])
-    const ctx = await harness(adapter, 'In {{cwd}}.')
+    const ctx = await harness(adapter, 'In {{missing}}.')
+    ctx.systemPrompt.variable('missing', () => undefined)
     const errors: Error[] = []
     ctx.on('agent/error', ({ error }) => {
       if (error instanceof Error) errors.push(error)
@@ -287,7 +308,7 @@ describe('agent loop', () => {
 
     expect(adapter.requests).toHaveLength(0) // the request was never sent
     expect(errors.map(error => error.message)).toEqual([
-      'prompt variable "{{cwd}}" has no value for this assembly (section "deployment:persona")',
+      'prompt variable "{{missing}}" has no value for this assembly (section "deployment:persona")',
     ])
     const turnEnd = agent.session.events.find(e => e.type === 'turn/end')
     expect(turnEnd?.type === 'turn/end' && turnEnd.data.reason.kind).toBe('error')
@@ -295,10 +316,10 @@ describe('agent loop', () => {
       ? turnEnd.data.reason.error.message
       : '').toContain('no value for this assembly')
 
-    // The loop survived: a waterfall listener rescues {{cwd}} and the SAME
-    // agent completes a real model turn.
+    // The loop survived: a waterfall listener rescues {{missing}} and the
+    // SAME agent completes a real model turn.
     ctx.on('system-prompt/assemble', async (assembly, _context, next) => {
-      assembly.variables['cwd'] = '/rescued'
+      assembly.variables['missing'] = '/rescued'
       return next()
     })
     send(agent, 'again')

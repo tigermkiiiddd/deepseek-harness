@@ -110,13 +110,18 @@ async function setup() {
 }
 
 let callCounter = 0
-function call(ctx: Context, name: string, args: unknown, agent?: object) {
+// Tests that exercise fs mechanics rather than cwd resolution run a fixed
+// session (an immutable header.cwd) so relative paths resolve against it as
+// before; pass an explicit agent to override (e.g. to assert no-agent or
+// free-session behavior).
+const defaultAgent = { session: { header: { cwd: '/sessions/s1' } } }
+function call(ctx: Context, name: string, args: unknown, agent: object = defaultAgent) {
   return ctx.tools.execute({
     signal: testToolSignal,
     callId: CallId(`call-${++callCounter}`),
     name,
     arguments: args,
-    ...agent ? { agent: agent as never } : {},
+    agent: agent as never,
   })
 }
 
@@ -153,7 +158,7 @@ describe('session cwd resolution', () => {
 describe('registration', () => {
   it('registers read, write, and edit', async () => {
     const { ctx } = await setup()
-    expect(ctx.tools.schemas().map(s => s.name).sort()).toEqual(['edit', 'read', 'write'])
+    expect(ctx.tools.schemas().map(s => s.name).sort()).toEqual(['edit', 'read', 'set_cwd', 'write'])
   })
 
   it('declares read parallel-safe while write/edit remain exclusive', async () => {
@@ -191,9 +196,9 @@ describe('registration', () => {
     const fiber = await ctx.plugin(ToolFs)
     // Each tool contributes BOTH a schema and a prompt section; disposal must
     // withdraw both, not just the schemas.
-    expect(ctx.tools.schemas()).toHaveLength(3)
+    expect(ctx.tools.schemas()).toHaveLength(4)
     const sectionNames = (a: { sections: { name: string }[] }) => a.sections.map(s => s.name).sort()
-    expect(sectionNames(await ctx.systemPrompt.assemble())).toEqual(['deployment:persona', 'harness:identity', 'tool:edit', 'tool:read', 'tool:write'])
+    expect(sectionNames(await ctx.systemPrompt.assemble())).toEqual(['deployment:persona', 'harness:identity', 'tool:edit', 'tool:read', 'tool:set-cwd', 'tool:write'])
     await fiber.dispose()
     expect(ctx.tools.schemas()).toHaveLength(0)
     // Only the system-prompt plugin's own built-in sections remain.
@@ -276,7 +281,7 @@ describe('read tool', () => {
 
   it('records observed state so a follow-up edit by the same session is authorized', async () => {
     const { ctx, fs } = await setup()
-    const session = { header: {} }
+    const session = { header: { cwd: '/sessions/s1' } }
     fs.files.set('key:a.txt', 'hello')
     expect((await call(ctx, 'read', { file_path: 'a.txt' }, { session })).isError).toBe(false)
     const edited = await call(ctx, 'edit', { file_path: 'a.txt', old_string: 'hello', new_string: 'bye' }, { session })
@@ -394,7 +399,7 @@ describe('formatReadOutput footer variants', () => {
 describe('write tool', () => {
   it('formats a create result and uses createIfAbsent (unobserved, with the gate)', async () => {
     const { ctx, fs } = await setup()
-    const result = await call(ctx, 'write', { file_path: 'a.txt', content: 'hi' }, { session: { header: {} } })
+    const result = await call(ctx, 'write', { file_path: 'a.txt', content: 'hi' }, { session: { header: { cwd: '/sessions/s1' } } })
     expect(result.isError).toBe(false)
     if (result.isError) throw new Error('expected write success')
     expect(result.value).toEqual({ path: '/abs/a.txt', operation: 'create', before: null, after: 'hi' })
@@ -422,7 +427,7 @@ describe('write tool', () => {
 describe('edit tool', () => {
   it('formats a single-replacement success after a read', async () => {
     const { ctx, fs } = await setup()
-    const session = { header: {} }
+    const session = { header: { cwd: '/sessions/s1' } }
     fs.files.set('key:a.txt', 'a')
     await call(ctx, 'read', { file_path: 'a.txt' }, { session })
     const result = await call(ctx, 'edit', { file_path: 'a.txt', old_string: 'a', new_string: 'b' }, { session })
@@ -433,7 +438,7 @@ describe('edit tool', () => {
 
   it('formats the replace_all success message distinctly', async () => {
     const { ctx, fs } = await setup()
-    const session = { header: {} }
+    const session = { header: { cwd: '/sessions/s1' } }
     fs.files.set('key:a.txt', 'a a a')
     await call(ctx, 'read', { file_path: 'a.txt' }, { session })
     const result = await call(ctx, 'edit', { file_path: 'a.txt', old_string: 'a', new_string: 'b', replace_all: true }, { session })
@@ -464,7 +469,7 @@ describe('edit tool', () => {
   it('propagates FS_NOT_OBSERVED when the file was never read (the gate decides)', async () => {
     const { ctx, fs } = await setup()
     fs.files.set('key:a.txt', 'hello')
-    const result = await call(ctx, 'edit', { file_path: 'a.txt', old_string: 'a', new_string: 'b' }, { session: { header: {} } })
+    const result = await call(ctx, 'edit', { file_path: 'a.txt', old_string: 'a', new_string: 'b' }, { session: { header: { cwd: '/sessions/s1' } } })
     expect(result.isError).toBe(true)
     expect(result.error).toMatchObject({ info: { code: 'FS_NOT_OBSERVED' } })
   })
@@ -603,7 +608,7 @@ describe('result-time contextual diff (meta + presentResult)', () => {
 
   it('edit: execute attaches the applied hunk as meta { diffs }', async () => {
     const { ctx, fs } = await setup()
-    const session = { header: {} }
+    const session = { header: { cwd: '/sessions/s1' } }
     fs.files.set('key:a.txt', withContext)
     await call(ctx, 'read', { file_path: 'a.txt' }, { session })
     const result = await call(ctx, 'edit', { file_path: 'a.txt', old_string: 'OLD', new_string: 'NEW' }, { session })
@@ -615,7 +620,7 @@ describe('result-time contextual diff (meta + presentResult)', () => {
 
   it('edit: presentResult turns the meta into a diff result card', async () => {
     const { ctx, fs } = await setup()
-    const session = { header: {} }
+    const session = { header: { cwd: '/sessions/s1' } }
     fs.files.set('key:a.txt', withContext)
     await call(ctx, 'read', { file_path: 'a.txt' }, { session })
     const result = await call(ctx, 'edit', { file_path: 'a.txt', old_string: 'OLD', new_string: 'NEW' }, { session })
@@ -628,7 +633,7 @@ describe('result-time contextual diff (meta + presentResult)', () => {
 
   it('write OVERWRITE: execute attaches a contextual hunk; presentResult renders a diff card', async () => {
     const { ctx, fs } = await setup()
-    const session = { header: {} }
+    const session = { header: { cwd: '/sessions/s1' } }
     fs.files.set('key:a.txt', withContext)
     await call(ctx, 'read', { file_path: 'a.txt' }, { session })
     const result = await call(ctx, 'write', { file_path: 'a.txt', content: 'a\nb\nc\nNEW\nd\ne\nf\n' }, { session })
@@ -642,7 +647,7 @@ describe('result-time contextual diff (meta + presentResult)', () => {
     // A create has no prior content, yet the completed replacement view must
     // remain a diff instead of clobbering the pending new-file diff with text.
     const { ctx } = await setup()
-    const session = { header: {} }
+    const session = { header: { cwd: '/sessions/s1' } }
     const result = await call(ctx, 'write', { file_path: 'new.txt', content: 'fresh\n' }, { session })
     expect(result.isError).toBe(false)
     expect(result.meta).toEqual({ diffs: [] })
@@ -652,7 +657,7 @@ describe('result-time contextual diff (meta + presentResult)', () => {
 
   it('write OVERWRITE with identical content: an empty applied-diff projection falls back to a whole-file diff', async () => {
     const { ctx, fs } = await setup()
-    const session = { header: {} }
+    const session = { header: { cwd: '/sessions/s1' } }
     fs.files.set('key:a.txt', 'same\n')
     await call(ctx, 'read', { file_path: 'a.txt' }, { session })
     const result = await call(ctx, 'write', { file_path: 'a.txt', content: 'same\n' }, { session })
@@ -908,7 +913,14 @@ describe('sandbox escalation API (write/edit)', () => {
 
   it('escalation with an approval service but no agent fails closed', async () => {
     const { ctx } = await setupConfining({ approval: true })
-    const result = await call(ctx, 'write', { file_path: 'a.txt', content: 'x', sandbox_permissions: 'danger-full-access', justification: 'why' })
+    // Call execute directly without an agent (call() would default one in) so
+    // the escalation ask cannot route through any session.
+    const result = await ctx.tools.execute({
+      callId: CallId('call-fs-esc-no-agent'),
+      name: 'write',
+      arguments: { file_path: 'a.txt', content: 'x', sandbox_permissions: 'danger-full-access', justification: 'why' },
+      signal: new AbortController().signal,
+    })
     expect(result.isError).toBe(true)
     expect(text(result)).toContain('no agent to route it through')
   })

@@ -196,6 +196,19 @@ describe('sandbox:policy request context', () => {
     expect(await policyContext(ctx, active)).toBe(`Current DSH file policy: workspace-write. Any available operation enforced by the DSH file sandbox may modify files under the session workspace: ${JSON.stringify(resolve('/projects/current'))}. Some platform temporary areas may also be writable.`)
   })
 
+  it('states the moving writable boundary for a free session and follows its set-cwd directory', async () => {
+    const ctx = await promptMounted({ mode: 'workspace-write', workspaceRoot: '/fallback' })
+    const free = session('sess-free-moving-root')
+    const clause = ' This is a free (no fixed directory) session: the workspace above is its current set-cwd directory and the writable boundary moves with every set-cwd call.'
+
+    // No directory yet: the deployment root is the fallback, clause present.
+    expect(await policyContext(ctx, free)).toBe(`Current DSH file policy: workspace-write. Any available operation enforced by the DSH file sandbox may modify files under the session workspace: ${JSON.stringify(resolve('/fallback'))}. Some platform temporary areas may also be writable.${clause}`)
+
+    // After a set-cwd event the rendered root follows it, clause unchanged.
+    free.append('session/cwd', { cwd: '/picked/dir' })
+    expect(await policyContext(ctx, free)).toBe(`Current DSH file policy: workspace-write. Any available operation enforced by the DSH file sandbox may modify files under the session workspace: ${JSON.stringify(resolve('/picked/dir'))}. Some platform temporary areas may also be writable.${clause}`)
+  })
+
   it('reconstructs resumed policy from the session log and omits diagnostics without an agent', async () => {
     const active = session('sess-resume', '/projects/current')
     setSandboxMode(active, 'workspace-write')

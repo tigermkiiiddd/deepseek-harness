@@ -21,7 +21,7 @@ import type {
 } from '@deepseek-ai/dsh-agent'
 import { errorChain } from '@deepseek-ai/dsh-llm'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
-import { SessionId, SessionPreparation } from '@deepseek-ai/dsh-session'
+import { SessionId, SessionPreparation, currentSessionCwd } from '@deepseek-ai/dsh-session'
 import type { Session, SessionHeader } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
@@ -35,6 +35,14 @@ const INACTIVE_STATES: ReadonlySet<FiberState> = new Set([
   FiberState.DISPOSED,
   FiberState.FAILED,
 ])
+
+/**
+ * The `{{cwd}}` value for a free session with no directory yet. Reads as the
+ * object of "Your working directory is …" and names the set_cwd remedy so
+ * the model knows how to acquire one; a missing directory is the free-session
+ * design, not an assembly failure.
+ */
+const FREE_SESSION_CWD_NOTE = 'not assigned (free session: no fixed directory; relative paths are refused until you set one with the set_cwd tool)'
 
 /** Factory-level ownership: live agent teardowns plus config startup work. */
 class FactoryOwnership {
@@ -350,7 +358,14 @@ export class AgentLoop extends Service implements AgentFactory {
     ctx.effect(() => ctx.agents.setFactory(this), 'agentLoop.setFactory()')
     ctx.systemPrompt.variable('provider', context => context.agent?.options.provider)
     ctx.systemPrompt.variable('model', context => context.agent?.options.model)
-    ctx.systemPrompt.variable('cwd', context => context.agent?.session.header.cwd)
+    // A free session has no directory by design: render the state (and the
+    // set_cwd remedy) instead of failing the whole prompt assembly on a
+    // missing {{cwd}} value. Re-resolved per assembly, so a set_cwd event is
+    // reflected in the next turn's prompt.
+    ctx.systemPrompt.variable('cwd', (context) => {
+      if (context.agent?.session === undefined) return undefined
+      return currentSessionCwd(context.agent.session) ?? FREE_SESSION_CWD_NOTE
+    })
 
     for (const { id, sessionId, cwd, resumeSessionId, ...options } of this.config.agents) {
       const meta = cwd === undefined ? {} : { cwd }

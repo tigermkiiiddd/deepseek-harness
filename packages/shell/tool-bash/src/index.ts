@@ -15,6 +15,7 @@ import { defineTool, TOOL_ABORTED } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView, TerminalCallView, ToolExecution, ToolResult, ToolResultView } from '@deepseek-ai/dsh-tools'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { currentSessionCwd, type Session } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-jobs'
 import type {} from '@deepseek-ai/dsh-user-approval'
@@ -146,13 +147,25 @@ function resolveWorkdir(
   exec: { agent?: Agent },
   policyWorkspaceRoot?: string,
 ): string | undefined {
-  const headerCwd = exec.agent?.session.header.cwd
-  const sessionCwd = policyWorkspaceRoot ?? (headerCwd === undefined ? undefined : canonicalPath(headerCwd))
-  if (modelWorkdir === undefined) return sessionCwd
+  const session = exec.agent?.session
+  if (session === undefined) return modelWorkdir
+  const sessionCwd = policyWorkspaceRoot ?? sessionWorkdir(session)
+  if (modelWorkdir === undefined) {
+    if (sessionCwd === undefined) {
+      throw new Error('no session working directory: pass an absolute workdir, or set one with the set_cwd tool')
+    }
+    return sessionCwd
+  }
   if (sessionCwd !== undefined && !isAbsolute(modelWorkdir)) {
     return resolvePath(sessionCwd, modelWorkdir)
   }
   return modelWorkdir
+}
+
+/** Canonicalize the session's effective cwd, or `undefined` when it has none. */
+function sessionWorkdir(session: Session): string | undefined {
+  const cwd = currentSessionCwd(session)
+  return cwd === undefined ? undefined : canonicalPath(cwd)
 }
 
 /** Detach the executor DTO from readonly Service Definition types into plain JSON data. */

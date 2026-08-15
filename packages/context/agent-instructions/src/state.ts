@@ -7,7 +7,7 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Message } from '@deepseek-ai/dsh-llm'
-import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
+import { currentSessionCwd, type Session, type UserMessage } from '@deepseek-ai/dsh-session'
 import type { FileSystem, FsVersion } from '@deepseek-ai/dsh-fs'
 import type { ResolvedConfig } from './config.ts'
 import { instructionContentSha1, trimmedInstructionDigest } from './digest.ts'
@@ -261,7 +261,7 @@ export async function reconcileInstructionContext(
   const session = agent.session
   const effective = visibleInstructionChanges(agent, options.authorityMessages)
   /* v8 ignore next -- normal agents carry an absolute session cwd. */
-  const cwd = session.header.cwd ?? process.cwd()
+  const cwd = currentSessionCwd(session) ?? process.cwd()
   // TODO(frozen-project-root): retain the baseline root for the loop instance;
   // recomputing it after marker edits reinterprets the existing relative scope keys.
   const projectRoot = options.projectRoot

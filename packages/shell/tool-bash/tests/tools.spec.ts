@@ -69,7 +69,7 @@ function registerFakeAgent(ctx: Context, sessionId: string, inject: (...args: un
     id,
     ctx: scopeFiber.ctx,
     inject,
-    session: { id, header: { version: 0, id, createdAt: 0 } },
+    session: { id, header: { version: 0, id, createdAt: 0, cwd: '/sessions/s1' } },
   } as unknown as Agent
   ctx.agents.register(agent)
   return agent
@@ -209,7 +209,7 @@ function sandboxAgent(
     ...ctx === undefined ? {} : { ctx: ctx.plugin(() => {}).ctx },
     session: {
       id,
-      header: { version: 0, id, createdAt: 0 },
+      header: { version: 0, id, createdAt: 0, cwd: '/sessions/s1' },
       events,
       append: (type: string, data: Record<string, unknown>) => {
         const event = { type, data }
@@ -830,12 +830,22 @@ describe('session-cwd routing (per-session workdir)', () => {
     expect(text(inTmp).trim()).toMatch(/\/tmp$/)
   })
 
-  it('falls back to the executor default when the agent has no session cwd', async () => {
+  it('falls back to the executor default when there is no exec.agent', async () => {
     const ctx = await setup()
     // No exec.agent at all → executor uses its config/process.cwd() default.
     const result = await ctx.tools.execute({ signal: testToolSignal, callId: CallId('cwd-noagent'), name: 'bash', arguments: { command: 'pwd', description: 'pwd' } })
     expect(result.isError).toBe(false)
     expect(text(result).trim().length).toBeGreaterThan(0)
+  })
+
+  it('rejects a shell call with no workdir when the session is free (no cwd yet)', async () => {
+    const ctx = await setup()
+    // A free session (agent whose header has no cwd) calling without an absolute
+    // workdir rejects instead of silently running from process.cwd().
+    const free = ({ inject: () => undefined, session: { header: { version: 0, id: 'free', createdAt: 0 }, events: [] } }) as unknown as Agent
+    const result = await call(ctx, 'bash', { command: 'pwd', description: 'pwd' }, free)
+    expect(result.isError).toBe(true)
+    expect(text(result)).toContain('no session working directory')
   })
 })
 

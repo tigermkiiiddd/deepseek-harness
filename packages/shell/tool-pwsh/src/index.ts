@@ -26,6 +26,7 @@ import { defineTool, TOOL_ABORTED } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView, TerminalCallView, ToolExecution, ToolResult, ToolResultView } from '@deepseek-ai/dsh-tools'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { currentSessionCwd } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-jobs'
 import type {} from '@deepseek-ai/dsh-shell-env'
@@ -146,13 +147,22 @@ function pwshDescription(backgroundEnabled: boolean, escalationModes: readonly S
 
 /**
  * Resolve an explicit workdir first, making a relative one session-workspace-relative;
- * otherwise use the session header cwd and leave executor defaulting as the fallback.
+ * otherwise use the session's effective cwd (immutable header cwd, or the
+ * `set-cwd` value for a free session). A free session with no current directory
+ * rejects the call rather than running from `process.cwd()`.
  */
 function resolveWorkdir(modelWorkdir: string | undefined, exec: { agent?: Agent }): string | undefined {
-  const headerCwd = exec.agent?.session.header.cwd
-  if (modelWorkdir === undefined) return headerCwd
-  if (headerCwd !== undefined && !isAbsolute(modelWorkdir)) {
-    return resolvePath(headerCwd, modelWorkdir)
+  const session = exec.agent?.session
+  if (session === undefined) return modelWorkdir
+  const sessionCwd = currentSessionCwd(session)
+  if (modelWorkdir === undefined) {
+    if (sessionCwd === undefined) {
+      throw new Error('no session working directory: pass an absolute workdir, or set one with the set_cwd tool')
+    }
+    return sessionCwd
+  }
+  if (sessionCwd !== undefined && !isAbsolute(modelWorkdir)) {
+    return resolvePath(sessionCwd, modelWorkdir)
   }
   return modelWorkdir
 }

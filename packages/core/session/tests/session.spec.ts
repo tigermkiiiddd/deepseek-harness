@@ -7,6 +7,7 @@ import SessionStore, {
   Session,
   SessionEvent,
   SessionId,
+  currentSessionCwd,
   snapshotSessionEvent,
 } from '@deepseek-ai/dsh-session'
 import type { CreateSessionOptions, SessionEventType, SessionHeader, SessionSurface, TodoItem } from '@deepseek-ai/dsh-session'
@@ -1726,5 +1727,40 @@ describe('todo/write event', () => {
       .toEqual([{ content: 'only', status: 'completed' }])
     expect(replayed.events.slice(0, original.seq)).toEqual(original.events)
     expect(replayed.firstLiveSeq).toBe(original.seq)
+  })
+})
+
+describe('currentSessionCwd', () => {
+  it('returns the immutable header cwd for a fixed session', () => {
+    const session = Session.create(SessionId('fixed-cwd'), undefined, {
+      version: SESSION_FORMAT_VERSION,
+      id: SessionId('fixed-cwd'),
+      createdAt: 0,
+      cwd: '/work/project',
+    })
+    expect(currentSessionCwd(session)).toBe('/work/project')
+  })
+
+  it('returns undefined for a free session with no cwd event', () => {
+    const session = Session.create(SessionId('free-no-cwd'))
+    expect(currentSessionCwd(session)).toBeUndefined()
+  })
+
+  it('returns the last session/cwd event for a free session, ignoring the header', () => {
+    const session = Session.create(SessionId('free-dynamic'))
+    session.append('session/cwd', { cwd: '/tmp/one' })
+    session.append('session/cwd', { cwd: '/tmp/two' })
+    expect(currentSessionCwd(session)).toBe('/tmp/two')
+  })
+
+  it('always prefers the immutable header cwd even when a session/cwd event exists', () => {
+    const session = Session.create(SessionId('mixed'), undefined, {
+      version: SESSION_FORMAT_VERSION,
+      id: SessionId('mixed'),
+      createdAt: 0,
+      cwd: '/immutable',
+    })
+    session.append('session/cwd', { cwd: '/runtime' })
+    expect(currentSessionCwd(session)).toBe('/immutable')
   })
 })

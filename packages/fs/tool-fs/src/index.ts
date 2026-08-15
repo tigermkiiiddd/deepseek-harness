@@ -14,6 +14,7 @@ import { applyEditTool } from './edit.ts'
 import { applyReadImageTool } from './read-image.ts'
 import { READ_MAX_BYTES, READ_MAX_LINE_LENGTH } from './read-render.ts'
 import { FsSandboxController } from './sandbox.ts'
+import { applySetCwdTool } from './set-cwd.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'tool-fs'
@@ -76,4 +77,5 @@ export function apply(ctx: Context, config: Config): void {
   const sandbox = new FsSandboxController(ctx)
   applyWriteTool(ctx, sandbox)
   applyEditTool(ctx, sandbox)
+  applySetCwdTool(ctx)
 }

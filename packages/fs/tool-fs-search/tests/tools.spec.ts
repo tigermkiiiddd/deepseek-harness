@@ -201,8 +201,8 @@ async function setup(options: SetupOptions = {}) {
   return { ctx, subprocess, spill, fiber, warnings }
 }
 
-/** A stand-in agent whose session header carries the given cwd (and a stable id). */
-const agent = (cwd?: string) => ({ session: { header: { id: 'session-1', ...cwd !== undefined ? { cwd } : {} } } })
+/** A stand-in agent whose session header carries the given cwd (and a stable id); a no-cwd session is free with an empty event log. */
+const agent = (cwd?: string) => ({ session: { header: { id: 'session-1', ...cwd !== undefined ? { cwd } : {} }, events: [] } })
 
 let callCounter = 0
 function call(
@@ -386,14 +386,19 @@ describe('workdir derivation and signal forwarding', () => {
     expect(subprocess.spawns[0]?.cwd).toBe('/sessions/s1')
   })
 
-  it('defaults the spawn cwd to process.cwd() without a session cwd', async () => {
+  it('rejects a relative search when the session has no cwd; a non-agent caller still defaults to process.cwd()', async () => {
     const { ctx, subprocess } = await setup()
     subprocess.handler = () => runResult('a.ts\n')
-    await call(ctx, 'glob', { pattern: '*' }, { agent: agent() })
-    expect(subprocess.spawns[0]?.cwd).toBe(process.cwd())
-    // A non-agent caller takes the same default.
+    // A free (no-cwd) session calling with a relative pattern now rejects
+    // instead of silently defaulting the spawn cwd to process.cwd().
+    const result = await call(ctx, 'glob', { pattern: '*' }, { agent: agent() })
+    expect(result.isError).toBe(true)
+    expect(result.error).toMatchObject({ info: { code: 'SEARCH_NO_CWD' } })
+    expect(text(result)).toContain('no session working directory')
+    expect(subprocess.spawns).toHaveLength(0)
+    // A non-agent caller has no session cwd to miss, so it keeps the default.
     await call(ctx, 'grep', { pattern: 'x' })
-    expect(subprocess.spawns[1]?.cwd).toBe(process.cwd())
+    expect(subprocess.spawns[0]?.cwd).toBe(process.cwd())
   })
 
   it('spawns the packaged ripgrep binary with --no-config, the fixed argv, and budgeted collect streams', async () => {

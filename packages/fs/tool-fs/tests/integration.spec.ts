@@ -22,8 +22,10 @@ const testToolSignal = new AbortController().signal
 let dir: string
 let ctx: Context
 let fiber: Awaited<ReturnType<Context['plugin']>>
-// No header cwd: sessionCwd returns undefined and the provider's configured test dir applies.
-const session = { header: {} }
+// Tests that exercise fs mechanics run as a fixed session whose immutable
+// header.cwd is set to the current temp dir before each test (see beforeEach
+// below), so relative paths resolve against the files the test writes.
+const session = { header: { cwd: '' } }
 
 let callCounter = 0
 function call(name: string, args: unknown) {
@@ -51,6 +53,7 @@ afterEach(async () => {
 describe('default deployment (with dsh-fs-observation-policy)', () => {
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'dsh-tool-fs-'))
+    session.header.cwd = dir
     ctx = new Context()
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
@@ -313,6 +316,7 @@ describe('default deployment (with dsh-fs-observation-policy)', () => {
 describe('bare provider (no dsh-fs-observation-policy)', () => {
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'dsh-tool-fs-bare-'))
+    session.header.cwd = dir
     ctx = new Context()
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
@@ -424,8 +428,10 @@ describe('per-session cwd', () => {
 // all through ctx.tools.execute() against the REAL backend + policy.
 // --------------------------------------------------------------------------
 describe('signal, concurrency, and the fs/observed contract', () => {
+  const session = { header: { cwd: '' } }
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'dsh-tool-fs-'))
+    session.header.cwd = dir
     ctx = new Context()
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
@@ -434,7 +440,6 @@ describe('signal, concurrency, and the fs/observed contract', () => {
     fiber = await ctx.plugin(ToolFs)
   })
 
-  const session = { header: {} }
   const callSig = (signal: AbortSignal, name: string, args: unknown) =>
     ctx.tools.execute({ callId: CallId(`c-${++callCounter}`), name, arguments: args, agent: { session } as never, signal })
   const callOwned = (name: string, args: unknown) =>

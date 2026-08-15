@@ -39,18 +39,23 @@ function stubAgent(ctx: Context, session: Session): Agent {
 }
 
 describe('API Remote Agent resolver races', () => {
-  it('maps an inspected session without a cwd to session-not-found', async () => {
+  it('resumes an inspected session without a cwd (free session) instead of mapping it to session-not-found', async () => {
     const ctx = await createContext()
-    const sessionId = sid('missing-after-inspect')
-    const meta = header(sessionId)
-    provideSession(ctx, meta, () => Promise.resolve({
-      meta: { ...meta, cwd: undefined } as unknown as SessionHeader,
-      events: [],
-    }))
+    const sessionId = sid('free-after-inspect')
+    // A free (dynamic-cwd) session: the header never recorded a cwd, and that
+    // is a servable identity, not a missing one.
+    const meta: SessionHeader = { version: 0, id: sessionId, createdAt: 1 }
+    provideSession(ctx, meta, () => Promise.resolve({ meta, events: [] }))
+    const published = ctx.sessions.create(sessionId)
+    const resume = vi.spyOn(ctx.agents, 'resume').mockResolvedValue({
+      agent: stubAgent(ctx, published),
+      dispose: () => Promise.resolve(),
+    })
 
     const result = await createApiRemoteAgentResolver(ctx, {})(sessionId)
 
-    expect(result).toMatchObject({ error: { code: 'session-not-found', details: { sessionId } } })
+    expect(result).toMatchObject({ agent: { id: sessionId } })
+    expect(resume).toHaveBeenCalledWith({ resumeSessionId: sessionId })
     await ctx.fiber.dispose()
   })
 
