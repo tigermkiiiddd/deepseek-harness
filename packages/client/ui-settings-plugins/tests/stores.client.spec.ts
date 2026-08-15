@@ -9,6 +9,7 @@ import { CardForm, numberField, textField } from '../src/client/card-form.ts'
 import { AgentLoopCardController, type AgentLoopSettings } from '../src/client/agent-loop-card-controller.ts'
 import { BashCardController, type BashSettings } from '../src/client/bash-card-controller.ts'
 import { WebSearchCardController, type WebSearchSettings } from '../src/client/web-search-card-controller.ts'
+import { WebSearchExaCardController, type WebSearchExaSettings } from '../src/client/web-search-exa-card-controller.ts'
 
 /** Make the stub behave like a Host that accepts every write. */
 function acceptWrites<T>(host: StubSettingsScope<T>): void {
@@ -24,10 +25,10 @@ function acceptWrites<T>(host: StubSettingsScope<T>): void {
   })
 }
 
-function credentialsApi(configured: boolean) {
+function credentialsApi(configured: boolean, ref = 'DEEPSEEK_API_KEY') {
   const describe = vi.fn(() => Promise.resolve({
     rpcId: 'c-1' as never,
-    result: { ok: true as const, value: { credentials: { DEEPSEEK_API_KEY: { configured, writable: true } } } },
+    result: { ok: true as const, value: { credentials: { [ref]: { configured, writable: true } } } },
   }))
   const set = vi.fn(() => Promise.resolve({ rpcId: 'c-2' as never, result: { ok: true as const, value: {} } }))
   return { api: { credentials: { describe, set } } as never, describe, set }
@@ -536,5 +537,95 @@ describe('WebSearchCardController', () => {
 
     expect(host.set.mock.calls).toEqual([['baseURL', 'https://other.test'], ['maxUses', 3]])
     expect(credentials.set).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('WebSearchExaCardController', () => {
+  it('writes the staged key through the credentials domain, addressed by EXA_API_KEY', async () => {
+    const host = stubSettingsScope<WebSearchExaSettings>()
+    const credentials = credentialsApi(false, 'EXA_API_KEY')
+    const controller = new WebSearchExaCardController(host.scope, credentials.api)
+    host.publish({ status: 'ready', writable: true, value: {}, user: {} })
+    const face = controller.inject()
+
+    face.edit('apiKey', ' exa-secret ')
+    expect(face.hooks.webSearchExaCard.getSnapshot().dirty).toBe(true)
+    expect(credentials.set).not.toHaveBeenCalled()
+
+    credentials.describe.mockImplementation(() => Promise.resolve({
+      rpcId: 'c-1' as never,
+      result: { ok: true as const, value: { credentials: { EXA_API_KEY: { configured: true, writable: true } } } },
+    }))
+    face.save()
+    await vi.waitFor(() => { expect(credentials.set).toHaveBeenCalled() })
+
+    expect(credentials.set).toHaveBeenCalledWith({ ref: 'EXA_API_KEY', value: 'exa-secret' })
+    expect(host.set).not.toHaveBeenCalled()
+    await vi.waitFor(() => {
+      expect(face.hooks.webSearchExaCard.getSnapshot()).toMatchObject({ dirty: false, apiKeyConfigured: true })
+    })
+  })
+
+  it('saves the endpoint, the retrieval mode, and the result defaults together', async () => {
+    const host = stubSettingsScope<WebSearchExaSettings>()
+    acceptWrites(host)
+    const credentials = credentialsApi(true, 'EXA_API_KEY')
+    const controller = new WebSearchExaCardController(host.scope, credentials.api)
+    host.publish({ status: 'ready', writable: true, value: {}, base: {}, user: {} })
+    const face = controller.inject()
+
+    face.edit('baseURL', 'https://exa.other.test')
+    face.edit('searchType', 'neural')
+    face.edit('numResults', '8')
+    face.edit('highlightsPerResult', '2')
+    face.save()
+    await vi.waitFor(() => { expect(host.set).toHaveBeenCalledTimes(4) })
+
+    expect(host.set.mock.calls).toEqual([
+      ['baseURL', 'https://exa.other.test'],
+      ['searchType', 'neural'],
+      ['numResults', 8],
+      ['highlightsPerResult', 2],
+    ])
+    expect(credentials.set).not.toHaveBeenCalled()
+  })
+
+  it('addresses the reference the section declares rather than the default', async () => {
+    const host = stubSettingsScope<WebSearchExaSettings>()
+    const credentials = credentialsApi(false, 'EXA_API_KEY')
+    const controller = new WebSearchExaCardController(host.scope, credentials.api)
+    host.publish({ status: 'ready', writable: true, value: { apiKeyEnv: 'EXA_SEARCH_KEY' }, user: {} })
+    const face = controller.inject()
+
+    face.edit('apiKey', 'exa-secret')
+    face.save()
+    await vi.waitFor(() => { expect(credentials.set).toHaveBeenCalled() })
+
+    expect(credentials.set).toHaveBeenCalledWith({ ref: 'EXA_SEARCH_KEY', value: 'exa-secret' })
+  })
+
+  it('re-reads when the Host reports the watched reference changed', async () => {
+    const host = stubSettingsScope<WebSearchExaSettings>()
+    const credentials = credentialsApi(false, 'EXA_API_KEY')
+    const controller = new WebSearchExaCardController(host.scope, credentials.api)
+    host.publish({ status: 'ready', writable: true, value: {}, user: {} })
+    await vi.waitFor(() => { expect(credentials.describe).toHaveBeenCalled() })
+    credentials.describe.mockClear()
+
+    // Another reference is not this card's business.
+    controller.refreshCredential('DEEPSEEK_API_KEY')
+    expect(credentials.describe).not.toHaveBeenCalled()
+
+    // A key written on another surface reaches this card only through this signal.
+    credentials.describe.mockImplementation(() => Promise.resolve({
+      rpcId: 'c-1' as never,
+      result: { ok: true as const, value: { credentials: { EXA_API_KEY: { configured: true, writable: true } } } },
+    }))
+    controller.refreshCredential('EXA_API_KEY')
+
+    await vi.waitFor(() => {
+      expect(controller.inject().hooks.webSearchExaCard.getSnapshot().apiKeyConfigured).toBe(true)
+    })
   })
 })

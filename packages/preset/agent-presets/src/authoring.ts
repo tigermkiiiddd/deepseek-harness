@@ -14,6 +14,9 @@
 
 import { chmod, cp, readdir, readFile, rm, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { load } from 'js-yaml'
+import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
+import { type EntryOptions } from '@deepseek-ai/cordis-plugin-loader'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { expandHomePath } from '@deepseek-ai/dsh-home-paths'
 import { METADATA_FILE, renderPresetMetadata } from './metadata.ts'
@@ -77,6 +80,29 @@ export function writableRoot(roots: readonly PresetRoot[]): string {
  */
 export async function readComposition(preset: AgentPreset): Promise<string> {
   return await readFile(preset.path, 'utf8')
+}
+
+/**
+ * Read one preset's composition as parsed entry rows.
+ *
+ * Uses the loader's own YAML dialect ({@link entryListSchema}), so the parsed
+ * rows are exactly what the loader would hand to its entry tree — including
+ * `!!js` scalars preserved as expression nodes. The caller decides whether to
+ * evaluate those expressions; this function stays a pure read so a viewer can
+ * show the composition as stored without executing any embedded JavaScript.
+ * @param preset - the resolved preset.
+ * @returns the parsed entry list.
+ * @throws when the file is unreadable or its YAML is not a top-level list.
+ */
+export async function readCompositionEntries(preset: AgentPreset): Promise<EntryOptions[]> {
+  const content = await readComposition(preset)
+  const rows = load(content, { schema: entryListSchema })
+  if (!Array.isArray(rows)) {
+    throw new Error(
+      `agent-presets: preset "${preset.id}" composition is not a top-level list of plugin rows`,
+    )
+  }
+  return rows as EntryOptions[]
 }
 
 /** Whether anything occupies the path (cp's own errorOnExist backstops races). */

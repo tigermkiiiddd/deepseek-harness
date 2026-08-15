@@ -10,7 +10,8 @@
 
 | 配置键 | 默认值 | 含义 |
 |---|---|---|
-| `apiKey` | `$EXA_API_KEY` | Exa API 密钥。为空或缺失时提供方不可用。 |
+| `apiKey` | （未设置） | 字面量 Exa API 密钥。建议使用 `apiKeyEnv`，避免密钥进入配置文件。 |
+| `apiKeyEnv` | `EXA_API_KEY` | 每次搜索时通过 credentials 服务解析的凭据引用；解析不到时回退到启动环境中同名环境变量。 |
 | `baseURL` | `https://api.exa.ai` | 端点基址；追加 `/search`。无法解析时提供方不可用。 |
 | `searchType` | `auto` | 以 Exa `type` 发送的检索模式：`auto`（由 Exa 决定）、`keyword` 或 `neural`。 |
 | `numResults` | （未设置） | 请求不含 `maxResults` 时使用的默认结果数。未设置时不发送默认值。必须是正整数。 |
@@ -22,6 +23,8 @@
   config:
     apiKey: !!js process.env.EXA_API_KEY
 ```
+
+以上所有字段也可以在 Web UI 设置页编辑（插件 → 插件配置 → Exa 网页搜索卡片），提交的改动对下一次搜索即生效，无需重启。卡片通过 credentials 域写入 API 密钥，而不是写入设置文档。密钥解析优先级：字面量 `apiKey`（配置或设置页）优先，其次是 `apiKeyEnv` 命名的 credentials 服务条目，最后是启动环境的 `$EXA_API_KEY`。三层都没有密钥时，搜索以 `WEB_PROVIDER_CREDENTIAL_MISSING` 失败。
 
 ## 映射
 

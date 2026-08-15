@@ -19,10 +19,13 @@ import { PluginsSettingsSection } from '../src/client/PluginsSettingsSection.tsx
 import type { PluginsSettingsSectionProps, PluginsSettingsTabEntry } from '../src/client/PluginsSettingsSection.tsx'
 import { WebSearchCard } from '../src/client/WebSearchCard.tsx'
 import type { WebSearchCardProps } from '../src/client/WebSearchCard.tsx'
+import { WebSearchExaCard } from '../src/client/WebSearchExaCard.tsx'
+import type { WebSearchExaCardProps } from '../src/client/WebSearchExaCard.tsx'
 import type { AgentLoopCardState } from '../src/client/agent-loop-card-controller.ts'
 import type { BashCardState } from '../src/client/bash-card-controller.ts'
 import type { CardFieldState, CardShell } from '../src/client/card-form.ts'
 import type { WebSearchCardState } from '../src/client/web-search-card-controller.ts'
+import type { WebSearchExaCardState } from '../src/client/web-search-exa-card-controller.ts'
 import { en } from '../src/client/locales.ts'
 
 afterEach(cleanup)
@@ -397,5 +400,73 @@ describe('WebSearchCard', () => {
       ['maxUses', '4'],
     ])
     expect(actions.resetField.mock.calls).toEqual([['baseURL'], ['maxUses']])
+  })
+})
+
+
+describe('WebSearchExaCard', () => {
+  function renderWebSearchExa(state: Partial<WebSearchExaCardState> = {}) {
+    const store = createSnapshotStore<WebSearchExaCardState>({
+      ...settled,
+      baseURL: field(''),
+      searchType: field('auto'),
+      numResults: field(''),
+      highlightsPerResult: field('1'),
+      apiKey: field(''),
+      apiKeyConfigured: false,
+      apiKeyWritable: true,
+      ...state,
+    })
+    const actions = cardActions()
+    const props = { ...actions, t, useWebSearchExaCard: bindSnapshotSelector(store) } as unknown as WebSearchExaCardProps
+    render(<WebSearchExaCard {...props} />)
+    return actions
+  }
+
+  it('reports whether a key is configured without ever showing one', () => {
+    const actions = renderWebSearchExa({ apiKeyConfigured: true })
+    fireEvent.click(screen.getByText(en.webSearchExaTitle))
+
+    expect(screen.getByText(en.webSearchExaApiKeySet)).toBeTruthy()
+    const key = screen.getByLabelText(en.webSearchExaApiKey)
+    expect(key).toHaveProperty('type', 'password')
+
+    fireEvent.change(key, { target: { value: 'exa-secret' } })
+
+    expect(actions.edit).toHaveBeenCalledWith('apiKey', 'exa-secret')
+  })
+
+  it('disables the key control when the reference itself is not writable', () => {
+    renderWebSearchExa({ apiKeyConfigured: true, apiKeyWritable: false })
+    fireEvent.click(screen.getByText(en.webSearchExaTitle))
+
+    expect(screen.getByLabelText(en.webSearchExaApiKey)).toHaveProperty('disabled', true)
+    expect(screen.getByLabelText(en.webSearchExaBaseUrl)).toHaveProperty('disabled', false)
+  })
+
+  it('stages the endpoint, the retrieval mode, and the result defaults', () => {
+    const actions = renderWebSearchExa({
+      baseURL: field('https://exa.test', { overridden: true }),
+      searchType: field('keyword', { overridden: true }),
+      numResults: field('8', { overridden: true }),
+      highlightsPerResult: field('2', { overridden: true }),
+    })
+    fireEvent.click(screen.getByText(en.webSearchExaTitle))
+
+    fireEvent.change(screen.getByLabelText(en.webSearchExaBaseUrl), { target: { value: 'https://exa.other.test' } })
+    fireEvent.change(screen.getByLabelText(en.webSearchExaSearchType), { target: { value: 'neural' } })
+    fireEvent.change(screen.getByLabelText(en.webSearchExaNumResults), { target: { value: '10' } })
+    fireEvent.change(screen.getByLabelText(en.webSearchExaHighlightsPerResult), { target: { value: '3' } })
+    const resets = screen.getAllByRole('button', { name: en.reset })
+    expect(resets).toHaveLength(4)
+    for (const reset of resets) fireEvent.click(reset)
+
+    expect(actions.edit.mock.calls).toEqual([
+      ['baseURL', 'https://exa.other.test'],
+      ['searchType', 'neural'],
+      ['numResults', '10'],
+      ['highlightsPerResult', '3'],
+    ])
+    expect(actions.resetField.mock.calls).toEqual([['baseURL'], ['searchType'], ['numResults'], ['highlightsPerResult']])
   })
 })

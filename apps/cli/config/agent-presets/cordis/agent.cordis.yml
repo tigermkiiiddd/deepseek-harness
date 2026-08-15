@@ -245,6 +245,12 @@
 - id: tool-cordis
   name: '@deepseek-ai/dsh-tool-cordis'
 
+# Self-cognition for the source path: the prompt section tells the agent it
+# may evolve by editing this checkout, and the read-only `self_cognition` tool
+# reports the live composition (source root, active preset, mounted plugins).
+- id: self-cognition
+  name: '@deepseek-ai/dsh-tool-self-cognition'
+
 # The composition-authoring skill travels with this preset rather than living
 # in the user's skill root: it documents THIS deployment's two planes, and a
 # preset is the unit that gets copied and edited. `baseUrl` is the preset's

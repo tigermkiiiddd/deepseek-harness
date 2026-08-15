@@ -23,6 +23,9 @@
 
 import { stat } from 'node:fs/promises'
 import { Context, Service } from '@deepseek-ai/cordis'
+import {
+  evaluate, isJsExpr, type EntryOptions, type JsExpr,
+} from '@deepseek-ai/cordis-plugin-loader'
 import z from '@deepseek-ai/schemastery'
 import { bindScopeParent, createScope, scopeOf, type Scope, type ScopeKey, type ScopeParentBinding } from '@deepseek-ai/dsh-scope'
 // Type-only: resolves the `agent/created` lifecycle event this service watches.
@@ -30,7 +33,9 @@ import type {} from '@deepseek-ai/dsh-agent'
 import { settingsNamespace, type SettingsScope, type default as SettingsService } from '@deepseek-ai/dsh-settings'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { discoverPresets, USER_PRESET_DIR } from './discovery.ts'
-import { copyComposition, deleteComposition, readComposition } from './authoring.ts'
+import {
+  copyComposition, deleteComposition, readComposition, readCompositionEntries,
+} from './authoring.ts'
 import { mountPreset, serviceForAgent, standingMountFor } from './mount.ts'
 import { PresetExistsError } from './authoring.ts'
 import { PresetMountError, UnknownPresetError, type AgentPreset, type Config, type PresetRoot } from './preset.ts'
@@ -363,6 +368,25 @@ export class AgentPresets extends Service {
   }
 
   /**
+   * Read one preset's plugin entry list as the browser sees it.
+   *
+   * Group rows are flattened so the returned list lines up one-to-one with the
+   * plugins a session running this preset would load; a child's effective
+   * disabled state folds in any ancestor group that is disabled. `!!js`
+   * expressions in `disabled` are evaluated against the global scope so the
+   * browser sees the same effective on/off state the loader would at mount time
+   * (the loader evaluates `!!js` in the entry's fiber scope, which falls
+   * through to globals for identifiers like `process`).
+   * @param id - the preset id.
+   * @returns the flattened, effective plugin entries.
+   * @throws when no configured root supplies that id.
+   */
+  async readEntries(id: string): Promise<readonly { id: string; name: string; disabled: boolean }[]> {
+    const preset = await this.resolve(id)
+    return flattenEntries(await readCompositionEntries(preset))
+  }
+
+  /**
    * Create a locally authored preset by copying an existing one whole.
    *
    * Copy is the only authoring write. Composition text never crosses this
@@ -567,6 +591,59 @@ interface StandingMount {
   readonly scope: Scope
   /** Stamp of the composition file this generation was mounted from. */
   readonly stamp: CompositionStamp
+}
+
+/**
+ * Flatten a parsed entry list into the effective plugin rows a session would
+ * load, propagating group disabled state to descendants and evaluating any
+ * `!!js` disabled expressions.
+ * @param rows - parsed entry rows from the composition.
+ * @param ancestorDisabled - whether an owning group is already disabled.
+ * @returns flattened entries in composition order.
+ */
+function flattenEntries(
+  rows: EntryOptions[],
+  ancestorDisabled = false,
+): { id: string; name: string; disabled: boolean }[] {
+  const out: { id: string; name: string; disabled: boolean }[] = []
+  for (const row of rows) {
+    const ownDisabled = evaluateDisabled(row.disabled)
+    const disabled = ancestorDisabled || ownDisabled
+    if (row.group === true) {
+      // The loader stores a group's children in its `config` field. A group
+      // container itself is not a plugin row, so it is skipped unless a caller
+      // later wants to surface group structure explicitly.
+      const children = Array.isArray(row.config) ? (row.config as EntryOptions[]) : []
+      out.push(...flattenEntries(children, disabled))
+      continue
+    }
+    // The entry type declares id/name as present, but parsed YAML rows may
+    // omit either, so the effective row falls back to the id and then ''.
+    const id = row.id as string | undefined
+    const name = row.name as string | undefined
+    out.push({
+      id: id ?? '',
+      name: name ?? id ?? '',
+      disabled,
+    })
+  }
+  return out
+}
+
+/**
+ * Evaluate a row's `disabled` field to an effective boolean.
+ *
+ * `!!js` scalars round-trip from {@link entryListSchema} as `{ __jsExpr }`
+ * nodes; evaluating them here lets the browser see the same effective state
+ * the loader would decide at mount time. The global scope is passed because
+ * typical preset expressions test `process.platform` or similar Node globals.
+ * @param disabled - the raw disabled value from YAML.
+ * @returns the effective disabled state.
+ */
+function evaluateDisabled(disabled: boolean | null | JsExpr | undefined): boolean {
+  if (disabled === undefined || disabled === null) return false
+  if (isJsExpr(disabled)) return Boolean(evaluate(globalThis, disabled.__jsExpr))
+  return disabled
 }
 
 export default AgentPresets

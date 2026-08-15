@@ -11,6 +11,12 @@ export type PluginsSettingsLocaleKey =
   | 'webSearchTitle' | 'webSearchDescription'
   | 'webSearchApiKey' | 'webSearchApiKeyHint' | 'webSearchApiKeySet' | 'webSearchApiKeyUnset'
   | 'webSearchBaseUrl' | 'webSearchBaseUrlHint' | 'webSearchMaxUses' | 'webSearchMaxUsesHint'
+  | 'webSearchExaTitle' | 'webSearchExaDescription'
+  | 'webSearchExaApiKey' | 'webSearchExaApiKeyHint' | 'webSearchExaApiKeySet' | 'webSearchExaApiKeyUnset'
+  | 'webSearchExaBaseUrl' | 'webSearchExaBaseUrlHint'
+  | 'webSearchExaSearchType' | 'webSearchExaSearchTypeHint'
+  | 'webSearchExaNumResults' | 'webSearchExaNumResultsHint'
+  | 'webSearchExaHighlightsPerResult' | 'webSearchExaHighlightsPerResultHint'
 
 /** English copy. */
 export const en: Record<PluginsSettingsLocaleKey, string> = {
@@ -51,6 +57,20 @@ export const en: Record<PluginsSettingsLocaleKey, string> = {
   webSearchBaseUrlHint: 'Leave blank to use the provider default.',
   webSearchMaxUses: 'Max searches per request',
   webSearchMaxUsesHint: 'How many times one request may search before it must answer.',
+  webSearchExaTitle: 'Web search (Exa)',
+  webSearchExaDescription: 'The Exa search provider.',
+  webSearchExaApiKey: 'API key',
+  webSearchExaApiKeyHint: 'Stored outside the settings file. Leave blank to keep the current key.',
+  webSearchExaApiKeySet: 'A key is configured.',
+  webSearchExaApiKeyUnset: 'No key is configured; search is unavailable until one is.',
+  webSearchExaBaseUrl: 'Endpoint',
+  webSearchExaBaseUrlHint: 'Leave blank to use the provider default.',
+  webSearchExaSearchType: 'Search type',
+  webSearchExaSearchTypeHint: 'auto lets Exa choose; keyword or neural force a mode. Leave blank to use the provider default.',
+  webSearchExaNumResults: 'Default result count',
+  webSearchExaNumResultsHint: 'Sent when a request carries no count of its own. Leave blank to send no default.',
+  webSearchExaHighlightsPerResult: 'Highlights per result',
+  webSearchExaHighlightsPerResultHint: 'Highlight sentences requested for each result.',
 }
 
 /** Simplified Chinese copy. */
@@ -92,4 +112,18 @@ export const zh: Record<PluginsSettingsLocaleKey, string> = {
   webSearchBaseUrlHint: '留空则使用提供方默认地址。',
   webSearchMaxUses: '单次请求最多搜索次数',
   webSearchMaxUsesHint: '一次请求在必须作答前最多可以搜索多少次。',
+  webSearchExaTitle: '网页搜索（Exa）',
+  webSearchExaDescription: 'Exa 搜索提供方。',
+  webSearchExaApiKey: 'API Key',
+  webSearchExaApiKeyHint: '不写入设置文件。留空表示保持当前密钥。',
+  webSearchExaApiKeySet: '已配置密钥。',
+  webSearchExaApiKeyUnset: '未配置密钥；配置之前搜索不可用。',
+  webSearchExaBaseUrl: '接口地址',
+  webSearchExaBaseUrlHint: '留空则使用提供方默认地址。',
+  webSearchExaSearchType: '搜索类型',
+  webSearchExaSearchTypeHint: 'auto 由 Exa 自行选择；keyword 或 neural 强制指定模式。留空则使用提供方默认值。',
+  webSearchExaNumResults: '默认结果数',
+  webSearchExaNumResultsHint: '请求未自带数量时使用。留空则不发送默认值。',
+  webSearchExaHighlightsPerResult: '每条结果高亮句数',
+  webSearchExaHighlightsPerResultHint: '为每条结果请求的高亮摘要句子数。',
 }

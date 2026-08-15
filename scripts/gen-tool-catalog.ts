@@ -9,6 +9,7 @@
 import { globSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type { ToolSchema } from '@deepseek-ai/dsh-llm'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -55,6 +56,7 @@ import * as ToolSchedule from '@deepseek-ai/dsh-schedule'
 import Lsp from '@deepseek-ai/dsh-lsp'
 import * as ToolLsp from '@deepseek-ai/dsh-tool-lsp'
 import * as ToolSkill from '@deepseek-ai/dsh-tool-skill'
+import * as ToolSelfCognition from '@deepseek-ai/dsh-tool-self-cognition'
 import * as ToolSessionQuery from '@deepseek-ai/dsh-tool-session-query'
 import * as ToolTasks from '@deepseek-ai/dsh-tool-jobs'
 import * as ToolTodo from '@deepseek-ai/dsh-tool-todo'
@@ -420,6 +422,19 @@ const TOOL_PACKAGES: ToolPackage[] = [
       })
       await ctx.plugin(ToolSkill)
     },
+  },
+  {
+    pkg: '@deepseek-ai/dsh-tool-self-cognition',
+    dir: 'tool-self-cognition',
+    source: 'packages/extensions/tool-self-cognition/src/index.ts',
+    requires: ['ctx.tools', 'ctx.systemPrompt', 'ctx.loader'],
+    writes: ['tool/call', 'tool/result'],
+    async mount(ctx) {
+      ctx.provide('loader', { entries: () => [] } as unknown as Context['loader'])
+      await ctx.plugin(ToolSelfCognition)
+    },
+    note:
+      'Read-only; mounted only by the cordis agent preset alongside the dynamic toolset. Also registers the harness:self-cognition prompt section.',
   },
   {
     pkg: '@deepseek-ai/dsh-tool-session-query',

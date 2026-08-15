@@ -10,7 +10,8 @@ This is an **implementation** package: it registers a provider into `ctx.web`, i
 
 | Key | Default | Meaning |
 |---|---|---|
-| `apiKey` | `$EXA_API_KEY` | Exa API key. Empty/absent makes the provider unavailable. |
+| `apiKey` | (unset) | Literal Exa API key. Prefer `apiKeyEnv` so no secret enters configuration files. |
+| `apiKeyEnv` | `EXA_API_KEY` | Credential reference resolved for each search through the credentials service, falling back to the launching environment's variable of the same name. |
 | `baseURL` | `https://api.exa.ai` | Endpoint base; `/search` is appended. An unparseable value makes the provider unavailable. |
 | `searchType` | `auto` | Retrieval mode sent as Exa's `type`: `auto` (Exa decides), `keyword`, or `neural`. |
 | `numResults` | (unset) | Default result count when a request carries no `maxResults`. Unset sends no default. Must be a positive integer. |
@@ -22,6 +23,8 @@ This is an **implementation** package: it registers a provider into `ctx.web`, i
   config:
     apiKey: !!js process.env.EXA_API_KEY
 ```
+
+Every field above is also editable from the Web UI settings page (Plugins → Plugin configuration → the Exa web-search card), and a committed change applies to the next search — no restart. The card writes the API key through the credentials domain rather than the settings document. Key resolution precedence: a literal `apiKey` (config or settings page) wins, then the credentials service entry named by `apiKeyEnv`, then the launching environment's `$EXA_API_KEY`. With no key from any layer a search fails as `WEB_PROVIDER_CREDENTIAL_MISSING`.
 
 ## Mapping
 

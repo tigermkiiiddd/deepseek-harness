@@ -7,6 +7,17 @@ description: Create, modify, debug, or extend dynamic Cordis Plugins, including 
 
 First determine whether a capability belongs on Host or Client, then query the real interface before writing code. Never infer a complete API from a Service name, Event payload, Slot props, theme token, or example.
 
+## Choose dynamic vs source
+
+Dynamic Plugins are process-local and disappear on restart. Route by intended lifetime before any other step:
+
+| Intended lifetime | Path |
+| --- | --- |
+| Experiment, temporary UI, session-scoped behavior, one-off need | This Skill |
+| Permanent capability that must survive restarts and land in version control | `self-development` Skill — edit the harness source checkout when `self_cognition` reports one |
+
+Do not define a dynamic Plugin for a capability the user expects to keep.
+
 ## Standard workflow
 
 1. Call `cordis_inspect_list` to obtain the Providers, methods, and schemas currently registered on Host and Client.

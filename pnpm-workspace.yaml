@@ -40,6 +40,10 @@ peerDependencyRules:
 allowBuilds:
   esbuild: true
   lefthook: true
+  # apps/desktop: downloads the Electron prebuilt binary at install time.
+  electron: true
+  # electron-builder optional dep for the Squirrel target we don't use.
+  electron-winstaller: false
   # Cross-platform boundary for the persistent PTY backend, including ConPTY on Windows.
   node-pty: true
   # Pulled in by @earendil-works/pi-ai (optional LLM API backend). pnpm lists

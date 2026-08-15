@@ -2,10 +2,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import WebRuntime from '@deepseek-ai/dsh-web'
 import { ExaSearchProvider, EXA_PROVIDER_ID } from '@deepseek-ai/dsh-web-search-exa'
+import type { ExaSearchProviderOptions } from '@deepseek-ai/dsh-web-search-exa'
 import * as exaPlugin from '@deepseek-ai/dsh-web-search-exa'
 import { mapExaResponse, mapExaResult } from '../src/provider.ts'
 
 const options = { apiKey: 'exa-key', baseURL: 'https://api.exa.test', searchType: 'auto' as const, highlightsPerResult: 1 }
+
+/** Wrap literal options in the thunk the provider snapshots once per operation. */
+function providerOf(overrides: Partial<ExaSearchProviderOptions> = {}): ExaSearchProvider {
+  return new ExaSearchProvider(() => ({ ...options, ...overrides }))
+}
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' }, ...init })
@@ -64,24 +70,24 @@ describe('Exa result mapping', () => {
 
 describe('ExaSearchProvider availability', () => {
   it('is unavailable without a key', () => {
-    expect(new ExaSearchProvider({ ...options, apiKey: '' }).available()).toBe(false)
+    expect(providerOf({ apiKey: '' }).available()).toBe(false)
   })
 
   it('is available with a key', () => {
-    expect(new ExaSearchProvider(options).available()).toBe(true)
+    expect(providerOf().available()).toBe(true)
   })
 
   it('is misconfigured when the base URL is unparseable', () => {
-    expect(new ExaSearchProvider({ ...options, baseURL: 'not a url' }).available()).toBe(false)
+    expect(providerOf({ baseURL: 'not a url' }).available()).toBe(false)
   })
 
   it('is misconfigured when highlightsPerResult is not a positive integer', () => {
-    expect(new ExaSearchProvider({ ...options, highlightsPerResult: 0 }).available()).toBe(false)
-    expect(new ExaSearchProvider({ ...options, highlightsPerResult: 1.5 }).available()).toBe(false)
+    expect(providerOf({ highlightsPerResult: 0 }).available()).toBe(false)
+    expect(providerOf({ highlightsPerResult: 1.5 }).available()).toBe(false)
   })
 
   it('is misconfigured when numResults is set but not a positive integer', () => {
-    expect(new ExaSearchProvider({ ...options, numResults: -1 }).available()).toBe(false)
+    expect(providerOf({ numResults: -1 }).available()).toBe(false)
   })
 })
 
@@ -90,7 +96,7 @@ describe('ExaSearchProvider request mapping', () => {
     const fetchMock = vi.fn(async () => jsonResponse({ results: [{ url: 'https://a.test', highlights: ['hi'] }] }))
     vi.stubGlobal('fetch', fetchMock)
 
-    const provider = new ExaSearchProvider({ ...options, searchType: 'neural', highlightsPerResult: 3 })
+    const provider = providerOf({ searchType: 'neural', highlightsPerResult: 3 })
     await provider.search({ query: 'hello', maxResults: 5 })
 
     expect(fetchMock).toHaveBeenCalledOnce()
@@ -109,7 +115,7 @@ describe('ExaSearchProvider request mapping', () => {
   it('falls back to the configured numResults when a request omits maxResults', async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ results: [] }))
     vi.stubGlobal('fetch', fetchMock)
-    await new ExaSearchProvider({ ...options, numResults: 7 }).search({ query: 'q' })
+    await providerOf({ numResults: 7 }).search({ query: 'q' })
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(JSON.parse(init.body as string)).toMatchObject({ numResults: 7 })
   })
@@ -117,7 +123,7 @@ describe('ExaSearchProvider request mapping', () => {
   it('lets a request maxResults win over the configured numResults', async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ results: [] }))
     vi.stubGlobal('fetch', fetchMock)
-    await new ExaSearchProvider({ ...options, numResults: 7 }).search({ query: 'q', maxResults: 2 })
+    await providerOf({ numResults: 7 }).search({ query: 'q', maxResults: 2 })
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(JSON.parse(init.body as string)).toMatchObject({ numResults: 2 })
   })
@@ -125,7 +131,7 @@ describe('ExaSearchProvider request mapping', () => {
   it('omits numResults when neither maxResults nor a configured default is set', async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ results: [] }))
     vi.stubGlobal('fetch', fetchMock)
-    await new ExaSearchProvider(options).search({ query: 'q' })
+    await providerOf().search({ query: 'q' })
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(JSON.parse(init.body as string)).not.toHaveProperty('numResults')
   })
@@ -134,7 +140,7 @@ describe('ExaSearchProvider request mapping', () => {
     const fetchMock = vi.fn(async () => jsonResponse({ results: [] }))
     vi.stubGlobal('fetch', fetchMock)
     const controller = new AbortController()
-    await new ExaSearchProvider(options).search({ query: 'q' }, controller.signal)
+    await providerOf().search({ query: 'q' }, controller.signal)
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(init.signal).toBe(controller.signal)
   })
@@ -143,57 +149,96 @@ describe('ExaSearchProvider request mapping', () => {
 describe('ExaSearchProvider error handling', () => {
   it('maps an HTTP error to WEB_PROVIDER_ERROR with the provider message', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: 'bad key' }, { status: 401 })))
-    await expect(new ExaSearchProvider(options).search({ query: 'q' }))
+    await expect(providerOf().search({ query: 'q' }))
       .rejects.toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_ERROR', message: 'bad key' }))
   })
 
   it('keeps a status-line message when the error body is not JSON', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('gateway down', { status: 502 })))
-    await expect(new ExaSearchProvider(options).search({ query: 'q' }))
+    await expect(providerOf().search({ query: 'q' }))
       .rejects.toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_ERROR', message: 'Exa API error (HTTP 502)' }))
   })
 
   it('keeps the status-line message when the JSON error body carries no detail', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({}, { status: 500 })))
-    await expect(new ExaSearchProvider(options).search({ query: 'q' }))
+    await expect(providerOf().search({ query: 'q' }))
       .rejects.toThrow(expect.objectContaining({ message: 'Exa API error (HTTP 500)' }))
   })
 
   it('maps a network failure to WEB_PROVIDER_ERROR', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('connection refused'))))
-    await expect(new ExaSearchProvider(options).search({ query: 'q' }))
+    await expect(providerOf().search({ query: 'q' }))
       .rejects.toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_ERROR' }))
   })
 
   it('maps an abort to WEB_ABORTED', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new DOMException('aborted', 'AbortError'))))
-    await expect(new ExaSearchProvider(options).search({ query: 'q' }))
+    await expect(providerOf().search({ query: 'q' }))
       .rejects.toThrow(expect.objectContaining({ code: 'WEB_ABORTED' }))
   })
 
   it('maps an unparseable success body to WEB_PROVIDER_ERROR', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('not json', { status: 200 })))
-    await expect(new ExaSearchProvider(options).search({ query: 'q' }))
+    await expect(providerOf().search({ query: 'q' }))
       .rejects.toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_ERROR' }))
   })
 
   it('maps a well-formed body of the wrong shape to WEB_PROVIDER_ERROR, not a raw TypeError', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ results: {} }, { status: 200 })))
-    await expect(new ExaSearchProvider(options).search({ query: 'q' }))
+    await expect(providerOf().search({ query: 'q' }))
       .rejects.toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_ERROR' }))
   })
 
   it('surfaces an abort during success-body parse as WEB_ABORTED, not provider error', async () => {
     const body = { json: () => Promise.reject(new DOMException('aborted', 'AbortError')), ok: true, status: 200 }
     vi.stubGlobal('fetch', vi.fn(async () => body as unknown as Response))
-    await expect(new ExaSearchProvider(options).search({ query: 'q' }))
+    await expect(providerOf().search({ query: 'q' }))
       .rejects.toThrow(expect.objectContaining({ code: 'WEB_ABORTED' }))
   })
 
   it('surfaces an abort during error-body parse as WEB_ABORTED', async () => {
     const body = { json: () => Promise.reject(new DOMException('aborted', 'AbortError')), ok: false, status: 500 }
     vi.stubGlobal('fetch', vi.fn(async () => body as unknown as Response))
-    await expect(new ExaSearchProvider(options).search({ query: 'q' }))
+    await expect(providerOf().search({ query: 'q' }))
+      .rejects.toThrow(expect.objectContaining({ code: 'WEB_ABORTED' }))
+  })
+})
+
+describe('ExaSearchProvider credential resolution', () => {
+  /** Options carrying a resolver instead of the literal key. */
+  function resolvingOptions(resolveApiKey: () => Promise<string | undefined>): ExaSearchProviderOptions {
+    return { ...options, apiKey: undefined, resolveApiKey }
+  }
+
+  it('resolves the key through resolveApiKey when no literal key is set', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ results: [] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const provider = new ExaSearchProvider(() => resolvingOptions(async () => 'resolved-key'))
+    await provider.search({ query: 'q' })
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect((init.headers as Record<string, string>)['authorization']).toBe('Bearer resolved-key')
+  })
+
+  it('fails as credential-missing when resolution yields no key', async () => {
+    const provider = new ExaSearchProvider(() => resolvingOptions(async () => ''))
+    await expect(provider.search({ query: 'q' }))
+      .rejects.toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_CREDENTIAL_MISSING' }))
+  })
+
+  it('maps a credential resolution failure to WEB_PROVIDER_ERROR', async () => {
+    const provider = new ExaSearchProvider(() => resolvingOptions(() => Promise.reject(new Error('backend down'))))
+    await expect(provider.search({ query: 'q' }))
+      .rejects.toThrow(expect.objectContaining({
+        code: 'WEB_PROVIDER_ERROR',
+        message: 'Exa search credential resolution failed: Error: backend down',
+      }))
+  })
+
+  it('maps an abort during credential resolution to WEB_ABORTED', async () => {
+    const provider = new ExaSearchProvider(
+      () => resolvingOptions(() => Promise.reject(new DOMException('aborted', 'AbortError'))),
+    )
+    await expect(provider.search({ query: 'q' }))
       .rejects.toThrow(expect.objectContaining({ code: 'WEB_ABORTED' }))
   })
 })
@@ -234,26 +279,68 @@ describe('web-search-exa plugin registration', () => {
       vi.stubGlobal('fetch', fetchMock)
       const ctx = new Context()
       await ctx.plugin(WebRuntime, { searchProvider: EXA_PROVIDER_ID })
-      const fiber = await ctx.plugin(exaPlugin, {})
+      // Direct apply, bypassing the schema's defaults: every fallback the
+      // plugin owns lives in resolveOptions, and this call proves they fire.
+      exaPlugin.apply(ctx, {})
       await ctx.web.search({ query: 'q' })
-      const [url] = fetchMock.mock.calls[0] as unknown as [string]
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
       expect(url).toBe('https://api.exa.ai/search')
-      await fiber.dispose()
+      expect((init.headers as Record<string, string>)['authorization']).toBe('Bearer env-key')
+      await ctx.fiber.dispose()
     } finally {
       if (prev === undefined) delete process.env.EXA_API_KEY
       else process.env.EXA_API_KEY = prev
     }
   })
 
-  it('is unavailable when neither config nor env supplies a key', async () => {
+  it('resolves the key through the credentials service when the seam is present', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ results: [] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const ctx = new Context()
+    ctx.provide('credentials', { resolve: async (ref: string) => ({ value: `seam:${ref}` }) } as never)
+    await ctx.plugin(WebRuntime, { searchProvider: EXA_PROVIDER_ID })
+    await ctx.plugin(exaPlugin, {})
+    await ctx.web.search({ query: 'q' })
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect((init.headers as Record<string, string>)['authorization']).toBe('Bearer seam:EXA_API_KEY')
+    await ctx.fiber.dispose()
+  })
+
+  it('fails as credential-missing when the seam resolves nothing for the reference', async () => {
+    const prev = process.env.EXA_API_KEY
+    process.env.EXA_API_KEY = 'env-key'
+    try {
+      const ctx = new Context()
+      // The seam shadows the environment entirely: a resolve that answers
+      // nothing must not fall through to $EXA_API_KEY.
+      ctx.provide('credentials', { resolve: async () => undefined } as never)
+      await ctx.plugin(WebRuntime, { searchProvider: EXA_PROVIDER_ID })
+      await ctx.plugin(exaPlugin, {})
+      await expect(ctx.web.search({ query: 'q' }))
+        .rejects.toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_CREDENTIAL_MISSING' }))
+      await ctx.fiber.dispose()
+    } finally {
+      if (prev === undefined) delete process.env.EXA_API_KEY
+      else process.env.EXA_API_KEY = prev
+    }
+  })
+
+  it('reports an actionable credential error when neither config nor env supplies a key', async () => {
     const prev = process.env.EXA_API_KEY
     delete process.env.EXA_API_KEY
     try {
       const ctx = new Context()
       await ctx.plugin(WebRuntime, { searchProvider: EXA_PROVIDER_ID })
       await ctx.plugin(exaPlugin, {})
-      await expect(ctx.web.search({ query: 'q' }))
-        .rejects.toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_CONFIGURED_UNAVAILABLE' }))
+      let caught: unknown
+      try {
+        await ctx.web.search({ query: 'q' })
+      } catch (error: unknown) {
+        caught = error
+      }
+      expect(caught).toMatchObject({ code: 'WEB_PROVIDER_CREDENTIAL_MISSING' })
+      if (!(caught instanceof Error)) throw new Error('search did not throw an Error')
+      expect(caught.message).toMatch(/store it through the credentials service.*Models page/s)
     } finally {
       if (prev !== undefined) process.env.EXA_API_KEY = prev
     }
