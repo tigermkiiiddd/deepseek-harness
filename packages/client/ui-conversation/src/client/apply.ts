@@ -407,6 +407,13 @@ export function apply(ctx: Context): void {
           actions.setInspect({ callId })
           actions.setView('trajectory')
         },
+        // Re-send a settled user message (verbatim or edited) as an ordinary
+        // queued prompt: the host starts a fresh turn; failures surface
+        // through the composer's send-error strip like any prompt.
+        resendUserMessage: (text) => {
+          const session = sessions.binding(sessionId)?.session
+          void session?.prompt([{ type: 'text', text }], 'queue')
+        },
         chatScroll: {
           save: (position) => {
             if (position === null) chatScrollPositions.delete(sessionId)

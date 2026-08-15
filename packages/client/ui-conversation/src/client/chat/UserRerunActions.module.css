@@ -1,0 +1,99 @@
+/* User-message re-run / re-edit: the actions row (shared icon chrome plus the
+   two re-send controls) and the inline editor that replaces the row's hover
+   chrome while open. */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.actions {
+  /* The shared row's own hover chrome; this module only stacks it. */
+  padding-right: 0;
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 6px;
+  border: none;
+  border-radius: 28px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.action:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.editor {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  width: min(525px, 82%);
+}
+
+.editorInput {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-secondary);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-primary);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  resize: vertical;
+}
+
+.editorInput:focus {
+  outline: none;
+  border-color: var(--dsw-alias-label-secondary);
+}
+
+.editorBar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-end;
+}
+
+.editorSend,
+.editorCancel {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 14px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.editorSend {
+  background: var(--dsw-alias-interactive-bg-primary);
+  color: var(--dsw-alias-label-inverse);
+}
+
+.editorSend:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.editorCancel {
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.editorCancel:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+}

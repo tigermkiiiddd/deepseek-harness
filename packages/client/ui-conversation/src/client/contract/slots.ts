@@ -361,6 +361,11 @@ export interface ChatNodeOwnerProps {
   openFile: (path: string) => void
   inspectCall: (callId: CallId) => void
   forkAt: (seq: number) => void
+  /**
+   * Re-send one settled user message verbatim, or with edited text: the host
+   * queues the text as an ordinary prompt that starts its own turn.
+   */
+  resendUserMessage: (text: string) => void
   /** Resolve a session-authorized historical image for inline display. */
   loadImage: (attachment: ImageAttachmentRef) => Promise<string>
   fileMentions: (owner: TurnTailOwnerProps) => MarkdownFileMentions | undefined
@@ -685,6 +690,11 @@ export interface ChatViewInjected {
   loadImage: (attachment: ImageAttachmentRef) => Promise<string>
   /** Hand a call off to the trajectory view: write the one-shot inspect target and switch tabs. */
   inspectCall: (callId: CallId) => void
+  /**
+   * Re-send one settled user message verbatim, or with edited text: the host
+   * queues the text as an ordinary prompt that starts its own turn.
+   */
+  resendUserMessage: (text: string) => void
   /**
    * Per-session scroll memory surviving view switches (in-memory, never
    * persisted): the view saves on every scroll and restores on remount; a

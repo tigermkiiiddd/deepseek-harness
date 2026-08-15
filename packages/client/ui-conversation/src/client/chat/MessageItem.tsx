@@ -15,6 +15,7 @@ import { messageImageLabels } from '../image-labels.ts'
 import { CompactionItem } from './CompactionItem.tsx'
 import { ContextInjectionRow } from './ContextInjectionRow.tsx'
 import { MessageIconActions } from './MessageIconActions.tsx'
+import { UserRerunActions } from './UserRerunActions.tsx'
 import css from './MessageItem.module.css'
 
 type UserImage = Extract<UserMessageNode['content'][number], { type: 'image' }>
@@ -236,7 +237,7 @@ export function PendingSteeringBubble({ content, loadImage, t }: {
 
 /** User and admitted-steering keyed Chat renderer. */
 export const UserMessageNodeView = memo(function UserMessageNodeView({
-  node, loadImage, t,
+  node, loadImage, resendUserMessage, t,
 }: ChatNodeViewProps<'user' | 'steering'>) {
   const data = node.data
   return (
@@ -245,13 +246,27 @@ export const UserMessageNodeView = memo(function UserMessageNodeView({
       imageLoader={loadImage}
       t={t}
       actions={text => (
-        <MessageIconActions
-          text={text}
-          time={data.time}
-          clock="start"
-          className={css.actions}
-          t={t}
-        />
+        // Re-run / re-edit live on settled user messages with editable text;
+        // steering (admitted into the running turn) and image-only messages
+        // keep the plain copy row.
+        node.kind === 'user' && text !== ''
+          ? (
+            <UserRerunActions
+              text={text}
+              time={data.time}
+              onResend={resendUserMessage}
+              t={t}
+            />
+          )
+          : (
+            <MessageIconActions
+              text={text}
+              time={data.time}
+              clock="start"
+              className={css.actions}
+              t={t}
+            />
+          )
       )}
     />
   )
