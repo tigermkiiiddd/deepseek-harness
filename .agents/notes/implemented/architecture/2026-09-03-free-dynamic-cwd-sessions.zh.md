@@ -2,7 +2,7 @@
 
 状态：已实现
 
-English | [中文](2026-09-03-free-dynamic-cwd-sessions.zh.md)
+[English](2026-09-03-free-dynamic-cwd-sessions.md) | 中文
 
 ## 问题
 
