@@ -7,6 +7,7 @@ agent 修改自身运行时：检查已加载的插件与服务接口、定义�
 | 包 | 角色 | ctx 键 |
 |---|---|---|
 | [`tool-cordis/`](tool-cordis/README.md) | `cordis_inspect`／`cordis_define`／`cordis_run`／`cordis_stop`／`cordis_undefine` 工具：读取当前进程运行时，并在一个自有分组 fiber 下管理内存中的动态包 | 注册到 `ctx.tools` |
+| [`tool-self-cognition/`](tool-self-cognition/README.md) | 自我认知提示段与只读的 `self_cognition` 组成报告工具 | 注册到 `ctx.tools` 与 `ctx.systemPrompt` |
 | [`cordis-host-runner/`](cordis-host-runner/README.md) | 定义注册表、host 半的 `node:vm` 沙箱，以及 request-run 往返 | 提供 `ctx.dynamicCordisRunner` |
 | [`cordis-client-runner/`](cordis-client-runner/README.md) | 双半包的浏览器半：把定义求值成活的浏览器插件，并应答运行请求 | client 面；提供浏览器侧 `ctx.dynamicCordisRunner` |
 | [`ui-cordis/`](ui-cordis/README.md) | 浏览器面：操作全部定义的全局面板，与只读的 define 卡片 | client 面；注册 slot |

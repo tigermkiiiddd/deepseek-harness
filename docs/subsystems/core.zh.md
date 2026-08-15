@@ -477,6 +477,22 @@ composedPreset(agentCtx: Context): string | undefined
 async read(id: string): Promise<string>
 
 /**
+ * Read one preset's plugin entry list as the browser sees it.
+ *
+ * Group rows are flattened so the returned list lines up one-to-one with the
+ * plugins a session running this preset would load; a child's effective
+ * disabled state folds in any ancestor group that is disabled. `!!js`
+ * expressions in `disabled` are evaluated against the global scope so the
+ * browser sees the same effective on/off state the loader would at mount time
+ * (the loader evaluates `!!js` in the entry's fiber scope, which falls
+ * through to globals for identifiers like `process`).
+ * @param id - the preset id.
+ * @returns the flattened, effective plugin entries.
+ * @throws when no configured root supplies that id.
+ */
+async readEntries(id: string): Promise<readonly { id: string; name: string; disabled: boolean }[]>
+
+/**
  * Create a locally authored preset by copying an existing one whole.
  *
  * Copy is the only authoring write. Composition text never crosses this
@@ -556,7 +572,7 @@ async standingKeyFor(id?: string): Promise<ScopeKey>
 
 Types: [ScopeKey](scope.md)
 
-Source: [`packages/preset/agent-presets/src/index.ts:82`](../../packages/preset/agent-presets/src/index.ts)
+Source: [`packages/preset/agent-presets/src/index.ts:87`](../../packages/preset/agent-presets/src/index.ts)
 
 <a id="ctxagents--agentregistry"></a>
 

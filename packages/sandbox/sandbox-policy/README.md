@@ -11,11 +11,11 @@ Filesystem tools, one-shot bash commands, and terminal sessions may enforce the 
 ## Config
 
 - `mode` — the deployment default `SandboxMode` (`read-only` / `workspace-write` / `danger-full-access`), validated at load. Default `read-only` (fail-safe).
-- `workspaceRoot` — the fallback directory `workspace-write` may write under for agentless calls or sessions without a cwd. Default `process.cwd()`, resolved to its absolute filesystem identity either way. A normal agent call uses its session header's immutable `cwd` instead.
+- `workspaceRoot` — the fallback directory `workspace-write` may write under for agentless calls or sessions with no effective cwd. Default `process.cwd()`, resolved to its absolute filesystem identity either way. A normal agent call uses its session's effective cwd instead: the immutable `header.cwd` for a fixed session, or the `set_cwd` (`session/cwd`) value for a free session. Note the consequence: for a free session the writable boundary moves with every `set_cwd` call — `workspace-write` confines where the session writes right now, not which directories it can ever reach.
 
 ## API
 
-- `ctx.sandboxPolicy.resolve({ session?, mode? })` — resolves one complete per-call policy. An explicit approved mode outranks the session's last `sandbox/mode` event, which outranks `defaultMode`; the session's immutable `cwd` is canonicalized with filesystem semantics before becoming `workspaceRoot`, otherwise the configured fallback applies. Canonicalization precedes lexical normalization so `symlink/..` agrees with process working-directory resolution.
+- `ctx.sandboxPolicy.resolve({ session?, mode? })` — resolves one complete per-call policy. An explicit approved mode outranks the session's last `sandbox/mode` event, which outranks `defaultMode`; the session's effective cwd (`currentSessionCwd`: immutable `header.cwd` for fixed sessions, last `session/cwd` event for free sessions) is canonicalized with filesystem semantics before becoming `workspaceRoot`, otherwise the configured fallback applies. Canonicalization precedes lexical normalization so `symlink/..` agrees with process working-directory resolution.
 - `ctx.sandboxPolicy.defaultMode` / `ctx.sandboxPolicy.workspaceRoot` — the deployment default and fallback root used by `resolve()`.
 - `sandbox:policy` — a request-time cache-safe context contribution derived directly from `resolve({ session })`. It states the mode's capability-neutral file-effect contract and the canonical session workspace under `workspace-write`; tool owners retain operation-specific denial and escalation guidance.
 - `effectiveSandboxMode(events)` — the pure fold of a session's `sandbox/mode` events (the last switch wins, or `undefined`), used inside `resolve()`.
@@ -26,7 +26,7 @@ The optional `./invariant` companion rejects a forged durable `sandbox/mode` eve
 
 ## The per-session store
 
-A runtime switch is one log-only `sandbox/mode` event on the session it applies to. `effective = explicit grant ?? fold(events) ?? deployment default`, so an override survives restart by replay and two sessions never see each other's state. Workspace identity does not need another event: the immutable `SessionHeader.cwd` recorded at creation is the root for every call in that session. The event stays log-only; before the next request, the owner contributes the current fact to the full runtime-context snapshot.
+A runtime switch is one log-only `sandbox/mode` event on the session it applies to. `effective = explicit grant ?? fold(events) ?? deployment default`, so an override survives restart by replay and two sessions never see each other's state. Workspace identity also rides the session log for free sessions: the effective root is the immutable `SessionHeader.cwd` for fixed sessions, or the last `session/cwd` event (from `set_cwd`) for free sessions. The events stay log-only; before the next request, the owner contributes the current fact to the full runtime-context snapshot.
 
 ## Model Experience
 
@@ -64,6 +64,6 @@ The stable system prompt remains byte-identical across mode changes. A changed f
 
 ## Known Limitations and Deferred Work
 
-- **One primary workspace root per session** — policy resolves `SessionHeader.cwd`; extra writable roots are not part of `SandboxExecutionPolicy`.
+- **One primary workspace root per session** — policy resolves the session's effective cwd (`SessionHeader.cwd` for fixed sessions, the `session/cwd` value for free sessions); extra writable roots are not part of `SandboxExecutionPolicy`.
 - **File-effect modes only** — `SandboxMode` governs file effects; network and process policy are outside its vocabulary, so no knob here restricts them.
 - **Temporary areas are deliberately summarized** — enforcing backends grant different platform temporary areas, which are selected after policy resolution and therefore cannot be enumerated truthfully in the current context.

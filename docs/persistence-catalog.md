@@ -90,7 +90,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 }[T]
 ```
 
-Sources: [`packages/core/session/src/types.ts:336`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:343`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:372`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:404`](../packages/core/session/src/types.ts)
+Sources: [`packages/core/session/src/types.ts:345`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:352`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:381`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:413`](../packages/core/session/src/types.ts)
 
 ## Events
 
@@ -602,6 +602,24 @@ Source: [`packages/schedule/schedule/src/types.ts:219`](../packages/schedule/sch
 
 ### `session/*`
 
+<a id="sessioncwd--log-only"></a>
+
+#### `session/cwd` — log-only
+
+```ts persistence-catalog
+/**
+ * Absolute working directory the session's agent should default relative
+ * paths against (the "dynamic cwd" of a free session). Log-only, whole-value
+ * snapshot: the LAST event of this type reconstructs the session's current
+ * working directory. Written by the `set-cwd` tool for sessions whose
+ * `SessionHeader.cwd` is absent; fixed sessions use their immutable
+ * `header.cwd` instead and never receive one.
+ */
+'session/cwd': { cwd: string }
+```
+
+Source: [`packages/core/session/src/types.ts:318`](../packages/core/session/src/types.ts)
+
 <a id="sessionend-seed--log-only"></a>
 
 #### `session/end-seed` — log-only
@@ -632,7 +650,7 @@ Source: [`packages/schedule/schedule/src/types.ts:219`](../packages/schedule/sch
 'session/end-seed': Record<string, never>
 ```
 
-Source: [`packages/core/session/src/types.ts:332`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:341`](../packages/core/session/src/types.ts)
 
 <a id="sessiontitle--log-only"></a>
 
