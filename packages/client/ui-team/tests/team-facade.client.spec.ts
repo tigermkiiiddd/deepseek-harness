@@ -1,7 +1,7 @@
 /** Facade contract: unwrap throws on the error branch, and each facade method delegates to the wire face. */
 import { describe, expect, it, vi } from 'vitest'
 import { RpcId } from '@deepseek-ai/dsh-client-connection/client'
-import type { RpcResponse } from '@deepseek-ai/dsh-client-connection/client'
+import type { IApiClient, RpcResponse } from '@deepseek-ai/dsh-client-connection/client'
 import { createTeamFacade, unwrap } from '../src/client/team-facade.ts'
 
 /** One settled ok envelope. */
@@ -15,6 +15,17 @@ function fail(message: string): Promise<RpcResponse<never>> {
     rpcId: RpcId('fx'),
     result: { ok: false, error: { code: 'internal', message, details: {} } },
   })
+}
+
+/** A complete wire face with unused methods failing loudly. */
+function face(overrides: Partial<IApiClient['team']>): IApiClient['team'] {
+  return {
+    list: overrides.list ?? (() => fail('unused list')),
+    sessions: overrides.sessions ?? (() => fail('unused sessions')),
+    history: overrides.history ?? (() => fail('unused history')),
+    newSession: overrides.newSession ?? (() => fail('unused newSession')),
+    chat: overrides.chat ?? (() => fail('unused chat')),
+  }
 }
 
 describe('unwrap', () => {
@@ -33,15 +44,15 @@ describe('createTeamFacade', () => {
 
   it('lists members with an empty payload', async () => {
     const list = vi.fn(() => ok([member]))
-    const facade = createTeamFacade({ list })
+    const facade = createTeamFacade(face({ list }))
     await expect(facade.list()).resolves.toEqual([member])
     expect(list).toHaveBeenCalledWith({})
   })
 
   it('lists sessions and history with the member and topic ids', async () => {
     const sessions = vi.fn(() => ok([{ sessionId: 's1', cwd: '' }]))
-    const history = vi.fn(() => ok([{ role: 'user', text: 'hi' }]))
-    const facade = createTeamFacade({ sessions, history })
+    const history = vi.fn(() => ok([{ role: 'user' as const, text: 'hi' }]))
+    const facade = createTeamFacade(face({ sessions, history }))
     await expect(facade.sessions('m1')).resolves.toEqual([{ sessionId: 's1', cwd: '' }])
     await expect(facade.history('m1', 's1')).resolves.toEqual([{ role: 'user', text: 'hi' }])
     expect(sessions).toHaveBeenCalledWith({ memberId: 'm1' })
@@ -51,7 +62,7 @@ describe('createTeamFacade', () => {
   it('unwraps newSession to the bare id and chat to the settled reply', async () => {
     const newSession = vi.fn(() => ok({ sessionId: 's2' }))
     const chat = vi.fn(() => ok({ text: 'reply', stopReason: 'completed' }))
-    const facade = createTeamFacade({ newSession, chat })
+    const facade = createTeamFacade(face({ newSession, chat }))
     await expect(facade.newSession('m1')).resolves.toBe('s2')
     await expect(facade.chat('m1', 's2', 'hi')).resolves.toEqual({ text: 'reply', stopReason: 'completed' })
     expect(newSession).toHaveBeenCalledWith({ memberId: 'm1' })
@@ -59,13 +70,13 @@ describe('createTeamFacade', () => {
   })
 
   it('propagates an error branch through every method', async () => {
-    const facade = createTeamFacade({
+    const facade = createTeamFacade(face({
       list: () => fail('team unavailable'),
       sessions: () => fail('member offline'),
       history: () => fail('member offline'),
       newSession: () => fail('member offline'),
       chat: () => fail('member offline'),
-    })
+    }))
     await expect(facade.list()).rejects.toThrow('team unavailable')
     await expect(facade.sessions('m1')).rejects.toThrow('member offline')
     await expect(facade.history('m1', 's1')).rejects.toThrow('member offline')

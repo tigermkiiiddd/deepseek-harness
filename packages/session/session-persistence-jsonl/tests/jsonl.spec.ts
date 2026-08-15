@@ -397,6 +397,67 @@ describe('JsonlSessionPersistence: durability and crash semantics', () => {
     await otherCtx.fiber.dispose()
   })
 
+  it('refuses to interleave with a concurrent external writer instead of corrupting the log', async () => {
+    const m = meta('external-writer', '/work')
+    const backend = ctx.sessionPersistence as JsonlSessionPersistence
+    await backend.appendBatch(m, oneTurnLog(), false)
+
+    // A second backend instance over the same root stands in for a second dsh
+    // process sharing this DSH_HOME.
+    const otherCtx = new Context()
+    await otherCtx.plugin(SessionStore)
+    await otherCtx.plugin(JsonlSessionPersistence, { root, compression: 'none' })
+    try {
+      const other = otherCtx.sessionPersistence as JsonlSessionPersistence
+      const secondTurn: SessionEvent[] = [
+        { type: 'turn/start', seq: 6, time: 7, data: { turn: 2 } },
+        { type: 'turn/end', seq: 7, time: 8, data: { turn: 2, reason: { kind: 'completed' } } },
+      ]
+      await other.loadStored(m.id) // resume observes the current tail
+      await other.appendBatch(m, secondTurn, true)
+
+      // The first process still holds its pre-resume tail: appending its stale
+      // sequence numbers would interleave two generations into one unreadable
+      // log, so the write refuses loudly and the file stays valid.
+      await expect(backend.appendBatch(m, secondTurn, true)).rejects.toThrow(/changed on disk/)
+      expect(scanLog(await readFile(rawLogPath(root, '/work', m.id))).events).toHaveLength(8)
+
+      // Re-observing the log re-arms this process's appender.
+      const thirdTurn: SessionEvent[] = [
+        { type: 'turn/start', seq: 8, time: 9, data: { turn: 3 } },
+        { type: 'turn/end', seq: 9, time: 10, data: { turn: 3, reason: { kind: 'completed' } } },
+      ]
+      await backend.loadStored(m.id)
+      await backend.appendBatch(m, thirdTurn, true)
+      expect(scanLog(await readFile(rawLogPath(root, '/work', m.id))).events).toHaveLength(10)
+    } finally {
+      await otherCtx.fiber.dispose()
+    }
+  })
+
+  it('appends unchecked only for a log this backend never observed', async () => {
+    const m = meta('unobserved-log', '/work')
+    await (ctx.sessionPersistence as JsonlSessionPersistence).appendBatch(m, oneTurnLog(), false)
+
+    // The coordinator always loads before writing, so a live writer holds a
+    // fresh tail entry; a bare backend hook without one keeps the historical
+    // unchecked first append.
+    const blindCtx = new Context()
+    await blindCtx.plugin(SessionStore)
+    await blindCtx.plugin(JsonlSessionPersistence, { root, compression: 'none' })
+    try {
+      const blind = blindCtx.sessionPersistence as JsonlSessionPersistence
+      const secondTurn: SessionEvent[] = [
+        { type: 'turn/start', seq: 6, time: 7, data: { turn: 2 } },
+        { type: 'turn/end', seq: 7, time: 8, data: { turn: 2, reason: { kind: 'completed' } } },
+      ]
+      await blind.appendBatch(m, secondTurn, true)
+      expect(scanLog(await readFile(rawLogPath(root, '/work', m.id))).events).toHaveLength(8)
+    } finally {
+      await blindCtx.fiber.dispose()
+    }
+  })
+
   it('binds a full stored prefix to the same revision as a lightweight read', async () => {
     const m = meta('stored-prefix-revision')
     await ctx.sessionPersistence.create(m)
