@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-16-jsonl-append-tail-guard.md
+2026-08-16-jsonl-append-tail-guard.md: c2df3a92dbb776c2221e8cec561902f47eb692e9
+2026-08-16-jsonl-append-tail-guard.zh.md: c8b2707fe18bddbf4b37039389b751f818f63d1e
