@@ -529,12 +529,14 @@ export class SessionManager {
   /**
    * Contract session.create; on success merge into summaries immediately (no
    * wait for the next refresh). A created session is blank by definition
-   * (entity birth precedes the first message).
+   * (entity birth precedes the first message). `cwd: null` rides the wire
+   * as the explicit free-session request; the local summary simply records
+   * no cwd, matching the headerless session the host publishes.
    * @param opts - target workspace or working directory, plus an optional caller-owned id.
    * @returns the create result.
    */
   async create(
-    opts: { workspaceId?: WorkspaceId; cwd?: string; sessionId?: SessionId } = {},
+    opts: { workspaceId?: WorkspaceId; cwd?: string | null; sessionId?: SessionId } = {},
   ): Promise<RpcResult<{ sessionId: SessionId }>> {
     try {
       const shared = opts.sessionId === undefined ? {} : { sessionId: opts.sessionId }
@@ -545,7 +547,7 @@ export class SessionManager {
       if (result.ok) {
         this.recordMutation({ kind: 'upsert', summary: {
           sessionId: result.value.sessionId, updatedAt: Date.now(), running: false, blank: true,
-          ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+          ...(opts.cwd === undefined || opts.cwd === null ? {} : { cwd: opts.cwd }),
           ...(result.value.agentPreset !== undefined ? { agentPreset: result.value.agentPreset } : {}),
         } })
       } else {

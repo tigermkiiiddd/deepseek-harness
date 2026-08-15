@@ -192,6 +192,19 @@ export class WorkspaceRuntime implements IWorkspaces {
   }
 
   /**
+   * Start a free (no fixed directory) session: create it without a Workspace
+   * and open it. The resulting session's tools resolve relative paths against
+   * a runtime `set-cwd` directory instead of an immutable creation cwd, and
+   * it groups under the ungrouped bucket rather than any directory Workspace.
+   */
+  startFreeSession(): void {
+    void this.sessions.create({ cwd: null }).then(
+      (sessionId) => { this.sessions.open(sessionId) },
+      (reason: unknown) => { console.warn('free session create failed:', reason) },
+    )
+  }
+
+  /**
    * Register an existing path as a Workspace.
    * @param input - the Host create payload.
    * @returns the created or idempotently resolved Workspace.

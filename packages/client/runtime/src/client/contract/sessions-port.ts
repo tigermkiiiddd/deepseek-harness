@@ -33,10 +33,13 @@ export interface SessionsPort {
   readonly list: ObservableSnapshot<SessionsPortList>
   /**
    * Create a session on the host.
-   * @param opts - target workspace.
+   * @param opts - an optional target workspace or directory; `cwd: null`
+   *   requests a free (no fixed directory) session whose working directory is
+   *   chosen at runtime, while an omitted cwd lets the host apply its
+   *   deployment default.
    * @returns the new session id.
    */
-  create(opts: { workspaceId: WorkspaceId }): Promise<SessionId>
+  create(opts?: { workspaceId?: WorkspaceId; cwd?: string | null }): Promise<SessionId>
   /**
    * Select a session as current.
    * @param id - session id (must exist in the list store).

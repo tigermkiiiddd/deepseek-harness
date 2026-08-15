@@ -236,6 +236,10 @@ export class FakeApiClient implements IApiClient {
       this.record('agentPreset.read', payload, Promise.resolve(ok({
         agentPreset: payload.agentPreset, trust: 'user' as const, content: '',
       }))),
+    readEntries: (payload: { agentPreset: string }) =>
+      this.record('agentPreset.readEntries', payload, Promise.resolve(ok({
+        agentPreset: payload.agentPreset, trust: 'user' as const, entries: [],
+      }))),
     copy: (payload: { agentPreset: string }) =>
       this.record('agentPreset.copy', payload, Promise.resolve(ok({ agentPreset: payload.agentPreset }))),
     openDocument: (payload: { agentPreset: string }) =>
@@ -275,6 +279,25 @@ export class FakeApiClient implements IApiClient {
     providers: payload => this.record('llm.providers', payload, Promise.resolve(ok({ providers: [] }))),
     models: payload => this.record('llm.models', payload, Promise.resolve(ok({ groups: [], failures: [] }))),
     discoverModels: payload => this.record('llm.discoverModels', payload, Promise.resolve(ok({ models: [] }))),
+  }
+
+  onTeamList: (payload: unknown) => Promise<RpcResponse<{ id: string; title: string; description: string | undefined; status: string }[]>> =
+    () => Promise.resolve(ok([]))
+  onTeamSessions: (payload: unknown) => Promise<RpcResponse<{ sessionId: string; cwd: string }[]>> =
+    () => Promise.resolve(ok([]))
+  onTeamHistory: (payload: unknown) => Promise<RpcResponse<{ role: 'user' | 'assistant'; text: string }[]>> =
+    () => Promise.resolve(ok([]))
+  onTeamNewSession: (payload: unknown) => Promise<RpcResponse<{ sessionId: string }>> =
+    () => Promise.resolve(ok({ sessionId: 'fk-team-session' }))
+  onTeamChat: (payload: unknown) => Promise<RpcResponse<{ text: string; stopReason: string }>> =
+    () => Promise.resolve(ok({ text: 'fk-team-reply', stopReason: 'end_turn' }))
+
+  readonly team: IApiClient['team'] = {
+    list: payload => this.record('team.list', payload, this.onTeamList(payload)),
+    sessions: payload => this.record('team.sessions', payload, this.onTeamSessions(payload)),
+    history: payload => this.record('team.history', payload, this.onTeamHistory(payload)),
+    newSession: payload => this.record('team.newSession', payload, this.onTeamNewSession(payload)),
+    chat: payload => this.record('team.chat', payload, this.onTeamChat(payload)),
   }
 
   /** When true, streams never fire onOpen (misbehaving-carrier material for the handshake timeout guard). */

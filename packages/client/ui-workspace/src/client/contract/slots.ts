@@ -96,6 +96,8 @@ export type WorkspaceBrowserInjected = DirectoryPickingInjected & {
    * Workspace, then the recent Workspace, or clear into the New Session view.
    */
   startSession: (workspaceId?: WorkspaceId) => void
+  /** Start a free (no fixed directory) New Session without a Workspace. */
+  startFreeSession: () => void
   /** Open a real Session. */
   open: (sessionId: SessionId) => void
   /**
@@ -154,6 +156,8 @@ export type WorkspaceBrowserProps =
 export type WorkspacePickerInjected = DirectoryPickingInjected & {
   /** Adopt a picked host directory as a real Workspace before targeting a Session. */
   createWorkspace: (input: { path: string }) => Promise<WorkspaceView>
+  /** Start a free (no fixed directory) session without a Workspace. */
+  startFreeSession: () => void
 }
 
 /**

@@ -21,6 +21,7 @@ import type { DirectoryFlowOwnerProps, WorkspacePickerProps } from './contract/s
 import css from './WorkspacePicker.module.css'
 
 const ADD_WORKSPACE = '::add-workspace'
+const FREE_SESSION = '::free-session'
 
 /** Core flow props: the owner supplies popover control and pick semantics. */
 export interface WorkspacePickFlowProps {
@@ -40,6 +41,8 @@ export interface WorkspacePickFlowProps {
   renderDirectoryFlow: (owner: DirectoryFlowOwnerProps) => ReactNode
   /** A real Workspace was picked or created. */
   onPick: (workspaceId: WorkspaceId) => void
+  /** Start a free (no fixed directory) session without a Workspace. */
+  startFreeSession?: () => void
   /** Close the popover (outside click / Escape / post-pick). */
   onClose: () => void
   /** Only offer the add action, hide existing workspaces. */
@@ -64,6 +67,7 @@ export function WorkspacePickFlow({
   useDirectoryFlow,
   renderDirectoryFlow,
   onPick,
+  startFreeSession,
   onClose,
   addOnly = false,
   side = 'bottom',
@@ -98,11 +102,16 @@ export function WorkspacePickFlow({
   useEffect(() => {
     if (flowOpen && !flowAvailable) setFlowOpen(false)
   }, [flowOpen, flowAvailable])
-  const addEntries: MenuEntry[] = flowAvailable
-    ? [{ id: ADD_WORKSPACE, label: t('menu.addWorkspace'), icon: <IconPlusOutline16 size={16} />, disabled: flowBusy }]
-    : []
-  // With workspaces listed, the add action pins below the scroll region
-  // (divider + always visible); otherwise it IS the menu.
+  const addEntries: MenuEntry[] = [
+    ...(startFreeSession !== undefined
+      ? [{ id: FREE_SESSION, label: t('menu.freeSession'), icon: <IconPlusOutline16 size={16} />, disabled: flowBusy }]
+      : []),
+    ...(flowAvailable
+      ? [{ id: ADD_WORKSPACE, label: t('menu.addWorkspace'), icon: <IconFolderClose16 size={16} />, disabled: flowBusy }]
+      : []),
+  ]
+  // With workspaces listed, the add actions pin below the scroll region
+  // (divider + always visible); otherwise they ARE the menu.
   const pinAdd = !addOnly && workspaces.length > 0
   const items: MenuEntry[] = pinAdd
     ? workspaces.map(workspace => ({
@@ -113,8 +122,9 @@ export function WorkspacePickFlow({
     }))
     : addEntries
   // Nothing listed and nothing to add with (a composition that mounts this
-  // package without any directory-picker): an empty popover would claim a
-  // choice that does not exist, so the anchor gesture shows nothing at all.
+  // package with neither a directory-picker nor a free-session action): an
+  // empty popover would claim a choice that does not exist, so the anchor
+  // gesture shows nothing at all.
   const menuIsEmpty = items.length === 0
 
   const closeModal = (): void => {
@@ -149,7 +159,10 @@ export function WorkspacePickFlow({
   // loading status instead of jumping into a flow the arriving list would have
   // made unnecessary; the add-only surface lists nothing and never waits.
   const listSettled = addOnly || workspaceSnapshot.phase === 'ready'
-  const addIsTheOnlyEntry = !pinAdd && listSettled && addEntries.length === 1
+  // Auto-open the directory flow only when the single add action is "add
+  // workspace" — a lone free-session entry must stay a clickable menu choice,
+  // never silently open a directory picker the user did not ask for.
+  const addIsTheOnlyEntry = !pinAdd && listSettled && addEntries.length === 1 && addEntries[0]?.id === ADD_WORKSPACE
   // `flowBusy` gates this exactly as it disables the equivalent menu entry: a
   // pick still being adopted owns the surface until it settles.
   useEffect(() => {
@@ -173,6 +186,11 @@ export function WorkspacePickFlow({
   }
 
   const handleSelect = (id: string): void => {
+    if (id === FREE_SESSION) {
+      startFreeSession?.()
+      onClose()
+      return
+    }
     if (id === ADD_WORKSPACE) {
       openDirectoryFlow()
       return
@@ -232,6 +250,7 @@ export function WorkspacePicker({
   createWorkspace,
   useDirectoryFlow,
   renderSlot,
+  startFreeSession,
   t,
 }: WorkspacePickerProps) {
   return (
@@ -244,6 +263,7 @@ export function WorkspacePicker({
       useDirectoryFlow={useDirectoryFlow}
       renderDirectoryFlow={owner => renderSlot('conversation.hero.workspace.directoryFlow', owner)}
       selectedId={selectedId}
+      startFreeSession={startFreeSession}
       onPick={onPick}
       onClose={onClose}
     />

@@ -746,6 +746,7 @@ export function WorkspaceBrowser({
   useStore,
   actions,
   startSession,
+  startFreeSession,
   open,
   renameSession,
   forkSession,
@@ -1077,6 +1078,10 @@ export function WorkspaceBrowser({
           renderDirectoryFlow={owner => renderSlot('sidebar.workspaces.directoryFlow', owner)}
           addOnly
           side="right"
+          startFreeSession={() => {
+            setWsPickerOpen(false)
+            startFreeSession()
+          }}
           onPick={(workspaceId) => {
             setWsPickerOpen(false)
             startSession(workspaceId)

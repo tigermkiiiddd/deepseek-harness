@@ -1543,6 +1543,32 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
     ['my-agent', { trust: 'user', content: "- id: tool-read\n  name: '@deepseek-ai/dsh-tool-read'\n" }],
   ])
   let fixtureDefaultPreset = 'standard'
+
+  /**
+   * Minimal YAML list parser for the fixture's preset compositions.
+   * Only handles the flat `- id: x\n  name: y\n  disabled: true` shape used here.
+   */
+  function parseFixtureComposition(content: string): { id: string; name: string; disabled: boolean }[] {
+    const entries: { id: string; name: string; disabled: boolean }[] = []
+    const blocks = content.split(/^-\s+/m).slice(1)
+    for (const block of blocks) {
+      const lines = block.split('\n')
+      const first = lines[0]?.trim() ?? ''
+      const entry: { id: string; name: string; disabled: boolean } = { id: '', name: '', disabled: false }
+      if (first.startsWith('id:')) entry.id = first.slice(3).trim()
+      else if (first.startsWith('name:')) entry.name = first.slice(5).trim().replace(/^['"]|['"]$/g, '')
+      else entry.id = first
+      for (const raw of lines.slice(1)) {
+        const line = raw.trim()
+        if (line.startsWith('id:')) entry.id = line.slice(3).trim()
+        else if (line.startsWith('name:')) entry.name = line.slice(5).trim().replace(/^['"]|['"]$/g, '')
+        else if (line.startsWith('disabled:')) entry.disabled = line.slice(9).trim() === 'true'
+      }
+      entries.push(entry)
+    }
+    return entries
+  }
+
   const nextTurn = new Map<SessionId, number>([[sid('fx-alpha'), 75]])
   let nextSession = 1
   let nextRpc = 1
@@ -2176,6 +2202,9 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
     replays.set(id, { timer: setTimeout(tick, 80), finish })
   }
 
+  /** Team fixture: a monotonic topic counter makes every newSession id unique. */
+  let fixtureTeamSeq = 0
+
   const api: ApiProxy = {
     sessions: {
       list: request => ok(request, { items: [...sessions].sort((a, b) => b.updatedAt - a.updatedAt) }),
@@ -2229,7 +2258,11 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
             details: { workspaceId: request.payload.workspaceId },
           })
         }
-        const cwd = workspace?.path ?? request.payload.cwd ?? '/tmp/fixture'
+        // Mirrors the host: `cwd: null` is the explicit free-session request
+        // (no recorded directory); an omitted cwd falls back to the fixture default.
+        const cwd = workspace?.path ?? (request.payload.cwd === null
+          ? undefined
+          : request.payload.cwd ?? '/tmp/fixture')
         const requestedId = request.payload.sessionId
         const attachWorkspace = (sessionId: SessionId): void => {
           /* v8 ignore next -- callers enter only when a target Workspace exists. */
@@ -2253,7 +2286,11 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
               return err(request, {
                 code: 'session-conflict',
                 message: `session ${requestedId} already uses ${existing.cwd ?? 'no cwd'}`,
-                details: { sessionId: requestedId, requestedCwd: cwd, ...existing.cwd === undefined ? {} : { existingCwd: existing.cwd } },
+                details: {
+                  sessionId: requestedId,
+                  ...cwd === undefined ? {} : { requestedCwd: cwd },
+                  ...existing.cwd === undefined ? {} : { existingCwd: existing.cwd },
+                },
               })
             }
             if (workspace !== undefined && !workspace.sessionIds.includes(requestedId)) {
@@ -2264,14 +2301,18 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
           }
         }
         const created: SessionSummary = {
-          sessionId: requestedId ?? sid(`fx-${nextSession++}`), updatedAt: Date.now(), running: false, blank: true, cwd,
+          sessionId: requestedId ?? sid(`fx-${nextSession++}`), updatedAt: Date.now(), running: false, blank: true,
+          ...cwd === undefined ? {} : { cwd },
         }
         sessions.push(created)
         modelSelections.set(created.sessionId, { provider: 'deepseek-official', model: 'deepseek-v4-flash' })
         attachedSessions += 1
         const emitSession = (): void => {
           // Mirrors the host: the frame fires at creation, so blank is constantly true.
-          emitHost({ type: 'host/session-added', sessionId: created.sessionId, blank: true, cwd })
+          emitHost({
+            type: 'host/session-added', sessionId: created.sessionId, blank: true,
+            ...cwd === undefined ? {} : { cwd },
+          })
         }
         if (workspace !== undefined && options.failWorkspaceAttach) {
           emitSession()
@@ -2727,6 +2768,22 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
           content: preset.content,
         })
       },
+      readEntries: (request) => {
+        const { agentPreset } = request.payload
+        const preset = fixturePresets.get(agentPreset)
+        if (preset === undefined) {
+          return err(request, {
+            code: 'agent-preset-not-found',
+            message: `unknown agent preset "${agentPreset}"`,
+            details: { agentPreset, available: [...fixturePresets.keys()] },
+          })
+        }
+        return ok(request, {
+          agentPreset,
+          trust: preset.trust,
+          entries: parseFixtureComposition(preset.content),
+        })
+      },
       copy: (request) => {
         const { from, agentPreset } = request.payload
         const source = fixturePresets.get(from)
@@ -2962,6 +3019,28 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
         models: fixtureModelGroups().flatMap(group => group.models.map(model => ({ id: model.id, name: model.name }))),
       }),
     },
+    team: {
+      list: request => ok(request, [
+        { id: 'fx-writer', title: 'Writer', description: 'fixture member', status: 'idle' },
+        { id: 'fx-reviewer', title: 'Reviewer', description: undefined, status: 'idle' },
+      ]),
+      sessions: request => ok(request, request.payload.memberId === 'fx-writer'
+        ? [{ sessionId: 'fx-writer-topic-1', cwd: '' }]
+        : []),
+      history: request => ok(request, request.payload.sessionId === 'fx-writer-topic-1'
+        ? [
+          { role: 'user', text: '开场' },
+          { role: 'assistant', text: '收到，我在。' },
+        ]
+        : []),
+      newSession: request => ok(request, {
+        sessionId: `${request.payload.memberId}-topic-${++fixtureTeamSeq}`,
+      }),
+      chat: request => ok(request, {
+        text: `(fixture reply to ${request.payload.text})`,
+        stopReason: 'completed',
+      }),
+    },
     respond(message: ClientResponse): Promise<RpcReceipt> {
       // Same routing discipline as the host: rpcId first, then the payload's
       // audit correlation; a settled or unknown id is not-pending.
@@ -3109,6 +3188,7 @@ export class FixtureApiClient extends AbstractApiClient {
       case 'agentPreset.list': return this.api.agentPresets.list(request)
       case 'agentPreset.select': return this.api.agentPresets.select(request)
       case 'agentPreset.read': return this.api.agentPresets.read(request)
+      case 'agentPreset.readEntries': return this.api.agentPresets.readEntries(request)
       case 'agentPreset.copy': return this.api.agentPresets.copy(request)
       case 'agentPreset.openDocument': return this.api.agentPresets.openDocument(request, new AbortController().signal)
       case 'agentPreset.remove': return this.api.agentPresets.remove(request)
@@ -3129,6 +3209,11 @@ export class FixtureApiClient extends AbstractApiClient {
       case 'llm.providers': return this.api.llm.providers(request)
       case 'llm.models': return this.api.llm.models(request)
       case 'llm.discoverModels': return this.api.llm.discoverModels(request, signal)
+      case 'team.list': return this.api.team.list(request)
+      case 'team.sessions': return this.api.team.sessions(request)
+      case 'team.history': return this.api.team.history(request)
+      case 'team.newSession': return this.api.team.newSession(request)
+      case 'team.chat': return this.api.team.chat(request)
     }
   }
 

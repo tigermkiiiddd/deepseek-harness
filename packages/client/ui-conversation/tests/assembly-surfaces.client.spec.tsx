@@ -155,6 +155,39 @@ describe('resident composer', () => {
     await runtime.dispose()
   })
 
+  it('keeps the composer live for a free session (no directory by design)', async () => {
+    const runtime = await SlotTestRuntime.create()
+    runtime.provide('connection', { api: { settings: {} }, isLoopback: false })
+    // The plugin injects both; these specs exercise no settings path.
+    runtime.provide('remote', { $on: () => () => {} })
+    runtime.provide('settingsScope', { bind: () => stubSettingsScope().scope } as never)
+    runtime.provide('layout', { openDetails: vi.fn(), closeDetails: vi.fn() })
+    const locale = new LocaleRuntime(runtime.ctx)
+    runtime.provide('locale', locale)
+    runtime.slots.installLocale(locale)
+    await runtime.sessions.add({
+      id: SID,
+      // A free session: created without a directory, the summary carries no cwd.
+      summary: { title: 'S', displayTitle: 'S', blank: true },
+      snapshot: { blank: true, composerPhase: 'blank' },
+      session: {
+        loadOlder: vi.fn<ISession['loadOlder']>(),
+        prompt: vi.fn<ISession['prompt']>(async () => ({ ok: true, value: { accepted: true } })),
+      },
+    })
+    await runtime.root.declare(LAYOUT_CHILDREN, AppRoot)
+    await runtime.mount({ inject: [...inject], apply })
+    const view = runtime.renderRoot()
+
+    const textarea = view.container.querySelector('textarea')!
+    // The composer accepts input: the model can be asked to pick a directory
+    // itself (set_cwd); the chip names the state instead of demanding a pick.
+    expect(textarea.disabled).toBe(false)
+    expect(textarea.readOnly).toBe(false)
+    expect(view.getByText('自由会话（无固定目录）')).toBeTruthy()
+    await runtime.dispose()
+  })
+
   it('the textarea survives the blank→active conversion as the same DOM node', async () => {
     const runtime = await bench({ blank: true })
     await runtime.workspaces.update((draft) => {

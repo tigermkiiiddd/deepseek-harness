@@ -29,6 +29,12 @@ export interface IWorkspaces {
    */
   startSession(workspaceId?: WorkspaceId): void
   /**
+   * Start a free (no fixed directory) session: create it without a Workspace
+   * and open it. No cwd is pinned, so relative paths default to a runtime
+   * `set-cwd` directory and the session groups under the ungrouped bucket.
+   */
+  startFreeSession(): void
+  /**
    * Register an existing path as a Workspace.
    * @param input - the Host create payload.
    * @returns the created or idempotently resolved Workspace.

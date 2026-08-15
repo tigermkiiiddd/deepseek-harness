@@ -183,6 +183,10 @@ export class FakeApiClient implements IApiClient {
       this.record('agentPreset.read', payload, Promise.resolve(ok({
         agentPreset: payload.agentPreset, trust: 'user' as const, content: '',
       }))),
+    readEntries: (payload: { agentPreset: string }) =>
+      this.record('agentPreset.readEntries', payload, Promise.resolve(ok({
+        agentPreset: payload.agentPreset, trust: 'user' as const, entries: [],
+      }))),
     copy: (payload: { agentPreset: string }) =>
       this.record('agentPreset.copy', payload, Promise.resolve(ok({ agentPreset: payload.agentPreset }))),
     openDocument: (payload: { agentPreset: string }) =>
@@ -222,6 +226,14 @@ export class FakeApiClient implements IApiClient {
     providers: payload => this.record('llm.providers', payload, Promise.resolve(ok({ providers: [] }))),
     models: payload => this.record('llm.models', payload, Promise.resolve(ok({ groups: [], failures: [] }))),
     discoverModels: payload => this.record('llm.discoverModels', payload, Promise.resolve(ok({ models: [] }))),
+  }
+
+  readonly team: IApiClient['team'] = {
+    list: payload => this.record('team.list', payload, Promise.resolve(ok([]))),
+    sessions: payload => this.record('team.sessions', payload, Promise.resolve(ok([]))),
+    history: payload => this.record('team.history', payload, Promise.resolve(ok([]))),
+    newSession: payload => this.record('team.newSession', payload, Promise.resolve(ok({ sessionId: 'fk-team-session' }))),
+    chat: payload => this.record('team.chat', payload, Promise.resolve(ok({ text: 'fk-team-reply', stopReason: 'end_turn' }))),
   }
 
   /** When true, streams never fire onOpen (misbehaving-carrier material for the handshake timeout guard). */

@@ -71,6 +71,14 @@ export class TestWorkspaces implements IWorkspaces {
   }
 
   /**
+   * Free-session flow (recorded; default no-op).
+   */
+  startFreeSession(): void {
+    this.calls.push({ method: 'startFreeSession', args: [] })
+    this.stubs.get('startFreeSession')?.()
+  }
+
+  /**
    * Create a Workspace (recorded). The default echoes a view derived from
    * the input; stub for failure or list-coupled flows.
    * @param input - the Host create payload.

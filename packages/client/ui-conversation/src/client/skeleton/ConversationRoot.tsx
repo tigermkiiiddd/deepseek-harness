@@ -85,17 +85,21 @@ export function ConversationRoot({
   //   1. a just-picked workspace (pending) → its title;
   //   2. cold start, no session yet → placeholder ("Choose workspace");
   //   3. the blank session's workspace is in the list → its title;
-  //   4. list still loading → cwd folder name bridges so the title does not
+  //   4. a free session (created without a directory, cwd absent) → its own
+  //      label; having no directory is the design, not a missing choice;
+  //   5. list still loading → cwd folder name bridges so the title does not
   //      flash on refresh (empty cwd → placeholder);
-  //   5. list ready but no owning workspace (deleted from the sidebar) →
+  //   6. list ready but no owning workspace (deleted from the sidebar) →
   //      placeholder, never the deleted folder's name via cwd.
   const chipTitle = pendingWorkspace?.title
     ?? (sessionId === undefined
       ? undefined
       : sessionWorkspace?.title
-        ?? (workspaces.phase === 'ready' || cwd === undefined || cwd === ''
-          ? undefined
-          : workspaceLabel(cwd)))
+        ?? (cwd === undefined
+          ? t('hero.freeSession')
+          : workspaces.phase === 'ready' || cwd === ''
+            ? undefined
+            : workspaceLabel(cwd)))
 
   const heroWorkspaceRow = (
     <div className={css.heroWorkspaceRow}>
@@ -125,9 +129,12 @@ export function ConversationRoot({
 
   // The placeholder chip ("Choose workspace") and the Workspace-trigger input travel
   // together: no workspace picked yet (cold start, no session at all), or a
-  // blank session whose workspace vanished (deleted from the sidebar). The
-  // bar is ONE session-maybe slot rendered unconditionally — inert is a prop,
-  // not a different tree, so the textarea DOM survives the transition.
+  // blank session whose workspace vanished (deleted from the sidebar). A free
+  // session's missing directory is by design — its chip carries the
+  // free-session label and its composer stays live, so the model can be asked
+  // to pick a directory itself (set_cwd). The bar is ONE session-maybe slot
+  // rendered unconditionally — inert is a prop, not a different tree, so the
+  // textarea DOM survives the transition.
   const inert = sessionId === undefined || (hero && chipTitle === undefined)
   // A raised block is the same inert posture with the blocker's own reason:
   // one disabled textarea, never a second tree. The no-workspace state wins
