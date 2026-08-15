@@ -144,6 +144,18 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
   private compression: JsonlCompression
   private coordinator: PersistenceCoordinator<JsonlTornMarker>
   private rootEncodingCheck: Promise<void> | undefined
+  /**
+   * The byte offset where this process last left each log, keyed by path:
+   * recorded when the file is read, materialized, repaired, or appended. An
+   * append that finds a different on-disk size means a concurrent external
+   * writer (e.g. a second dsh process sharing this DSH_HOME) touched the log
+   * after this process's last observation; appending anyway would interleave
+   * two generations of sequence numbers into one unreadable log, so the
+   * append refuses loudly instead. A path absent from the map (never observed
+   * by this backend instance) appends unchecked — the coordinator always
+   * loads before writing, so a live writer holds a fresh entry.
+   */
+  private readonly expectedTails = new Map<string, number>()
 
   constructor(ctx: Context, public config: Config) {
     super(ctx)
@@ -341,6 +353,7 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
     signal?.throwIfAborted()
     await this.assertStoredIdentity(path, prefix.meta, expectedId, signal)
     signal?.throwIfAborted()
+    this.expectedTails.set(path, buffer.byteLength)
     return { ...prefix, revision }
   }
 
@@ -523,6 +536,7 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
     } else {
       await this.materializePosix(project, dir, finalPath, meta.id, content)
     }
+    this.expectedTails.set(finalPath, Buffer.byteLength(content))
   }
 
   /* v8 ignore start -- Windows uses the Win32 durable-publish path; POSIX coverage exercises this peer. */
@@ -644,9 +658,12 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
   /* v8 ignore stop */
 
   /**
-   * Append and fsync event lines. On a partial write or sync failure, restore the
-   * previous size before rethrowing because the unchanged cursor will retry the
-   * batch; leaving partial bytes would create duplicate sequence numbers.
+   * Append and fsync event lines. Refuses before writing when the on-disk size
+   * disagrees with {@link expectedTails} — a concurrent external writer must
+   * not interleave its sequence numbers with this process's. On a partial
+   * write or sync failure, restore the previous size before rethrowing because
+   * the unchanged cursor will retry the batch; leaving partial bytes would
+   * create duplicate sequence numbers.
    */
   private async appendLines(meta: SessionHeader, events: readonly SessionEvent[]): Promise<void> {
     const content = await this.encodeEventBatch(events)
@@ -661,9 +678,19 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
 
     try {
       const { size: before } = await handle.stat()
+      const expectedTail = this.expectedTails.get(path)
+      if (expectedTail !== undefined && before !== expectedTail) {
+        throw new Error(
+          `refusing to append to "${path}": the log changed on disk since this process `
+          + `last observed it (expected ${expectedTail} bytes, found ${before}); a concurrent `
+          + 'external writer (e.g. a second dsh process sharing this DSH_HOME) would '
+          + 'interleave sequence numbers into an unreadable log',
+        )
+      }
       try {
         await handle.writeFile(content)
         await handle.sync()
+        this.expectedTails.set(path, before + Buffer.byteLength(content))
       } catch (error) {
         try {
           await closeAppendHandle()
@@ -698,6 +725,7 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
     } finally {
       await handle.close()
     }
+    this.expectedTails.set(path, offset)
   }
 
   // --- discovery helpers ---
