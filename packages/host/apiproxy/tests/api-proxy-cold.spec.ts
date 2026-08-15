@@ -157,6 +157,28 @@ describe('sessions.list cold merge', () => {
     expect(readFrom).not.toHaveBeenCalled()
   })
 
+  it('lists a cold free (headerless) session instead of dropping it', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(UserQuestionService)
+    // A free session persists with no header.cwd by design; the cold merge
+    // must not treat the missing cwd as an invalid artifact.
+    const freeMeta: SessionHeader = { version: 0, id: sid('cold-free'), createdAt: 100 }
+    ctx.provide('sessionPersistence', {
+      list: () => Promise.resolve([freeMeta]),
+      locate: () => undefined,
+      readFrom: vi.fn(),
+    } as never)
+    const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
+
+    const response = await api.sessions.list(request({}))
+    if (!response.result.ok) throw new Error('unreachable')
+    expect(response.result.value.items).toEqual([
+      expect.objectContaining({ sessionId: freeMeta.id, updatedAt: 100 }),
+    ])
+    expect(response.result.value.items[0]).not.toHaveProperty('cwd')
+  })
+
   it('replaces a probed cold row with the live Session that attached during the read', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)
@@ -797,5 +819,46 @@ describe('sessions.prompt synchronous rejection', () => {
         details: { reason: 'use subagent delivery for this child session' },
       })
     }
+  })
+})
+
+describe('session.create free (dynamic-cwd) identity matching', () => {
+  it('resumes a persisted free session for cwd:null and still conflicts a fixed one', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(UserQuestionService)
+    // A stored free session: the header simply never recorded a cwd.
+    const freeMeta: SessionHeader = { version: 0, id: sid('session-stored-free'), createdAt: 100 }
+    const fixedMeta = header('session-stored-fixed', 200)
+    ctx.provide('sessionPersistence', {
+      list: () => Promise.resolve([freeMeta, fixedMeta]),
+      inspect: (id: SessionId) => Promise.resolve({
+        meta: id === freeMeta.id ? freeMeta : fixedMeta,
+        events: [] as SessionEvent[],
+      }),
+      locate: () => undefined,
+    } as never)
+    const freeSession = ctx.sessions.create(freeMeta.id)
+    const resumedAgent = { id: freeSession.id, session: freeSession, status: 'idle', ctx } as Agent
+    const resume = vi.spyOn(ctx.agents, 'resume')
+      .mockResolvedValue({ agent: resumedAgent } as never)
+    const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
+
+    // cwd:null matches the headerless stored cwd: the free session resumes.
+    const free = await api.sessions.create(request({ sessionId: freeMeta.id, cwd: null }))
+    expect(free.result.ok).toBe(true)
+    expect(resume).toHaveBeenCalledTimes(1)
+
+    // cwd:null against a fixed stored session is still a cwd conflict,
+    // answered before any resume and carrying no requestedCwd.
+    const conflict = await api.sessions.create(request({ sessionId: fixedMeta.id, cwd: null }))
+    expect(conflict.result).toMatchObject({
+      ok: false,
+      error: { code: 'session-conflict', details: { sessionId: fixedMeta.id, existingCwd: '/proj' } },
+    })
+    if (conflict.result.ok) throw new Error('unreachable')
+    expect(conflict.result.error.details).not.toHaveProperty('requestedCwd')
+    expect(resume).toHaveBeenCalledTimes(1)
   })
 })

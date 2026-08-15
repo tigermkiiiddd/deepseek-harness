@@ -43,7 +43,8 @@ import {
 import { skillListValueSchema } from '../api/skills.schema.ts'
 import {
   agentPresetCopyValueSchema, agentPresetListValueSchema, agentPresetOpenDocumentValueSchema,
-  agentPresetReadValueSchema, agentPresetRemoveValueSchema, agentPresetSelectValueSchema,
+  agentPresetReadEntriesValueSchema, agentPresetReadValueSchema, agentPresetRemoveValueSchema,
+  agentPresetSelectValueSchema,
 } from '../api/agent-presets.schema.ts'
 import {
   goalCreateValueSchema,
@@ -61,6 +62,10 @@ import {
   credentialsDescribeValueSchema, credentialsSetValueSchema, credentialsUnsetValueSchema,
 } from '../api/credentials.schema.ts'
 import { llmDiscoverModelsValueSchema, llmModelsValueSchema, llmProvidersValueSchema } from '../api/llm.schema.ts'
+import {
+  teamChatValueSchema, teamHistoryValueSchema, teamListValueSchema,
+  teamNewSessionValueSchema, teamSessionsValueSchema,
+} from '../api/team.schema.ts'
 import {
   subagentHistoryValueSchema,
   subagentInterruptValueSchema,
@@ -128,6 +133,7 @@ export interface IApiClient {
     list(payload: RequestPayload<'agentPreset.list'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'agentPreset.list'>>>
     select(payload: RequestPayload<'agentPreset.select'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'agentPreset.select'>>>
     read(payload: RequestPayload<'agentPreset.read'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'agentPreset.read'>>>
+    readEntries(payload: RequestPayload<'agentPreset.readEntries'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'agentPreset.readEntries'>>>
     copy(payload: RequestPayload<'agentPreset.copy'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'agentPreset.copy'>>>
     openDocument(payload: RequestPayload<'agentPreset.openDocument'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'agentPreset.openDocument'>>>
     remove(payload: RequestPayload<'agentPreset.remove'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'agentPreset.remove'>>>
@@ -160,6 +166,13 @@ export interface IApiClient {
     providers(payload: RequestPayload<'llm.providers'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'llm.providers'>>>
     models(payload: RequestPayload<'llm.models'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'llm.models'>>>
     discoverModels(payload: RequestPayload<'llm.discoverModels'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'llm.discoverModels'>>>
+  }
+  team: {
+    list(payload: RequestPayload<'team.list'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.list'>>>
+    sessions(payload: RequestPayload<'team.sessions'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.sessions'>>>
+    history(payload: RequestPayload<'team.history'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.history'>>>
+    newSession(payload: RequestPayload<'team.newSession'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.newSession'>>>
+    chat(payload: RequestPayload<'team.chat'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.chat'>>>
   }
   /** client-response passthrough (rpcId is a backfill of the server-request's id — never minted here). */
   respond(message: ClientResponse, signal?: AbortSignal): Promise<RpcReceipt>
@@ -202,6 +215,7 @@ const UNARY_VALUE_SCHEMAS: { [K in keyof RpcMethodMap]: z.ZodType<Wire<ResponseV
   'agentPreset.list': agentPresetListValueSchema,
   'agentPreset.select': agentPresetSelectValueSchema,
   'agentPreset.read': agentPresetReadValueSchema,
+  'agentPreset.readEntries': agentPresetReadEntriesValueSchema,
   'agentPreset.copy': agentPresetCopyValueSchema,
   'agentPreset.openDocument': agentPresetOpenDocumentValueSchema,
   'agentPreset.remove': agentPresetRemoveValueSchema,
@@ -222,6 +236,11 @@ const UNARY_VALUE_SCHEMAS: { [K in keyof RpcMethodMap]: z.ZodType<Wire<ResponseV
   'llm.providers': llmProvidersValueSchema,
   'llm.models': llmModelsValueSchema,
   'llm.discoverModels': llmDiscoverModelsValueSchema,
+  'team.list': teamListValueSchema,
+  'team.sessions': teamSessionsValueSchema,
+  'team.history': teamHistoryValueSchema,
+  'team.newSession': teamNewSessionValueSchema,
+  'team.chat': teamChatValueSchema,
 }
 
 /** Default timeout for bounded unary calls (rpc-compare 2026-07-19: a hung host must not leave callers pending forever). */
@@ -466,6 +485,7 @@ export abstract class AbstractApiClient implements IApiClient {
     list: (payload, signal) => this.callUnary('agentPreset.list', payload, signal),
     select: (payload, signal) => this.callUnary('agentPreset.select', payload, signal),
     read: (payload, signal) => this.callUnary('agentPreset.read', payload, signal),
+    readEntries: (payload, signal) => this.callUnary('agentPreset.readEntries', payload, signal),
     copy: (payload, signal) => this.callUnary('agentPreset.copy', payload, signal),
     openDocument: (payload, signal) => this.callUnary('agentPreset.openDocument', payload, signal),
     remove: (payload, signal) => this.callUnary('agentPreset.remove', payload, signal),
@@ -498,6 +518,14 @@ export abstract class AbstractApiClient implements IApiClient {
     providers: (payload, signal) => this.callUnary('llm.providers', payload, signal),
     models: (payload, signal) => this.callUnary('llm.models', payload, signal),
     discoverModels: (payload, signal) => this.callUnary('llm.discoverModels', payload, signal),
+  }
+
+  readonly team: IApiClient['team'] = {
+    list: (payload, signal) => this.callUnary('team.list', payload, signal),
+    sessions: (payload, signal) => this.callUnary('team.sessions', payload, signal),
+    history: (payload, signal) => this.callUnary('team.history', payload, signal),
+    newSession: (payload, signal) => this.callUnary('team.newSession', payload, signal),
+    chat: (payload, signal) => this.callUnary('team.chat', payload, signal),
   }
 
   readonly events: IApiClient['events'] = {

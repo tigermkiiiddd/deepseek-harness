@@ -55,6 +55,22 @@ export const agentPresetReadValueSchema = z.object({
   description: z.string().optional(),
 }) satisfies z.ZodType<Wire<ResponseValue<'agentPreset.read'>>>
 
+/** agentPreset.readEntries request payload. */
+export const agentPresetReadEntriesRequestSchema = z.object({
+  agentPreset: z.string().min(1),
+}) satisfies z.ZodType<Wire<RequestPayload<'agentPreset.readEntries'>>>
+
+/** agentPreset.readEntries response value. */
+export const agentPresetReadEntriesValueSchema = z.object({
+  agentPreset: z.string(),
+  trust: z.union([z.literal('system'), z.literal('user')]),
+  entries: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    disabled: z.boolean(),
+  })),
+}) satisfies z.ZodType<Wire<ResponseValue<'agentPreset.readEntries'>>>
+
 /** agentPreset.copy request payload. */
 export const agentPresetCopyRequestSchema = z.object({
   from: z.string().min(1),

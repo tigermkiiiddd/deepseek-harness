@@ -207,6 +207,10 @@ function fakeApi(overrides: Partial<{ muxFrames: MuxFrame[]; hostFrames: HostFra
         const value = { agentPreset: request.payload.agentPreset, trust: 'user' as const, content: '' }
         return Promise.resolve({ rpcId: request.rpcId, result: { ok: true as const, value } })
       },
+      readEntries(request: RpcRequest<{ agentPreset: string }>) {
+        const value = { agentPreset: request.payload.agentPreset, trust: 'user' as const, entries: [] as const }
+        return Promise.resolve({ rpcId: request.rpcId, result: { ok: true as const, value } })
+      },
       copy(request: RpcRequest<{ from: string; agentPreset: string }>) {
         const value = { agentPreset: request.payload.agentPreset }
         return Promise.resolve({ rpcId: request.rpcId, result: { ok: true as const, value } })
@@ -280,6 +284,23 @@ function fakeApi(overrides: Partial<{ muxFrames: MuxFrame[]; hostFrames: HostFra
       },
       async discoverModels(request) {
         return { rpcId: request.rpcId, result: { ok: true, value: { models: [] } } }
+      },
+    },
+    team: {
+      async list(request) {
+        return { rpcId: request.rpcId, result: { ok: true, value: [] } }
+      },
+      async sessions(request) {
+        return { rpcId: request.rpcId, result: { ok: true, value: [] } }
+      },
+      async history(request) {
+        return { rpcId: request.rpcId, result: { ok: true, value: [] } }
+      },
+      async newSession(request) {
+        return { rpcId: request.rpcId, result: { ok: true, value: { sessionId: 's-team' } } }
+      },
+      async chat(request) {
+        return { rpcId: request.rpcId, result: { ok: true, value: { text: 'stub', stopReason: 'end_turn' } } }
       },
     },
     events: {

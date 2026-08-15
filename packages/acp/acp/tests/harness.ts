@@ -14,6 +14,7 @@ import {
 import { type GenerateOptions, LlmAdapter, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
+import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import * as AcpPlugin from '../src/index.ts'
 import type { AcpConfig } from '../src/index.ts'
 
@@ -108,17 +109,36 @@ export interface BridgeHarness {
 
 type AcpConfigOverrides = { [K in keyof AcpConfig]?: AcpConfig[K] | undefined }
 
+/** Scripted session-persistence seam for list/load coverage. */
+export interface PersistenceFixture {
+  headers: { id: string; cwd: string }[]
+  eventsBySession: Record<string, SessionEvent[]>
+}
+
 /** Build the bridge and a connected SDK client over cross-wired byte streams. */
 export async function makeBridgeHarness(options: {
   script?: (StreamChunk[] | 'hang')[]
   config?: AcpConfigOverrides
   persona?: string
+  persistence?: PersistenceFixture
 } = {}): Promise<BridgeHarness> {
   const adapter = new MockAdapter(options.script ?? [])
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: options.persona ?? '' } })
   const loopFiber = await ctx.plugin(AgentLoop, { agents: [] })
   ctx.llm.registerAdapter(['mock'], adapter)
+
+  if (options.persistence !== undefined) {
+    const fixture = options.persistence
+    ctx.provide('sessionPersistence', {
+      list: async () => fixture.headers,
+      load: async (id: SessionId) => {
+        const events = fixture.eventsBySession[String(id)]
+        if (events === undefined) throw new Error(`missing session ${String(id)}`)
+        return { events }
+      },
+    })
+  }
 
   const agentToClient = new TransformStream<Uint8Array, Uint8Array>()
   const clientToAgent = new TransformStream<Uint8Array, Uint8Array>()

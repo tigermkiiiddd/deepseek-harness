@@ -87,6 +87,20 @@ export interface AgentPresetsApi {
   }>>
 
   /**
+   * Read one preset's plugin entry list, flattened and with effective disabled
+   * states, for the read-only entry viewer.
+   *
+   * Privileged: like {@link read}, a composition names the plugins a session
+   * runs, so exposing which entries are active is reconnaissance.
+   */
+  readEntries(request: RpcRequest<{ agentPreset: string }>):
+  Promise<RpcResponse<{
+    agentPreset: string
+    trust: 'system' | 'user'
+    entries: readonly { id: string; name: string; disabled: boolean }[]
+  }>>
+
+  /**
    * Create a locally authored preset by copying an existing one whole.
    *
    * The only authoring write. No composition text and no path crosses the

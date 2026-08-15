@@ -58,6 +58,7 @@ import {
   AgentSideConnection,
   ndJsonStream,
   PROTOCOL_VERSION,
+  RequestError,
   type Agent,
   type CancelNotification,
   type AuthenticateRequest,
@@ -104,9 +105,43 @@ function makeAgent(conn: AgentSideConnection): Agent {
     initialize(_params: InitializeRequest): Promise<InitializeResponse> {
       return Promise.resolve({
         protocolVersion: PROTOCOL_VERSION,
-        agentCapabilities: { loadSession: false, promptCapabilities: { image: false, audio: false, embeddedContext: false } },
+        agentCapabilities: {
+          loadSession: true,
+          sessionCapabilities: { list: {} },
+          promptCapabilities: { image: false, audio: false, embeddedContext: false },
+        },
         authMethods: [],
       })
+    },
+    async listSessions(): Promise<{ sessions: { sessionId: string; cwd: string }[] }> {
+      // The mock's persisted topic set: the fixed session id plus any extras.
+      const extras = (process.env.MOCK_EXTRA_SESSIONS ?? '').split(',').filter(Boolean)
+      const ids = [process.env.MOCK_SESSION_ID ?? 'mock-session', ...extras]
+      return {
+        sessions: ids.map(sessionId => ({
+          sessionId,
+          cwd: process.env.MOCK_SESSION_CWD ?? process.cwd(),
+        })),
+      }
+    },
+    async loadSession(params: { sessionId: string }): Promise<{}> {
+      const extras = (process.env.MOCK_EXTRA_SESSIONS ?? '').split(',').filter(Boolean)
+      const known = [process.env.MOCK_SESSION_ID ?? 'mock-session', ...extras]
+      if (!known.includes(params.sessionId)) {
+        throw new RequestError(-32602, `Invalid params: unknown session: ${params.sessionId}`, undefined)
+      }
+      // Replay a canned history like a real server's loadSession contract.
+      if (process.env.MOCK_HISTORY === '1') {
+        await conn.sessionUpdate({
+          sessionId: params.sessionId,
+          update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'earlier question' } },
+        })
+        await conn.sessionUpdate({
+          sessionId: params.sessionId,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'earlier answer' } },
+        })
+      }
+      return {}
     },
     async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
       sessionCwd = params.cwd

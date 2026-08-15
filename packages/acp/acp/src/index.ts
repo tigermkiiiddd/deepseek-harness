@@ -25,16 +25,21 @@ import {
   type CancelNotification,
   type InitializeRequest,
   type InitializeResponse,
+  type ListSessionsRequest,
+  type ListSessionsResponse,
+  type LoadSessionRequest,
+  type LoadSessionResponse,
   type NewSessionRequest,
   type NewSessionResponse,
   type PromptRequest,
   type PromptResponse,
+  type SessionInfo,
   type SessionNotification,
   type StopReason,
   type Stream,
 } from '@agentclientprotocol/sdk'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { SessionId, type SessionEvent, type TurnEndReason } from '@deepseek-ai/dsh-session'
+import { SessionId, type SessionEvent, type SessionHeader, type TurnEndReason } from '@deepseek-ai/dsh-session'
 // Side-effect type import: declaration-merges the approval waterfall answered below.
 import type {} from '@deepseek-ai/dsh-user-approval'
 import { acpPromptToText, promptHasUnsupportedContent, turnEndToStopReason } from './codec.ts'
@@ -95,6 +100,12 @@ interface SessionRecord {
     /** The correlated turn's ending, set at turn/end and settled at whole-agent idle. */
     endReason: TurnEndReason | undefined
   } | undefined
+}
+
+/** The optional session-persistence seam the bridge reads for list/load. */
+interface SessionPersistenceReader {
+  list(): Promise<SessionHeader[]>
+  load(sessionId: SessionId): Promise<{ events: SessionEvent[] }>
 }
 
 /**
@@ -239,6 +250,11 @@ export function apply(ctx: Context, config: AcpConfig): void {
           agentInfo: { name: 'deepseek-harness-acp', version: '0.0.1' },
           agentCapabilities: {
             promptCapabilities: { image: false, audio: false, embeddedContext: false },
+            // The bridge can resume persisted sessions and list them, so a
+            // client can browse a member's conversation topics and choose to
+            // continue one or open a new one.
+            loadSession: true,
+            sessionCapabilities: { list: {} },
           },
           authMethods: [],
         })
@@ -246,6 +262,72 @@ export function apply(ctx: Context, config: AcpConfig): void {
 
       authenticate(_params: AuthenticateRequest): Promise<void> {
         return Promise.resolve()
+      },
+
+      async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
+        assertOpen()
+        const persistence = ctx.get('sessionPersistence') as SessionPersistenceReader | undefined
+        if (persistence === undefined) {
+          throw internalError('session listing requires session persistence')
+        }
+        const headers = await persistence.list()
+        // A session without a workspace cannot be resumed through this bridge
+        // (session/new and loadSession both require an absolute cwd), so it is
+        // omitted from the topic list rather than reported with a fake one.
+        const sessions: SessionInfo[] = []
+        for (const header of headers) {
+          if (header.cwd === undefined) continue
+          if (params.cwd !== undefined && header.cwd !== params.cwd) continue
+          sessions.push({ sessionId: header.id, cwd: header.cwd })
+        }
+        return { sessions }
+      },
+
+      async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+        assertOpen()
+        validateSessionParams(params)
+        const sessionId = SessionId(params.sessionId)
+        // Idempotent for an already-live session: the client may re-load the
+        // topic it is already talking to.
+        if (sessions.has(sessionId)) return {}
+        const persistence = ctx.get('sessionPersistence') as SessionPersistenceReader | undefined
+        if (persistence === undefined) {
+          throw internalError('loading a session requires session persistence')
+        }
+        let events: SessionEvent[]
+        try {
+          const inspection = await persistence.load(sessionId)
+          events = inspection.events
+        } catch {
+          throw invalidParams(`unknown session: ${sessionId}`)
+        }
+        const handle = await agents.create({
+          sessionId,
+          meta: { cwd: params.cwd },
+          agentOptions: agentOptions(config),
+          seed: events,
+        })
+        /* v8 ignore next 4 -- a real stdio close can race an in-flight load. */
+        if (closed) {
+          await handle.dispose()
+          throw internalError('connection closed during session/load')
+        }
+        sessions.set(sessionId, {
+          agent: handle.agent,
+          dispose: () => handle.dispose(),
+          inflight: undefined,
+        })
+        // The loadSession contract streams the session's history back to the
+        // client as user/agent message chunks, so a GUI can render the topic
+        // without a second read path.
+        for (const event of events) {
+          const update = historyChunk(event)
+          if (update !== undefined) {
+            /* v8 ignore next 3 -- a disconnected client must not fail the load. */
+            void conn.sessionUpdate({ sessionId, update }).catch(() => { /* client gone */ })
+          }
+        }
+        return {}
       },
 
       async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
@@ -426,8 +508,39 @@ function agentOptions(config: AcpConfig): { provider?: string; model?: string } 
   }
 }
 
+/** Workspace fields shared by session creation and loading. */
+interface SessionWorkspaceParams {
+  readonly cwd: string
+  readonly mcpServers: readonly unknown[]
+  readonly additionalDirectories?: readonly string[]
+}
+
+/** A message event's committed text joined, or undefined when it has none. */
+function messageText(message: { content: readonly { type: string; text?: string }[] }): string | undefined {
+  const text = message.content
+    .filter(block => block.type === 'text')
+    .map(block => block.text ?? '')
+    .join('')
+  return text.length > 0 ? text : undefined
+}
+
+/** Map one persisted message event to its history-chunk notification. */
+function historyChunk(
+  event: SessionEvent,
+): { sessionUpdate: 'user_message_chunk' | 'agent_message_chunk'; content: { type: 'text'; text: string } } | undefined {
+  if (event.type === 'user/message') {
+    const text = messageText(event.data)
+    return text === undefined ? undefined : { sessionUpdate: 'user_message_chunk', content: { type: 'text', text } }
+  }
+  if (event.type === 'assistant/message') {
+    const text = messageText(event.data.message)
+    return text === undefined ? undefined : { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }
+  }
+  return undefined
+}
+
 /** Reject session features outside the automation contract. */
-function validateSessionParams(params: NewSessionRequest): void {
+function validateSessionParams(params: SessionWorkspaceParams): void {
   if (!isAbsolute(params.cwd)) throw invalidParams(`cwd must be an absolute path: ${params.cwd}`)
   if (params.additionalDirectories !== undefined && params.additionalDirectories.length > 0) {
     throw invalidParams('additionalDirectories is not supported')

@@ -28,6 +28,7 @@ function scriptedApi(overrides: {
   settings?: Partial<ApiProxy['settings']>
   credentials?: Partial<ApiProxy['credentials']>
   llm?: Partial<ApiProxy['llm']>
+  team?: Partial<ApiProxy['team']>
   respond?: ApiProxy['respond']
 } = {}): ApiProxy {
   async function *empty<F>(): AsyncGenerator<RpcRequest<F>> { /* no frames */ }
@@ -94,6 +95,7 @@ function scriptedApi(overrides: {
       list: r => ok(r, { presets: [], authorable: false, hasDocument: false }),
       select: r => ok(r, { agentPreset: r.payload.agentPreset }),
       read: r => ok(r, { agentPreset: r.payload.agentPreset, trust: 'user' as const, content: '' }),
+      readEntries: r => ok(r, { agentPreset: r.payload.agentPreset, trust: 'user' as const, entries: [] }),
       copy: r => ok(r, { agentPreset: r.payload.agentPreset }),
       openDocument: r => ok(r, { opened: true as const }),
       remove: r => ok(r, {}),
@@ -127,6 +129,14 @@ function scriptedApi(overrides: {
       models: r => ok(r, { groups: [], failures: [] }),
       discoverModels: err,
       ...overrides.llm,
+    },
+    team: {
+      list: r => ok(r, []),
+      sessions: r => ok(r, []),
+      history: r => ok(r, []),
+      newSession: r => ok(r, { sessionId: 's-team' }),
+      chat: r => ok(r, { text: 'stub', stopReason: 'end_turn' }),
+      ...overrides.team,
     },
     events: { mux: () => empty<MuxFrame>(), host: () => empty<HostFrame>(), ...overrides.events },
     respond: overrides.respond ?? (() => Promise.resolve({ accepted: false as const, reason: 'not-pending' as const })),

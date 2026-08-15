@@ -391,6 +391,37 @@ describe('session creation and Workspace membership', () => {
     expect(missing.result).toMatchObject({ ok: false, error: { code: 'workspace-not-found' } })
   })
 
+  it('creates a free session for cwd:null while an omitted cwd keeps the default fallback', async () => {
+    const { api, ctx, root } = await harness()
+    const freeId = SessionId('session-free')
+
+    expectOk(await api.sessions.create(request({ cwd: null, sessionId: freeId })))
+    // The explicit free-session request records no immutable directory on the header.
+    expect(ctx.agents.get(freeId)?.session.header.cwd).toBeUndefined()
+    // A free session lists ungrouped, its row carrying no cwd.
+    const freeRow = expectOk(await api.sessions.list(request({}))).items.find(item => item.sessionId === freeId)
+    expect(freeRow?.cwd).toBeUndefined()
+
+    // Re-adopting the live free session with cwd:null is idempotent, not a conflict.
+    expectOk(await api.sessions.create(request({ cwd: null, sessionId: freeId })))
+    expect(ctx.agents.list().filter(agent => agent.id === freeId)).toHaveLength(1)
+
+    // An omitted cwd keeps the deployment default fallback.
+    const defaultedId = SessionId('session-defaulted')
+    expectOk(await api.sessions.create(request({ sessionId: defaultedId })))
+    expect(ctx.agents.get(defaultedId)?.session.header.cwd).toBe(root)
+
+    // cwd:null against a fixed session is still a cwd conflict — with no
+    // requestedCwd, since the free-session request names no directory.
+    const conflict = await api.sessions.create(request({ cwd: null, sessionId: defaultedId }))
+    expect(conflict.result).toMatchObject({
+      ok: false,
+      error: { code: 'session-conflict', details: { sessionId: defaultedId, existingCwd: root } },
+    })
+    if (conflict.result.ok) throw new Error('unreachable')
+    expect(conflict.result.error.details).not.toHaveProperty('requestedCwd')
+  })
+
   it('retains a published session when attachment fails and repairs it on retry', async () => {
     const { api, ctx, root } = await harness()
     const created = expectOk(await api.workspace.create(request({ path: stageDir(root, 'project') }))).workspace

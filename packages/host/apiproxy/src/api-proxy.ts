@@ -1041,11 +1041,15 @@ class AgentPresetConflict extends Error {
   }
 }
 
-/** Requested identity already belongs to a session with another project cwd. */
+/**
+ * Requested identity already belongs to a session with another project cwd.
+ * An undefined requestedCwd is the free-session request (`cwd: null`): it
+ * matches only a headerless (free) session, never a fixed one.
+ */
 class SessionCwdConflict extends Error {
   constructor(
     readonly sessionId: SessionId,
-    readonly requestedCwd: string,
+    readonly requestedCwd: string | undefined,
     readonly existingCwd: string | undefined,
   ) {
     super(
@@ -1614,10 +1618,15 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     }
   }
 
-  /** Resolve one requested identity to a live agent, creating or resuming it once. */
+  /**
+   * Resolve one requested identity to a live agent, creating or resuming it once.
+   * An undefined cwd is the free-session request: the new session's header
+   * records no working directory, and identity matching accepts only a
+   * headerless (free) session.
+   */
   async function ensureSession(
     sessionId: SessionId,
-    cwd: string,
+    cwd: string | undefined,
     checkPersistedIdentity: boolean,
     presetId?: string,
   ): Promise<Agent> {
@@ -1662,16 +1671,17 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         }
 
         try {
-          await mkdir(cwd, { recursive: true })
+          // A free session has no project directory to ensure.
+          if (cwd !== undefined) await mkdir(cwd, { recursive: true })
         } catch (error: unknown) {
-          throw new Error(`failed to ensure project directory "${cwd}": ${String(error)}`, { cause: error })
+          throw new Error(`failed to ensure project directory "${String(cwd)}": ${String(error)}`, { cause: error })
         }
         const composition = await composeAgent(presetId)
         return (await ctx.agents.create({
           sessionId,
           agentOptions: agentOptions(),
           meta: {
-            cwd,
+            ...cwd === undefined ? {} : { cwd },
             ...composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset },
           },
           setup: composition.setup,
@@ -1737,8 +1747,12 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     const attached = new Set(items.map(item => item.sessionId))
     const persistence = ctx.get('sessionPersistence')
     if (persistence !== undefined) {
+      // Headerless metas are free (dynamic-cwd) sessions, not invalid
+      // artifacts: they persist with no `header.cwd` by design and must stay
+      // listable after a restart, grouped client-side under the ungrouped
+      // bucket.
       const cold = (await persistence.list(signal))
-        .filter(meta => !attached.has(meta.id) && meta.cwd !== undefined)
+        .filter(meta => !attached.has(meta.id))
       signal?.throwIfAborted()
       for (let offset = 0; offset < cold.length; offset += COLD_SUMMARY_BATCH_SIZE) {
         signal?.throwIfAborted()
@@ -1806,6 +1820,25 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
   function goalError(request: RpcRequest<unknown>, error: unknown): RpcResponse<never> {
     const details = error instanceof GoalError ? { goalCode: error.code } : {}
     return err(request, { code: 'internal', message: String(error), details })
+  }
+
+  /** The host team service's minimal shape (the full contract lives in @deepseek-ai/dsh-team). */
+  interface TeamServiceShape {
+    list(): { id: string; title: string; description: string | undefined; status: string }[]
+    listSessions(memberId: string): Promise<{ sessionId: string; cwd: string }[]>
+    readHistory(memberId: string, sessionId: string): Promise<{ role: 'user' | 'assistant'; text: string }[]>
+    newSession(memberId: string): Promise<string>
+    chat(memberId: string, sessionId: string, text: string): Promise<{ text: string; stopReason: string }>
+  }
+
+  /** Wire error for a deployment that composes no team service. */
+  function teamUnavailable(request: RpcRequest<unknown>): RpcResponse<never> {
+    return err(request, { code: 'internal', message: 'team service is absent: the host composition does not mount @deepseek-ai/dsh-team', details: {} })
+  }
+
+  /** Map one team-domain rejection to the wire error. */
+  function teamError(request: RpcRequest<unknown>, error: unknown): RpcResponse<never> {
+    return err(request, { code: 'internal', message: String(error), details: {} })
   }
 
   /** Resolve a session's agent, apply one goal mutation, and acknowledge with the new CAS ref. */
@@ -2177,7 +2210,12 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             })
           }
         }
-        const cwd = workspace?.path ?? request.payload.cwd ?? defaults.cwd
+        // `cwd: null` is the explicit free-session request: no immutable
+        // directory lands on the session header. An omitted cwd keeps the
+        // deployment default fallback.
+        const cwd = workspace?.path ?? (request.payload.cwd === null
+          ? undefined
+          : request.payload.cwd ?? defaults.cwd)
         const requestedPreset = request.payload.agentPreset
         try {
           await ensureSession(sessionId, cwd, request.payload.sessionId !== undefined, requestedPreset)
@@ -2201,7 +2239,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
               message: error.message,
               details: {
                 sessionId: error.sessionId,
-                requestedCwd: error.requestedCwd,
+                ...error.requestedCwd === undefined ? {} : { requestedCwd: error.requestedCwd },
                 ...error.existingCwd === undefined ? {} : { existingCwd: error.existingCwd },
               },
             })
@@ -3058,6 +3096,61 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       },
     },
 
+    team: {
+      // The team service is optional: a deployment without team members (the
+      // default roster is empty) answers with an empty list rather than an
+      // error, so the browser simply shows no members.
+      async list(request) {
+        const team = ctx.get('team') as TeamServiceShape | undefined
+        if (team === undefined) return ok(request, [])
+        try {
+          return ok(request, team.list())
+        } catch (error: unknown) {
+          return teamError(request, error)
+        }
+      },
+
+      async sessions(request) {
+        const team = ctx.get('team') as TeamServiceShape | undefined
+        if (team === undefined) return teamUnavailable(request)
+        try {
+          return ok(request, await team.listSessions(request.payload.memberId))
+        } catch (error: unknown) {
+          return teamError(request, error)
+        }
+      },
+
+      async history(request) {
+        const team = ctx.get('team') as TeamServiceShape | undefined
+        if (team === undefined) return teamUnavailable(request)
+        try {
+          return ok(request, await team.readHistory(request.payload.memberId, request.payload.sessionId))
+        } catch (error: unknown) {
+          return teamError(request, error)
+        }
+      },
+
+      async newSession(request) {
+        const team = ctx.get('team') as TeamServiceShape | undefined
+        if (team === undefined) return teamUnavailable(request)
+        try {
+          return ok(request, { sessionId: await team.newSession(request.payload.memberId) })
+        } catch (error: unknown) {
+          return teamError(request, error)
+        }
+      },
+
+      async chat(request) {
+        const team = ctx.get('team') as TeamServiceShape | undefined
+        if (team === undefined) return teamUnavailable(request)
+        try {
+          return ok(request, await team.chat(request.payload.memberId, request.payload.sessionId, request.payload.text))
+        } catch (error: unknown) {
+          return teamError(request, error)
+        }
+      },
+    },
+
     agentPresets: {
       // A deployment with no roster answers with an empty list rather than an
       // error: composing no presets is a valid deployment, and the browser
@@ -3148,6 +3241,25 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             content: await presets.read(preset.id),
             ...preset.name === undefined ? {} : { name: preset.name },
             ...preset.description === undefined ? {} : { description: preset.description },
+          })
+        } catch (error: unknown) {
+          return err(request, presetError(agentPreset, error))
+        }
+      },
+
+      // Reading entries is reconnaissance for the same reason `read` is: the
+      // list names the plugins a session running this preset would load, and
+      // which ones are disabled.
+      async readEntries(request) {
+        const { agentPreset } = request.payload
+        const presets = ctx.get('agentPresets')
+        if (presets === undefined) return err(request, noRoster(agentPreset))
+        try {
+          const preset = await presets.resolve(agentPreset)
+          return ok(request, {
+            agentPreset: preset.id,
+            trust: preset.trust,
+            entries: await presets.readEntries(preset.id),
           })
         } catch (error: unknown) {
           return err(request, presetError(agentPreset, error))

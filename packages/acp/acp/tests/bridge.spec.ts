@@ -11,7 +11,7 @@ describe('automation-only ACP bridge', () => {
     harness = undefined
   })
 
-  it('advertises only fresh text sessions', async () => {
+  it('advertises text prompts plus persisted-session list and load', async () => {
     harness = await makeBridgeHarness()
     const response = await harness.client.initialize({
       protocolVersion: PROTOCOL_VERSION,
@@ -23,6 +23,8 @@ describe('automation-only ACP bridge', () => {
       agentInfo: { name: 'deepseek-harness-acp', version: '0.0.1' },
       agentCapabilities: {
         promptCapabilities: { image: false, audio: false, embeddedContext: false },
+        loadSession: true,
+        sessionCapabilities: { list: {} },
       },
       authMethods: [],
     })

@@ -98,10 +98,13 @@ export const sessionSearchValueSchema = z.object({
   hasMore: z.boolean(),
 }) satisfies z.ZodType<Wire<ResponseValue<'session.search'>>>
 
-/** session.create request payload (at most one of workspaceId / cwd). */
+/**
+ * session.create request payload (at most one of workspaceId / cwd; `cwd: null`
+ * counts as provided — it is the explicit free-session request, not an omission).
+ */
 export const sessionCreateRequestSchema = z.object({
   workspaceId: workspaceIdSchema.optional(),
-  cwd: z.string().optional(),
+  cwd: z.string().nullable().optional(),
   sessionId: sessionIdSchema.optional(),
   agentPreset: z.string().optional(),
 }).refine(

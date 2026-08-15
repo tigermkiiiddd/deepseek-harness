@@ -10,6 +10,7 @@ import type { WorkspaceApi } from './workspace.ts'
 import type { AgentPresetsApi } from './agent-presets.ts'
 import type { SkillsApi } from './skills.ts'
 import type { GoalsApi } from './goals.ts'
+import type { TeamApi } from './team.ts'
 import type { SettingsApi } from './settings.ts'
 import type { CredentialsApi } from './credentials.ts'
 import type { LlmApi } from './llm.ts'
@@ -54,6 +55,7 @@ export interface RpcMethodMap {
   'agentPreset.list': AgentPresetsApi['list']
   'agentPreset.select': AgentPresetsApi['select']
   'agentPreset.read': AgentPresetsApi['read']
+  'agentPreset.readEntries': AgentPresetsApi['readEntries']
   'agentPreset.copy': AgentPresetsApi['copy']
   'agentPreset.openDocument': AgentPresetsApi['openDocument']
   'agentPreset.remove': AgentPresetsApi['remove']
@@ -74,6 +76,11 @@ export interface RpcMethodMap {
   'llm.providers': LlmApi['providers']
   'llm.models': LlmApi['models']
   'llm.discoverModels': LlmApi['discoverModels']
+  'team.list': TeamApi['list']
+  'team.sessions': TeamApi['sessions']
+  'team.history': TeamApi['history']
+  'team.newSession': TeamApi['newSession']
+  'team.chat': TeamApi['chat']
 }
 
 /** Business request payload of method K (reaches through the RpcRequest narrow form to payload). */

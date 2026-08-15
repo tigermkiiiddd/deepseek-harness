@@ -142,6 +142,15 @@
     - id: client-hmr
       name: '@deepseek-ai/dsh-client-hmr'
 
+    # Team members: persistent ACP agent processes, each owning its own
+    # sessions (topics). The roster is deployment-specific — fill `members`
+    # in the profile's cordis.patch.yml (an id-targeted patch replaces this
+    # whole config) or mount the row there instead.
+    - id: team
+      name: '@deepseek-ai/dsh-team'
+      config:
+        members: []
+
     # ── browser plugin roster (dsh.client rows; node halves are layer-2 hosts) ──
 
     # Dual-face: the node half scans this tree, composes window.__DSH_BOOT__,
@@ -195,6 +204,9 @@
     - id: ui-settings-plugin-inventory
       name: '@deepseek-ai/dsh-client-ui-settings-plugin-inventory'
 
+    - id: ui-settings-plugin-presets
+      name: '@deepseek-ai/dsh-client-ui-settings-plugin-presets'
+
     - id: ui-conversation
       name: '@deepseek-ai/dsh-client-ui-conversation'
 
@@ -232,6 +244,10 @@
 
     - id: ui-subagent
       name: '@deepseek-ai/dsh-client-ui-subagent'
+
+    # Team view: sidebar action + overlay panel over the /api/team bridge.
+    - id: ui-team
+      name: '@deepseek-ai/dsh-client-ui-team'
 
     # Background jobs: the session-header list over the jobsBySession mirror.
     - id: ui-jobs

@@ -46,7 +46,8 @@ import {
 import { skillListRequestSchema } from '../api/skills.schema.ts'
 import {
   agentPresetCopyRequestSchema, agentPresetListRequestSchema, agentPresetOpenDocumentRequestSchema,
-  agentPresetReadRequestSchema, agentPresetRemoveRequestSchema, agentPresetSelectRequestSchema,
+  agentPresetReadEntriesRequestSchema, agentPresetReadRequestSchema, agentPresetRemoveRequestSchema,
+  agentPresetSelectRequestSchema,
 } from '../api/agent-presets.schema.ts'
 import {
   goalCreateRequestSchema,
@@ -64,6 +65,10 @@ import {
   credentialsDescribeRequestSchema, credentialsSetRequestSchema, credentialsUnsetRequestSchema,
 } from '../api/credentials.schema.ts'
 import { llmDiscoverModelsRequestSchema, llmModelsRequestSchema, llmProvidersRequestSchema } from '../api/llm.schema.ts'
+import {
+  teamChatRequestSchema, teamHistoryRequestSchema, teamListRequestSchema,
+  teamNewSessionRequestSchema, teamSessionsRequestSchema,
+} from '../api/team.schema.ts'
 import {
   subagentHistoryRequestSchema,
   subagentInterruptRequestSchema,
@@ -120,6 +125,7 @@ const UNARY_ROUTES: UnaryRoutes = {
   'agentPreset.list': { schema: agentPresetListRequestSchema, invoke: (api, r) => api.agentPresets.list(r) },
   'agentPreset.select': { schema: agentPresetSelectRequestSchema, invoke: (api, r) => api.agentPresets.select(r) },
   'agentPreset.read': { schema: agentPresetReadRequestSchema, invoke: (api, r) => api.agentPresets.read(r) },
+  'agentPreset.readEntries': { schema: agentPresetReadEntriesRequestSchema, invoke: (api, r) => api.agentPresets.readEntries(r) },
   'agentPreset.copy': { schema: agentPresetCopyRequestSchema, invoke: (api, r) => api.agentPresets.copy(r) },
   'agentPreset.openDocument': { schema: agentPresetOpenDocumentRequestSchema, invoke: (api, r, signal) => api.agentPresets.openDocument(r, signal) },
   'agentPreset.remove': { schema: agentPresetRemoveRequestSchema, invoke: (api, r) => api.agentPresets.remove(r) },
@@ -140,6 +146,11 @@ const UNARY_ROUTES: UnaryRoutes = {
   'llm.providers': { schema: llmProvidersRequestSchema, invoke: (api, r) => api.llm.providers(r) },
   'llm.models': { schema: llmModelsRequestSchema, invoke: (api, r) => api.llm.models(r) },
   'llm.discoverModels': { schema: llmDiscoverModelsRequestSchema, invoke: (api, r, signal) => api.llm.discoverModels(r, signal) },
+  'team.list': { schema: teamListRequestSchema, invoke: (api, r) => api.team.list(r) },
+  'team.sessions': { schema: teamSessionsRequestSchema, invoke: (api, r) => api.team.sessions(r) },
+  'team.history': { schema: teamHistoryRequestSchema, invoke: (api, r) => api.team.history(r) },
+  'team.newSession': { schema: teamNewSessionRequestSchema, invoke: (api, r) => api.team.newSession(r) },
+  'team.chat': { schema: teamChatRequestSchema, invoke: (api, r) => api.team.chat(r) },
 }
 
 /** Route lookup that narrows an arbitrary path segment to a map key (single cast point for the string→key refinement). */

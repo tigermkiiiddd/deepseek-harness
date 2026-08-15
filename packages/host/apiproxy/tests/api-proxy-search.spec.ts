@@ -76,9 +76,11 @@ describe('session.search', () => {
       source: { kind: 'user' },
     }), { surfaceOp: 'append' })
     const cold = header('cold', '/cold')
-    const legacy = header('legacy', null)
+    // Headerless = a free (dynamic-cwd) session: list-visible by design, so
+    // its hits are searched like any other row's.
+    const free = header('free', null)
     ctx.provide('sessionPersistence', {
-      list: () => Promise.resolve([cold, legacy]),
+      list: () => Promise.resolve([cold, free]),
       locate: () => undefined,
     } as never)
 
@@ -88,16 +90,16 @@ describe('session.search', () => {
     ) => Promise.resolve({
       items: [
         {
-          header: legacy,
+          header: free,
           live: false,
           persisted: true,
           bestMatch: {
-            sessionId: legacy.id,
+            sessionId: free.id,
             seq: 3,
             type: 'user/message' as const,
             time: 190,
             surface: 'current' as const,
-            snippet: 'must remain hidden',
+            snippet: 'the free session match',
           },
         },
         {
@@ -124,7 +126,10 @@ describe('session.search', () => {
     expect(response.result).toEqual({
       ok: true,
       value: {
-        items: [{ sessionId: 'cold', snippet: 'the matching answer' }],
+        items: [
+          { sessionId: 'free', snippet: 'the free session match' },
+          { sessionId: 'cold', snippet: 'the matching answer' },
+        ],
         hasMore: false,
       },
     })
