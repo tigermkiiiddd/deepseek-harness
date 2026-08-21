@@ -26,4 +26,11 @@ export const API_REMOTE_FORWARDED_EVENTS = [
   'cordis/inspect-query-resolved',
   'llm/adapters-updated',
   'settings/document-updated',
+  // Team push: status migrations, lossless member session updates, permission
+  // requests, and settled turns ride the same one-way Remote channel, so the
+  // GUI renders the member interface from a push stream instead of polling.
+  'team/status',
+  'team/member-update',
+  'team/permission-requested',
+  'team/turn-end',
 ] as const

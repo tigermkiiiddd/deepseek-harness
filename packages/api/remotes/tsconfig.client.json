@@ -49,6 +49,9 @@
       "path": "../../settings/settings"
     },
     {
+      "path": "../../team/team"
+    },
+    {
       "path": "../../typert/protocol"
     }
   ]

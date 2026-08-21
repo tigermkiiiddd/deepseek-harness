@@ -73,9 +73,11 @@
     "@deepseek-ai/dsh-session": "workspace:^",
     "@deepseek-ai/dsh-session-persistence": "workspace:^",
     "@deepseek-ai/dsh-settings": "workspace:^",
+    "@deepseek-ai/dsh-team": "workspace:^",
     "@deepseek-ai/dsh-typert-registry": "workspace:^"
   },
   "devDependencies": {
+    "@agentclientprotocol/sdk": "0.25.1",
     "@deepseek-ai/dsh-agent": "workspace:^",
     "@deepseek-ai/dsh-api-gateway": "workspace:^",
     "@deepseek-ai/dsh-commands": "workspace:^",
