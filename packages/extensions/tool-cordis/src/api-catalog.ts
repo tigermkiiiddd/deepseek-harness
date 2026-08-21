@@ -128,6 +128,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'ownerCtx', description: 'caller context that owns load, setup, and the live lifecycle.' }, { name: 'options', description: 'persisted identity, loop options, setup, and cancellation.' }],
         returns: 'the published handle.',
       },
+      {
+        signature: 'async reseedAgent(ownerCtx: Context, options: ReseedAgentOptions): Promise<AgentHandle>',
+        description: 'Rebuild the live agent with one exact identity in place on a truncated prefix of its own log: capture the prefix and header BEFORE teardown, dispose the live handle, truncate the durable log, and re-create through the same unpublished setup transaction as createAgent.',
+        parameters: [{ name: 'ownerCtx', description: 'caller context that structurally owns the rebuilt lifecycle.' }, { name: 'options', description: 'live identity, kept prefix length, loop options, and setup.' }],
+        returns: 'the published rebuilt handle.',
+      },
     ],
   },
   {
@@ -266,6 +272,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Load a persisted session and resume an agent on it through the registered factory. Rejects if no factory is registered; the factory rejects if session persistence is not configured or persistence/setup fails.',
         parameters: [{ name: 'options', description: 'persisted identity, configuration, and optional setup.' }],
         returns: 'the handle after setup, rollback-covered publication, and loop start complete.',
+      },
+      {
+        signature: 'async reseed(options: ReseedAgentOptions): Promise<AgentHandle>',
+        description: 'Rebuild a live agent in place on a truncated prefix of its own session log through the registered factory. Rejects if no factory is registered; the factory rejects when no live agent has the id, the cut is invalid, or session persistence is not configured. The resolved AgentHandle owns the rebuilt agent; the previous handle is already disposed.',
+        parameters: [{ name: 'options', description: 'live identity, kept prefix length, and optional header/agent/setup overrides.' }],
+        returns: 'the rebuilt handle after teardown, truncation, rollback-covered publication, and loop start complete.',
       },
       {
         signature: 'register(agent: Agent): () => void',
@@ -1070,6 +1082,13 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the header and the stored events with `seq >= fromSeq`.',
       },
       {
+        signature: 'truncate(_id: SessionId, _keepSeqs: number): Promise<void>',
+        description: 'Rewrite one stored log to exactly its first `keepSeqs` events, physically dropping every event with `seq >= keepSeqs` — the durability primitive behind an in-place rerun. The caller must dispose any live owner of the session first: implementations reject while the session is live, when no stored session with `id` exists, and when `keepSeqs` is not an integer in `[0, stored length]`. The session header is unchanged; afterwards a load/prepare observes exactly the kept prefix and an append continues at seq `keepSeqs`.',
+        parameters: [{ name: '_id', description: 'the persisted session to truncate (unused by the default).' }, { name: '_keepSeqs', description: 'number of leading events to keep (unused by the default).' }],
+        returns: 'nothing; the default rejects because truncation is unsupported.',
+        throws: ['when this backend does not support log truncation.'],
+      },
+      {
         signature: 'abstract list(signal?: AbortSignal): Promise<SessionHeader[]>',
         description: 'Lightweight listing from metadata, without a full-log parse.',
         parameters: [{ name: 'signal', description: 'optional cancellation for backend listing work.' }],
@@ -1740,6 +1759,113 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Assemble global and scoped providers, detach tool parameters, apply canonical ordering, then run the assembly waterfall. Scoped sections and variables shadow globals. The returned waterfall value is authoritative except that an effective complete section is restored afterwards as the sole prompt section.',
         parameters: [{ name: 'context', description: 'the optional scope and plugin-defined assembly fields.' }],
         returns: 'the post-waterfall assembly with any complete prompt enforced.',
+      },
+    ],
+  },
+  {
+    key: 'team',
+    summary: 'The team service the plugin provides under `ctx.team`.',
+    description: 'The team service the plugin provides under `ctx.team`.',
+    methods: [
+      {
+        signature: 'list(): MemberSnapshot[]',
+        description: 'Every member with its live connection status, capabilities, and last error.',
+        parameters: [],
+        returns: 'the list of member snapshots.',
+      },
+      {
+        signature: 'start(memberId: string): Promise<void>',
+        description: 'Start one member\'s process and complete the ACP handshake.',
+        parameters: [{ name: 'memberId', description: 'the member to start.' }],
+      },
+      {
+        signature: 'stop(memberId: string): Promise<void>',
+        description: 'Stop one member\'s process and return it to `offline`.',
+        parameters: [{ name: 'memberId', description: 'the member to stop.' }],
+      },
+      {
+        signature: 'restart(memberId: string): Promise<void>',
+        description: 'Stop then start one member.',
+        parameters: [{ name: 'memberId', description: 'the member to restart.' }],
+      },
+      {
+        signature: 'listSessions(memberId: string, cwd?: string): Promise<MemberSession[]>',
+        description: 'One member\'s own conversation topics (persisted in the member process).',
+        parameters: [{ name: 'memberId', description: 'the member whose topics are listed.' }, { name: 'cwd', description: 'workspace filter passed to the member; defaults to the member\'s configured cwd.' }],
+        returns: 'the member\'s topic list for that workspace.',
+      },
+      {
+        signature: 'loadSession(memberId: string, sessionId: string): Promise<void>',
+        description: 'Resume one of the member\'s topics so chat continues its history.',
+        parameters: [{ name: 'memberId', description: 'the member that owns the topic.' }, { name: 'sessionId', description: 'the topic to load.' }],
+      },
+      {
+        signature: 'readHistory(memberId: string, sessionId: string): Promise<MemberHistoryEntry[]>',
+        description: 'Load one topic and collect its replayed conversation history.',
+        parameters: [{ name: 'memberId', description: 'the member that owns the topic.' }, { name: 'sessionId', description: 'the topic whose history is replayed.' }],
+        returns: 'the replayed conversation entries.',
+      },
+      {
+        signature: 'readHistoryEvents(memberId: string, sessionId: string): Promise<TranslatedSessionEvent[]>',
+        description: 'Load one topic and collect its full-fidelity translated session events.',
+        parameters: [{ name: 'memberId', description: 'the member that owns the topic.' }, { name: 'sessionId', description: 'the topic whose history is replayed.' }],
+        returns: 'the translated harness event sequence.',
+      },
+      {
+        signature: 'isTurnInFlight(memberId: string, sessionId: string): boolean',
+        description: 'Whether a member currently has a prompt turn in flight for a topic.',
+        parameters: [{ name: 'memberId', description: 'the member to query.' }, { name: 'sessionId', description: 'the member topic to query.' }],
+        returns: 'true when a turn is in flight.',
+      },
+      {
+        signature: 'newSession(memberId: string): Promise<string>',
+        description: 'Open a new topic on the member and return its id.',
+        parameters: [{ name: 'memberId', description: 'the member to create a topic on.' }],
+        returns: 'the new topic id.',
+      },
+      {
+        signature: 'prompt(memberId: string, sessionId: string, text: string): Promise<{ promptId: string }>',
+        description: 'Accept one prompt turn and return immediately; chunks stream as `team/member-update` events and settlement as `team/turn-end`.',
+        parameters: [{ name: 'memberId', description: 'the member to prompt.' }, { name: 'sessionId', description: 'the member topic to prompt in.' }, { name: 'text', description: 'the user text for this turn.' }],
+        returns: 'the prompt id assigned to this turn.',
+      },
+      {
+        signature: 'cancel(memberId: string, sessionId: string): Promise<void>',
+        description: 'Cancel the in-flight prompt turn of one session.',
+        parameters: [{ name: 'memberId', description: 'the member whose turn is in flight.' }, { name: 'sessionId', description: 'the member topic whose turn is cancelled.' }],
+      },
+      {
+        signature: 'permission(memberId: string, requestId: string, outcome: TeamPermissionOutcome): Promise<void>',
+        description: 'Answer one unanswered `session/request_permission` prompt.',
+        parameters: [{ name: 'memberId', description: 'the member that raised the request.' }, { name: 'requestId', description: 'the locally minted request id.' }, { name: 'outcome', description: 'the selected option or cancellation.' }],
+      },
+      {
+        signature: 'chat(memberId: string, sessionId: string, text: string, signal?: AbortSignal): Promise<ChatResult>',
+        description: 'Drive one chat turn to completion (blocking convenience for model tools).',
+        parameters: [{ name: 'memberId', description: 'the member to chat with.' }, { name: 'sessionId', description: 'the member topic to chat in.' }, { name: 'text', description: 'the user text for this turn.' }, { name: 'signal', description: 'optional cancellation signal.' }],
+        returns: 'the member\'s committed reply and stop reason.',
+      },
+      {
+        signature: 'addMember(config: MemberConfigInput): Promise<MemberSnapshot>',
+        description: 'Spawn a new member process at runtime, persist it in the roster, and join it. Omitted `args`/`env` default to empty at this funnel, so every caller — host API, model tool, future seams — is safe.',
+        parameters: [{ name: 'config', description: 'the member configuration; collection fields optional.' }],
+        returns: 'the snapshot of the newly added member.',
+      },
+      {
+        signature: 'removeMember(memberId: string): Promise<void>',
+        description: 'Stop one member, drop it from the roster, and attempt to delete it from persistence. A failed delete is logged and the record may reappear on restart.',
+        parameters: [{ name: 'memberId', description: 'the member to remove.' }],
+      },
+      {
+        signature: 'onPermissionRequest(handler: TeamPermissionHandler): () => void',
+        description: 'Register a permission-request subscriber. While at least one subscriber exists, `session/request_permission` prompts are surfaced (event + `team.permission` answers); with none, the member\'s `permission` policy auto-answers.',
+        parameters: [{ name: 'handler', description: 'the subscriber that receives each request.' }],
+        returns: 'the disposer removing this handler.',
+      },
+      {
+        signature: 'disposeAll(): Promise<void>',
+        description: 'Stop every member process. Idempotent.',
+        parameters: [],
       },
     ],
   },
@@ -2517,6 +2643,38 @@ export const EVENT_API: readonly EventApiEntry[] = [
     parameters: [],
   },
   {
+    name: 'team/member-update',
+    mode: 'emit',
+    signature: '\'team/member-update\'(memberId: string, sessionId: string, update: SessionUpdate): void',
+    summary: 'One typed `session/update` notification from a member, forwarded losslessly: text/thought chunks, tool calls, plans, usage — the member interface is a projection of this stream.',
+    description: 'One typed `session/update` notification from a member, forwarded losslessly: text/thought chunks, tool calls, plans, usage — the member interface is a projection of this stream. Replays collected by a `readHistory` call are consumed there and not re-forwarded.',
+    parameters: [{ name: 'memberId', description: 'the member that sent the update.' }, { name: 'sessionId', description: 'the member\'s session the update belongs to.' }, { name: 'update', description: 'one lossless ACP session update.' }],
+  },
+  {
+    name: 'team/permission-requested',
+    mode: 'emit',
+    signature: '\'team/permission-requested\'(request: TeamPermissionRequest): void',
+    summary: 'A member raised `session/request_permission`.',
+    description: 'A member raised `session/request_permission`. The GUI answers through `team.permission`; with no subscriber the deployment policy answers.',
+    parameters: [{ name: 'request', description: 'the surfaced permission request.' }],
+  },
+  {
+    name: 'team/status',
+    mode: 'emit',
+    signature: '\'team/status\'(memberId: string, status: MemberStatus, error?: string): void',
+    summary: 'A member\'s status migrated.',
+    description: 'A member\'s status migrated. Every transition emits exactly one public event (`idle` / `running` / `offline` / `failed`). `connecting` is an internal transition: during startup a member reads as `offline` until the handshake completes. Consumers never poll. `error` carries the failure message on `failed`.',
+    parameters: [{ name: 'memberId', description: 'the member whose status moved.' }, { name: 'status', description: 'the new public status.' }, { name: 'error', description: 'the failure message, on `failed`.' }],
+  },
+  {
+    name: 'team/turn-end',
+    mode: 'emit',
+    signature: '\'team/turn-end\'(memberId: string, sessionId: string, promptId: string, stopReason: StopReason, error?: string): void',
+    summary: 'A prompt turn settled: the member answered `session/prompt` (or the connection died and the turn was settled `cancelled` locally).',
+    description: 'A prompt turn settled: the member answered `session/prompt` (or the connection died and the turn was settled `cancelled` locally). A turn the member rejected with a protocol error carries `error`; consumers must branch on `error` first and treat `stopReason` as a placeholder.',
+    parameters: [{ name: 'memberId', description: 'the member whose turn settled.' }, { name: 'sessionId', description: 'the member\'s session the turn belonged to.' }, { name: 'promptId', description: 'the prompt id minted when the turn was accepted.' }, { name: 'stopReason', description: 'the ACP stop reason the member returned.' }, { name: 'error', description: 'the failure message when the member rejected the prompt.' }],
+  },
+  {
     name: 'tools/change',
     mode: 'emit',
     signature: '\'tools/change\'(): void',
@@ -2630,7 +2788,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'AgentFactory',
-    declaration: 'export interface AgentFactory {\n    createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle>;\n    resume(ownerCtx: Context, options: ResumeAgentOptions): Promise<AgentHandle>;\n}',
+    declaration: 'export interface AgentFactory {\n    createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle>;\n    resume(ownerCtx: Context, options: ResumeAgentOptions): Promise<AgentHandle>;\n    reseedAgent(ownerCtx: Context, options: ReseedAgentOptions): Promise<AgentHandle>;\n}',
   },
   {
     name: 'AgentHandle',
@@ -2743,6 +2901,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'CancelOptions',
     declaration: 'export interface CancelOptions {\n    keepInbox?: boolean | undefined;\n}',
+  },
+  {
+    name: 'ChatResult',
+    declaration: 'export interface ChatResult {\n    readonly text: string;\n    readonly stopReason: StopReason;\n}',
   },
   {
     name: 'ClientResponse',
@@ -3369,6 +3531,34 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface ManualCompactAgentContext extends CompactionAgentContext {\n    runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>;\n}',
   },
   {
+    name: 'MemberCapabilities',
+    declaration: 'export type MemberCapabilities = AgentCapabilities;',
+  },
+  {
+    name: 'MemberConfig',
+    declaration: 'export interface MemberConfig {\n    readonly id: string;\n    readonly title?: string;\n    readonly description?: string;\n    readonly kind?: \'dsh\';\n    readonly command?: string;\n    readonly args?: string[];\n    readonly cwd?: string;\n    readonly env?: Record<string, string>;\n    readonly permission?: \'allow\' | \'reject\';\n    readonly autostart?: boolean;\n}',
+  },
+  {
+    name: 'MemberConfigInput',
+    declaration: 'export type MemberConfigInput = Omit<MemberConfig, \'args\' | \'env\'> & {\n    readonly args?: string[];\n    readonly env?: Record<string, string>;\n};',
+  },
+  {
+    name: 'MemberHistoryEntry',
+    declaration: 'export interface MemberHistoryEntry {\n    readonly role: \'user\' | \'assistant\';\n    readonly text: string;\n}',
+  },
+  {
+    name: 'MemberSession',
+    declaration: 'export interface MemberSession {\n    readonly sessionId: string;\n    readonly cwd: string;\n    readonly title?: string | undefined;\n    readonly updatedAt?: string | undefined;\n}',
+  },
+  {
+    name: 'MemberSnapshot',
+    declaration: 'export interface MemberSnapshot {\n    readonly id: string;\n    readonly title: string;\n    readonly description: string | undefined;\n    readonly kind: \'dsh\' | undefined;\n    readonly status: MemberStatus;\n    readonly capabilities: MemberCapabilities | undefined;\n    readonly autostart: boolean;\n    readonly lastError: string | undefined;\n}',
+  },
+  {
+    name: 'MemberStatus',
+    declaration: 'export type MemberStatus = \'idle\' | \'running\' | \'offline\' | \'failed\';',
+  },
+  {
     name: 'Message',
     declaration: 'export interface Message {\n    readonly id: MessageId;\n    readonly role: \'system\' | \'user\' | \'assistant\';\n    readonly content: ContentBlock[];\n    readonly source: MessageSource;\n}',
   },
@@ -3599,6 +3789,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'RequestRunOutcome',
     declaration: 'export type RequestRunOutcome = \'approved\' | \'completed\' | \'rejected\' | \'cancelled\' | \'failed\';',
+  },
+  {
+    name: 'ReseedAgentOptions',
+    declaration: 'export interface ReseedAgentOptions {\n    readonly sessionId: SessionId;\n    readonly keepSeqs: number;\n    readonly meta?: CreateAgentOptions[\'meta\'];\n    readonly agentOptions?: AgentOptions;\n    readonly setup?: AgentSetup;\n}',
   },
   {
     name: 'ResolvedAlwaysRetryPolicy',
@@ -4233,6 +4427,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type SurfaceEventType = \'user/message\' | \'assistant/message\' | \'tool/result\';',
   },
   {
+    name: 'SurfaceIntent',
+    declaration: 'export interface SurfaceIntent {\n    surfaceOp: SurfaceOp;\n    sourceEventSeqs?: number[];\n}',
+  },
+  {
     name: 'SurfaceOp',
     declaration: 'export type SurfaceOp = \'append\' | {\n    op: \'replace\';\n    start: number;\n    end: number;\n};',
   },
@@ -4247,6 +4445,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'TableValueOf',
     declaration: 'export type TableValueOf<S extends DomainSpec, N extends keyof S[\'tables\']> = S[\'tables\'][N] extends DomainTableSpec<string, infer V> ? V : never;',
+  },
+  {
+    name: 'TeamPermissionHandler',
+    declaration: 'export type TeamPermissionHandler = (request: TeamPermissionRequest) => TeamPermissionOutcome | undefined | Promise<TeamPermissionOutcome | undefined>;',
+  },
+  {
+    name: 'TeamPermissionOutcome',
+    declaration: 'export type TeamPermissionOutcome = {\n    readonly outcome: \'selected\';\n    readonly optionId: string;\n} | {\n    readonly outcome: \'cancelled\';\n};',
+  },
+  {
+    name: 'TeamPermissionRequest',
+    declaration: 'export interface TeamPermissionRequest {\n    readonly requestId: string;\n    readonly memberId: string;\n    readonly sessionId: string;\n    readonly toolCall: ToolCallUpdate;\n    readonly options: readonly PermissionOption[];\n}',
   },
   {
     name: 'TerminalBackend',
@@ -4455,6 +4665,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ToolSchema',
     declaration: 'export interface ToolSchema {\n    name: string;\n    description: string;\n    parameters: Record<string, unknown>;\n}',
+  },
+  {
+    name: 'TranslatedEventType',
+    declaration: 'export type TranslatedEventType = \'turn/start\' | \'turn/end\' | \'step/start\' | \'step/end\' | \'user/message\' | \'assistant/message\' | \'assistant/chunk\' | \'tool/call\' | \'tool/result\' | \'todo/write\';',
+  },
+  {
+    name: 'TranslatedSessionEvent',
+    declaration: 'export type TranslatedSessionEvent = {\n    [K in TranslatedEventType]: {\n        type: K;\n        data: SessionEventMap[K];\n    } & (K extends SurfaceEventType ? SurfaceIntent : object);\n}[TranslatedEventType];',
   },
   {
     name: 'TurnEndCancelCause',
