@@ -18,9 +18,10 @@ import {
 import type {
   SessionId, SessionListState, SessionSearchResultItem, WorkspaceId, WorkspaceView,
 } from '@deepseek-ai/dsh-client-runtime/client'
+import { memberSessionOwner } from '@deepseek-ai/dsh-host-apiproxy/src/team-sessions.ts'
 import type { WorkspaceBrowserProps } from './contract/slots.ts'
-import type { SessionNode, SessionOrderBy } from './tree.ts'
-import { deriveFlat, deriveGroups, deriveSearchResults, UNGROUPED_KEY } from './tree.ts'
+import type { AgentScope, SessionNode, SessionOrderBy } from './tree.ts'
+import { deriveFlat, deriveGroups, deriveSearchResults, sameWorkspacePath, UNGROUPED_KEY } from './tree.ts'
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from './rows/Rows.tsx'
 import { FLAT_SESSION_ORDER_KEY } from './stores.ts'
 import { WorkspacePickFlow } from './WorkspacePicker.tsx'
@@ -255,6 +256,15 @@ function SessionTree({
 }: SessionTreeProps) {
   const list = useSessions(s => s)
   const current = list.current
+  // The sidebar follows the active agent: a member session scopes the tree to
+  // that member's topics, a main session (or none) hides member rows. The
+  // grouping itself is native — topics sit in their cwd's workspace group.
+  const currentOwner = current === undefined ? undefined : memberSessionOwner(current)
+  const agentScope: AgentScope = currentOwner ?? null
+  const inScope = (id: SessionId): boolean => {
+    const owner = memberSessionOwner(id)
+    return agentScope === null ? owner === undefined : owner === agentScope
+  }
   const [expandedSessionGroups, setExpandedSessionGroups] = useState<string[]>([])
   // Transient drag marker state; the selected mode owns the resulting order.
   const [drag, setDrag] = useState<DragState | null>(null)
@@ -264,9 +274,18 @@ function SessionTree({
   const previousOrderBy = useRef(orderBy)
   const nativeDragActive = drag !== null || workspaceDrag !== null
   useNativeDragAcceptance(nativeDragActive)
+  // Member topics are never workspace-registered on the Host; in a member
+  // scope they belong to the workspace whose path matches the topic's cwd.
+  const memberWorkspaceOf = (id: SessionId): string | undefined => {
+    if (memberSessionOwner(id) === undefined || !inScope(id)) return undefined
+    const summary = list.byId[id]
+    if (summary === undefined) return undefined
+    return workspaces.find(w => sameWorkspacePath(summary.cwd, w.path))?.workspaceId as string | undefined
+  }
   const currentGroup = current === undefined
     ? undefined
     : (workspaces.find(w => w.sessionIds.includes(current))?.workspaceId as string | undefined)
+      ?? memberWorkspaceOf(current)
       ?? UNGROUPED_KEY
   useEffect(() => {
     if (current === undefined || currentGroup === undefined || Object.hasOwn(groupExpansion, currentGroup)) return
@@ -278,8 +297,15 @@ function SessionTree({
   )
   const ungroupedSessionIds = useMemo(() => {
     const accounted = new Set(workspaces.flatMap(workspace => workspace.sessionIds))
-    return list.ids.filter(id => list.byId[id] !== undefined && !accounted.has(id))
-  }, [list, workspaces])
+    return list.ids.filter((id) => {
+      if (!inScope(id) || accounted.has(id)) return false
+      if (list.byId[id] === undefined) return false
+      // A member topic matched to a workspace by cwd is accounted there.
+      if (memberWorkspaceOf(id) !== undefined) return false
+      return true
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- memberWorkspaceOf/inScope close over list/workspaces/agentScope
+  }, [list, workspaces, agentScope])
   useEffect(() => {
     if (list.phase !== 'ready') return
     const switchedToUpdated = previousOrderBy.current !== 'updated' && orderBy === 'updated'
@@ -287,7 +313,12 @@ function SessionTree({
     const accounts = [
       ...workspaces.map(workspace => ({
         key: workspace.workspaceId as string,
-        sessionIds: workspace.sessionIds.filter(id => list.byId[id] !== undefined),
+        // Member topics join their cwd's workspace (deriveGroups owns that
+        // assignment); include them in the account so their order persists.
+        sessionIds: [
+          ...workspace.sessionIds.filter(id => inScope(id)),
+          ...list.ids.filter(id => memberWorkspaceOf(id) === workspace.workspaceId),
+        ].filter(id => list.byId[id] !== undefined),
       })),
       { key: UNGROUPED_KEY, sessionIds: ungroupedSessionIds },
     ]
@@ -306,14 +337,23 @@ function SessionTree({
         syncSessionOrderAccount(key, next.order.map(id => id as string), next.updatedAt)
       }
     }
-  }, [list, orderBy, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, ungroupedSessionIds, workspaces])
+  }, [
+    list, orderBy, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount,
+    ungroupedSessionIds, workspaces,
+  ])
   const orderedWorkspaces = useMemo(() => {
     return workspaces.map((workspace) => {
       const stored = sessionOrderByAccount[workspace.workspaceId as string]
-      const sessionIds = reconciledSessionOrder(workspace.sessionIds, stored)
+      // Include cwd-matched member topics so their drag order reconciles too.
+      const withMembers = [
+        ...workspace.sessionIds.filter(id => inScope(id)),
+        ...list.ids.filter(id => memberWorkspaceOf(id) === workspace.workspaceId),
+      ]
+      const sessionIds = reconciledSessionOrder(withMembers, stored)
       return { ...workspace, sessionIds }
     })
-  }, [sessionOrderByAccount, workspaces])
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- memberWorkspaceOf/inScope close over list/workspaces/agentScope
+  }, [sessionOrderByAccount, workspaces, list, agentScope])
   const orderedUngroupedSessionIds = useMemo(
     () => reconciledSessionOrder(ungroupedSessionIds, sessionOrderByAccount[UNGROUPED_KEY]),
     [sessionOrderByAccount, ungroupedSessionIds],
@@ -324,8 +364,8 @@ function SessionTree({
       ...(sessionOrderByAccount[UNGROUPED_KEY] === undefined
         ? {}
         : { ungroupedOrder: sessionOrderByAccount[UNGROUPED_KEY] }),
-    }),
-    [list, orderedWorkspaces, archivedSessionIds, expandedGroups, sessionOrderByAccount],
+    }, agentScope),
+    [list, orderedWorkspaces, archivedSessionIds, expandedGroups, sessionOrderByAccount, agentScope],
   )
   const now = Date.now()
   const commitSessionDrag = (activeDrag: DragState, over: NonNullable<DragState['over']>): void => {
@@ -351,7 +391,9 @@ function SessionTree({
     const insertAt = anchor === undefined ? nextOrder.length : nextOrder.indexOf(anchor)
     nextOrder.splice(insertAt === -1 ? nextOrder.length : insertAt, 0, activeDrag.sessionId)
     setSessionOrder(activeDrag.accountKey, nextOrder.map(id => id as string))
-    if (orderBy === 'updated' || activeDrag.accountKey === UNGROUPED_KEY) return
+    // Member topics persist their order in the browser-local account only:
+    // the Host order RPC does not know member session ids.
+    if (orderBy === 'updated' || activeDrag.accountKey === UNGROUPED_KEY || memberSessionOwner(activeDrag.sessionId) !== undefined) return
     insertSessionBefore(activeDrag.accountKey as WorkspaceId, activeDrag.sessionId, anchor).catch((reason: unknown) => {
       console.warn('session reorder rejected:', reason)
     })
@@ -562,9 +604,10 @@ function FlatList({
   | 't'
 >) {
   const list = useSessions(s => s)
+  const flatScope = list.current === undefined ? null : (memberSessionOwner(list.current) ?? null)
   const baseRows = useMemo(
-    () => deriveFlat(list, archivedSessionIds),
-    [list, archivedSessionIds],
+    () => deriveFlat(list, archivedSessionIds, flatScope),
+    [list, archivedSessionIds, flatScope],
   )
   const sessionIds = useMemo(() => baseRows.map(row => row.id), [baseRows])
   const previousOrderBy = useRef(orderBy)

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-web-react'
 import type {
   SessionId, SessionListState, SessionSummary, WorkspaceId, WorkspaceListState, WorkspaceView,
@@ -1131,5 +1131,76 @@ describe('WorkspaceBrowser', () => {
     fireEvent.change(screen.getByPlaceholderText('搜索会话…'), { target: { value: 'needle' } })
     const row = screen.getByText('Needle A').closest('[role="treeitem"]') as HTMLElement
     expect(row.hasAttribute('draggable')).toBe(false)
+  })
+
+  it('scopes the tree to the active member, grouped natively by cwd', () => {
+    const sessions = sessionState([
+      summary('main-s', 5),
+      summary('member:grok:topic1', 4, { displayTitle: 'Grok CLI · topic1', cwd: '/projects/alpha' }),
+      summary('member:grok:topic2', 3, { displayTitle: 'Grok CLI · topic2', cwd: '/projects/alpha' }),
+      summary('member:grok:elsewhere', 2, { displayTitle: 'Grok CLI · elsewhere', cwd: '/elsewhere' }),
+      summary('member:claude:topicA', 1, { displayTitle: 'Claude · topicA', cwd: '/projects/alpha' }),
+    ], { current: sid('member:grok:topic1') })
+    mount({
+      useSessions: hook(sessions),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['main-s'], 'Alpha')])),
+    })
+    // Isolation: only the active member's topics show — the workspace's own
+    // main session and other members' topics stay out of the tree.
+    expect(screen.queryByText('main-s')).toBeNull()
+    expect(screen.queryByText('Claude · topicA')).toBeNull()
+    // Native grouping: the member's topics sit in their cwd's workspace group
+    // (auto-expanded because the current topic belongs to it).
+    const section = screen.getByText('Alpha').closest('div[class*="groupSection"]') as HTMLElement
+    expect(within(section).getByText('Grok CLI · topic1')).toBeTruthy()
+    expect(within(section).getByText('Grok CLI · topic2')).toBeTruthy()
+    // A topic from another workspace trails under Ungrouped.
+    const ungroupedHeader = screen.getByText('未分组').closest('[role="treeitem"]') as HTMLElement
+    fireEvent.click(ungroupedHeader)
+    const ungrouped = ungroupedHeader.closest('div[class*="groupSection"]') as HTMLElement
+    expect(within(ungrouped).getByText('Grok CLI · elsewhere')).toBeTruthy()
+  })
+
+  it('hides member rows when a main session is current', () => {
+    const sessions = sessionState([
+      summary('main-s', 4),
+      summary('member:grok:topic1', 3, { displayTitle: 'Grok CLI · topic1', cwd: '/projects/alpha' }),
+    ], { current: sid('main-s') })
+    mount({
+      useSessions: hook(sessions),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['main-s'], 'Alpha')])),
+    })
+    // The workspace auto-expands for the main session; the member topic of
+    // the same workspace stays hidden in the main scope.
+    const section = screen.getByText('Alpha').closest('div[class*="groupSection"]') as HTMLElement
+    expect(within(section).getByText('main-s')).toBeTruthy()
+    expect(within(section).queryByText('Grok CLI · topic1')).toBeNull()
+  })
+
+  it('persists member topic drag order in the workspace account without a Host reorder call', async () => {
+    const insertSessionBefore = vi.fn(async () => {})
+    const sessions = sessionState([
+      summary('member:grok:topic1', 1, { displayTitle: 'Grok CLI · topic1', cwd: '/projects/alpha' }),
+      summary('member:grok:topic2', 2, { displayTitle: 'Grok CLI · topic2', cwd: '/projects/alpha' }),
+      summary('member:grok:topic3', 3, { displayTitle: 'Grok CLI · topic3', cwd: '/projects/alpha' }),
+    ], { current: sid('member:grok:topic1') })
+    const b = mount({
+      useSessions: hook(sessions),
+      useWorkspaces: hook(workspaceState([workspace('alpha', [], 'Alpha')])),
+      insertSessionBefore,
+    })
+    const topic1 = screen.getByText('Grok CLI · topic1').closest('[role="treeitem"]') as HTMLElement
+    const topic3 = screen.getByText('Grok CLI · topic3').closest('[role="treeitem"]') as HTMLElement
+    topic3.getBoundingClientRect = () => ({
+      top: 150, bottom: 184, left: 0, right: 200, width: 200, height: 34, x: 0, y: 150, toJSON: () => ({}),
+    })
+    fireEvent.dragStart(topic1, { dataTransfer: dragData() })
+    fireDrag(topic3, 'drop', 180)
+    // The order persists in the workspace's browser-local account; the Host
+    // reorder RPC never sees member session ids.
+    expect(b.store.getSnapshot().sessionOrderByAccount['alpha']).toEqual([
+      'member:grok:topic2', 'member:grok:topic3', 'member:grok:topic1',
+    ])
+    expect(insertSessionBefore).not.toHaveBeenCalled()
   })
 })

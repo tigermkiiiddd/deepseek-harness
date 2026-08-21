@@ -24,6 +24,9 @@
       "path": "../runtime"
     },
     {
+      "path": "../../host/apiproxy"
+    },
+    {
       "path": "../ui-sidebar"
     },
     {

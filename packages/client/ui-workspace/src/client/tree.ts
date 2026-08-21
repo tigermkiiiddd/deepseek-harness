@@ -8,6 +8,7 @@ import {
   type SessionSearchResultItem, type SessionSummary, type SubagentDescendantSummary,
   type WorkspaceId, type WorkspaceView,
 } from '@deepseek-ai/dsh-client-runtime/client'
+import { memberSessionOwner } from '@deepseek-ai/dsh-host-apiproxy/src/team-sessions.ts'
 
 /** Group key for Sessions outside every Workspace. */
 export const UNGROUPED_KEY = ''
@@ -37,12 +38,12 @@ export type SessionOrderBy = 'manual' | 'updated'
 
 /** One workspace group section: header row facts + visible top-level session rows. */
 export interface GroupNode {
-  /** Group key: the workspace id or {@link UNGROUPED_KEY}. */
+  /** Group key: the workspace id, a member-scope key, or {@link UNGROUPED_KEY}. */
   key: string
-  /** Backing Workspace id; absent only for the ungrouped bucket. */
+  /** Backing Workspace id; absent for the ungrouped bucket and member scopes. */
   workspaceId: WorkspaceId | undefined
   cwd: string | undefined
-  /** Workspace creation time (epoch ms); absent only for the ungrouped bucket. */
+  /** Workspace creation time (epoch ms); absent for the ungrouped bucket. */
   createdAt: number | undefined
   label: string
   /** Total visible sessions in the group. */
@@ -171,19 +172,62 @@ function orderedUngrouped(members: readonly SessionSummary[], stored: readonly s
  * outside every Workspace trail in the browser-local Ungrouped order, which
  * falls back to recency before that order is initialized.
  */
+/**
+ * Path comparison for workspace membership: member topics report their own
+ * cwd over ACP, and the slash style/casing may differ from the Host workspace
+ * path (Windows drives especially), so compare slash-normalized, then
+ * case-folded as a fallback.
+ * @param a - one filesystem path (or absent).
+ * @param b - the other filesystem path (or absent).
+ * @returns true when both paths name the same directory.
+ */
+export function sameWorkspacePath(a: string | undefined, b: string | undefined): boolean {
+  if (a === undefined || b === undefined) return false
+  const norm = (p: string): string => p.replace(/\\/g, '/').replace(/\/+$/, '')
+  const na = norm(a)
+  const nb = norm(b)
+  return na === nb || na.toLowerCase() === nb.toLowerCase()
+}
+
+/**
+ * Agent-scope filter: the sidebar follows the active agent. `null` is the
+ * main instance (member rows hidden); a member id scopes the tree to that
+ * member's topics alone. Grouping itself never changes — a member topic sits
+ * in the Workspace whose path matches its cwd, exactly like a native session.
+ */
+export type AgentScope = string | null
+
 function groupByWorkspace(
   list: SessionListState,
   workspaces: readonly WorkspaceView[],
   archived: ReadonlySet<SessionId>,
   ungroupedOrder: readonly string[] | undefined,
+  scope: AgentScope,
 ): Group[] {
+  const inScope = (id: SessionId): boolean => {
+    const owner = memberSessionOwner(id)
+    return scope === null ? owner === undefined : owner === scope
+  }
   const groups: Group[] = []
   const accounted = new Set<SessionId>()
   for (const workspace of workspaces) {
     const members: SessionSummary[] = []
-    for (const id of workspace.sessionIds) {
+    if (scope === null) {
+      for (const id of workspace.sessionIds) {
+        const summary = list.byId[id]
+        if (summary === undefined) continue // account may lead the list pull; the row appears when the summary lands
+        accounted.add(id)
+        if (!sessionVisible(summary, list.current, archived)) continue
+        members.push(summary)
+      }
+    }
+    // Member topics are never workspace-registered on the Host — the member
+    // owns its sessions. They join the group whose path matches the topic's
+    // own cwd, exactly like a native session of that workspace.
+    for (const id of list.ids) {
+      if (!inScope(id) || memberSessionOwner(id) === undefined || accounted.has(id)) continue
       const summary = list.byId[id]
-      if (summary === undefined) continue // account may lead the list pull; the row appears when the summary lands
+      if (summary === undefined || !sameWorkspacePath(summary.cwd, workspace.path)) continue
       accounted.add(id)
       if (!sessionVisible(summary, list.current, archived)) continue
       members.push(summary)
@@ -196,7 +240,10 @@ function groupByWorkspace(
   const stray = list.ids
     .map(id => list.byId[id])
     .filter((s): s is SessionSummary =>
-      s !== undefined && !accounted.has(s.id) && sessionVisible(s, list.current, archived))
+      s !== undefined
+      && inScope(s.id)
+      && !accounted.has(s.id)
+      && sessionVisible(s, list.current, archived))
   if (stray.length > 0) {
     groups.push(buildGroup(
       UNGROUPED_KEY,
@@ -246,16 +293,26 @@ export function deriveGroups(
   workspaces: readonly WorkspaceView[],
   archivedSessionIds: readonly SessionId[],
   view: TreeView,
+  scope: AgentScope = null,
 ): GroupNode[] {
   const archived = new Set(archivedSessionIds)
   const expandedGroups = new Set(view.expandedGroups)
   const descendants = indexSubagentDescendants(list.byId)
+  const currentSummary = list.current === undefined ? undefined : list.byId[list.current]
+  // A member session is never workspace-registered: its group is the
+  // workspace whose path matches the topic's cwd, else Ungrouped.
   const currentGroup = list.current === undefined
     ? undefined
     : (workspaces.find(w => w.sessionIds.includes(list.current as SessionId))?.workspaceId as string | undefined)
+        ?? (currentSummary !== undefined && memberSessionOwner(list.current) !== undefined
+          ? workspaces.find(w => sameWorkspacePath(currentSummary.cwd, w.path))?.workspaceId as string | undefined
+          : undefined)
         ?? UNGROUPED_KEY
   const groups: GroupNode[] = []
-  for (const g of groupByWorkspace(list, workspaces, archived, view.ungroupedOrder)) {
+  for (const g of groupByWorkspace(list, workspaces, archived, view.ungroupedOrder, scope)) {
+    // Scoped to a member, only groups holding its topics are real estate;
+    // empty workspace rows would be noise from another agent's world.
+    if (scope !== null && g.sessions.length === 0) continue
     const expanded = expandedGroups.has(g.key)
     groups.push({
       key: g.key,
@@ -279,11 +336,14 @@ export function deriveGroups(
  * (see {@link deriveSearchResults}).
  * @param list - sessions list snapshot.
  * @param archivedSessionIds - registry-global archive set.
+ * @param scope - agent scope: `null` (default) hides member topics; a member
+ *   id shows only that member's topics.
  * @returns flat rows in render order.
  */
 export function deriveFlat(
   list: SessionListState,
   archivedSessionIds: readonly SessionId[],
+  scope: AgentScope = null,
 ): SessionNode[] {
   const archived = new Set(archivedSessionIds)
   const descendants = indexSubagentDescendants(list.byId)
@@ -291,6 +351,8 @@ export function deriveFlat(
   for (const id of list.ids) {
     const s = list.byId[id]
     if (s === undefined || !sessionVisible(s, list.current, archived)) continue
+    const owner = memberSessionOwner(id)
+    if (scope === null ? owner !== undefined : owner !== scope) continue
     rows.push(s)
   }
   rows.sort(byRecency)
