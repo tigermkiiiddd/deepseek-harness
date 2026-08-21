@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-16-general-assistant-persona-ask-constraint.md
+2026-08-16-general-assistant-persona-ask-constraint.md: e91872733c3645cbb25dd5e086f8f8420596f349
+2026-08-16-general-assistant-persona-ask-constraint.zh.md: 51f5737faefde386a502721a9d7ad04cc7ae701d

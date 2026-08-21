@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-16-model-initiated-plan-mode-entry.md
+2026-08-16-model-initiated-plan-mode-entry.md: 0ba3b8a5d5b45cf3dda9ab4079c5cf53552b9b95
+2026-08-16-model-initiated-plan-mode-entry.zh.md: 3d0c1be29c2df3d2332ddc2ee7a8d4e94b495ba4
