@@ -82,7 +82,7 @@ describe('plan mode through the agent loop', () => {
     const header = findEvent(log, 'request/header')
     expect(planMode.seq).toBeLessThan(header.seq)
     expect(header.data.reason).toBe('initial')
-    expect(header.data.header.tools?.map(tool => tool.name)).toEqual(['exit_plan_mode', 'read', 'write'])
+    expect(header.data.header.tools?.map(tool => tool.name)).toEqual(['enter_plan_mode', 'exit_plan_mode', 'read', 'write'])
     expect(header.data.header.system).toContain('plan mode')
 
     // No tool gate: the write RUNS — plan restrains by the section's
@@ -106,7 +106,7 @@ describe('plan mode through the agent loop', () => {
     await waitForIdle(ctx, agent)
     expect(foldPlanMode(agent.session.events)).toBe(false)
     const first = findEvent(agent.session.events, 'request/header')
-    expect(first.data.header.tools?.map(tool => tool.name)).toEqual(['exit_plan_mode', 'read', 'write'])
+    expect(first.data.header.tools?.map(tool => tool.name)).toEqual(['enter_plan_mode', 'exit_plan_mode', 'read', 'write'])
 
     ctx.planMode.set(agent, true)
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'now plan' }], source: { kind: 'user' } }))
@@ -122,7 +122,7 @@ describe('plan mode through the agent loop', () => {
     // The changed request is logged as a complete snapshot.
     const second = findEvent(log, 'request/header', 'last')
     expect(second.data.reason).toBe('change')
-    expect(second.data.header.tools?.map(tool => tool.name)).toEqual(['exit_plan_mode', 'read', 'write'])
+    expect(second.data.header.tools?.map(tool => tool.name)).toEqual(['enter_plan_mode', 'exit_plan_mode', 'read', 'write'])
     expect(second.data.header.tools).toEqual(first.data.header.tools)
     expect(second.data.header.system).toContain('plan mode')
   })

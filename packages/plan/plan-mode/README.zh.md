@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-按 agent（智能体）分别记录到日志的 plan 协作状态，提供由部署方配置的引导内容、用于直接进入的 `/plan [message]` 命令、用于直接退出的 `/plan off` 命令，以及经用户评审的 `exit_plan_mode` 退出方式。Plan mode 是软引导；沙箱模式和批准策略各自强制执行限制，且不读写 plan 状态。
+按 agent（智能体）分别记录到日志的 plan 协作状态，提供由部署方配置的引导内容、用于直接进入的 `/plan [message]` 命令、用于直接退出的 `/plan off` 命令、模型自主进入的 `enter_plan_mode`，以及经用户评审的 `exit_plan_mode` 退出方式。经批准的 plan 会记录到会话工作区（默认 `docs/plans`），作为持久的工作留痕。Plan mode 是软引导；沙箱模式和批准策略各自强制执行限制，且不读写 plan 状态。
 
 ## 持久状态
 
@@ -12,7 +12,7 @@
 
 ## 模型与人类交互
 
-激活时，`plan:policy` 会渲染已配置的 `section`。插件始终注册 `exit_plan_mode`，使工具 schema 在转换期间保持稳定；其 execute 路径只接受已激活的 plan mode，且只有通过 `ctx.userQuestions` 获得用户明确批准后才退出。
+激活时，`plan:policy` 会渲染已配置的 `section`。插件始终同时注册 `enter_plan_mode` 和 `exit_plan_mode`，使工具 schema 在转换期间保持稳定。通过 `enter_plan_mode` 进入会把选择排队到下一个被接受的轮内 pre-step（与退出工具一致）；在 plan mode 已激活或已进入途中时调用是幂等空操作；被委派的子级 agent 会被拒绝——它永远无法打开退出评审。进入由工具结果自己说明，因此不追加切换通知。退出工具的 execute 路径只接受已激活的 plan mode，且只有通过 `ctx.userQuestions` 获得用户明确批准后才退出；在同一批次内，模型发起的重新进入仍可覆盖一个已排队的退出。
 
 评审问题声明 `plan-review` 呈现意图，并指名 `Approve` 为表示批准的标签，因此有能力的 UI 会把计划呈现为一次决定而非通用问题；两种情况下该工具读到的回答完全相同。放弃审阅——用户关闭请求，转而发言——会如实报告给模型，要求它留在 plan mode 中等待那条消息；其余每一种评审失败都保留 seam 自身的消息。
 
@@ -35,9 +35,9 @@ Web 客户端使用该插件提供的 `/plan` 命令；其他入口可以直接�
       plan through exit_plan_mode.
 ```
 
-`section` 必填且非空。出现未知键时，插件会加载失败。该包不接受任意命名的 mode、工具过滤器、沙箱设置或批准策略。
+`section` 必填且非空。`plansDir` 可选，用于覆盖经批准 plan 的记录目录（默认 `docs/plans`，相对会话工作目录解析）。出现未知键时，插件会加载失败。该包不接受任意命名的 mode、工具过滤器、沙箱设置或批准策略。
 
-设计：[plan 专用协作状态](../../../.agents/notes/implemented/simplification/2026-07-22-plan-specific-collaboration-state.md)。
+设计：[plan 专用协作状态](../../../.agents/notes/implemented/simplification/2026-07-22-plan-specific-collaboration-state.md)、[经批准的 plan 记录到工作区](../../../.agents/notes/implemented/feature/2026-08-16-approved-plans-recorded-to-workspace.md) 与 [模型自主进入 plan mode](../../../.agents/notes/implemented/feature/2026-08-16-model-initiated-plan-mode-entry.md)。
 
 ## 模型体验
 
@@ -75,11 +75,25 @@ You are in plan mode. Explore and design before presenting the complete plan thr
 
 用户块是仅追加的对话增长。进入或退出 plan mode 会改变更早的策略段；退出转换的记录通知会追加在可复用请求前缀之后。
 
+### 模型自主进入
+
+#### 模型所见内容
+
+`enter_plan_mode` 的 schema 始终存在，因此模型始终知道 plan mode 存在，可在复杂或多步骤任务时自主进入；其描述点名 `exit_plan_mode` 作为经评审的退出方式。未激活时调用会把进入排队到下一个被接受的轮内 pre-step 并返回 `{ entered: true }`；已激活或已进入途中时返回 `{ entered: true, already: true }`，不写日志。被委派的子级 agent 会被拒绝。
+
+#### Token 影响
+
+一个始终存在的小 schema；调用与结果按常规方式扩展对话。
+
+#### KV Cache 影响
+
+从下一个请求起，进入会像 `/plan` 选择一样改变靠前的策略区段；工具目录永远不变。
+
 ### 退出工具 schema 与评审交互
 
 #### 模型所见内容
 
-[`exit_plan_mode` schema](../../../docs/tool-catalog.md#deepseek-aidsh-plan-mode) 在两种状态下均可用；在 plan mode 外执行会失败，而 plan mode 内经批准的评审会返回规范的 `{ approved: true }` 值，并渲染既有的确认文本。拒绝仍是携带评审反馈的失败调用，放弃审阅则是一次指明用户接手的失败调用。
+[`exit_plan_mode` schema](../../../docs/tool-catalog.md#deepseek-aidsh-plan-mode) 在两种状态下均可用；在 plan mode 外执行会失败，而 plan mode 内经批准的评审会返回规范的 `{ approved: true }` 值（组合了文件系统能力时附带记录到的 `path`），并渲染既有的确认文本。拒绝仍是携带评审反馈的失败调用，放弃审阅则是一次指明用户接手的失败调用。
 
 #### Token 影响
 
@@ -88,6 +102,16 @@ You are in plan mode. Explore and design before presenting the complete plan thr
 #### KV Cache 影响
 
 mode 转换不改变工具目录；plan 参数与评审结果按常规方式扩展对话。
+
+### 经批准 plan 的记录
+
+#### 模型所见内容
+
+批准时，plan markdown 会写入相对会话工作目录解析的 `<plansDir>/yyyy-mm-dd-<slug>.md`——默认 `docs/plans`——slug 取自 plan 第一个标题，同日同名覆盖。结果携带记录到的 `path`，确认文本会点名它。被拒绝的 plan 不落文件，草稿只留在会话日志里。会话没有工作目录、或沙箱策略禁止写入时，调用失败且 plan mode 保持激活，可重试批准；未组合文件系统能力的组合则整个跳过记录。
+
+#### Token 影响
+
+记录只在结果中增加一行 `path`；plan 内容本身已作为调用参数留在历史中。
 
 ## 已知限制与暂缓事项
 

@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-Logged, per-agent plan collaboration state with deployment-owned guidance, direct `/plan [message]` entry and `/plan off` exit commands, and the reviewed `exit_plan_mode` exit. Plan mode is soft guidance; sandbox mode and approval policy enforce restrictions independently and do not read or write plan state.
+Logged, per-agent plan collaboration state with deployment-owned guidance, direct `/plan [message]` entry and `/plan off` exit commands, the model-initiated `enter_plan_mode` entry, and the reviewed `exit_plan_mode` exit. An approved plan is recorded to the session workspace (`docs/plans` by default) as a durable work trace. Plan mode is soft guidance; sandbox mode and approval policy enforce restrictions independently and do not read or write plan state.
 
 ## Durable state
 
@@ -12,7 +12,7 @@ Logged, per-agent plan collaboration state with deployment-owned guidance, direc
 
 ## Model and human interactions
 
-While active, `plan:policy` renders the configured `section`. The plugin always registers `exit_plan_mode`, keeping tool schemas stable across the transition; its execute path accepts only active plan mode and leaves it only after an exact user approval through `ctx.userQuestions`.
+While active, `plan:policy` renders the configured `section`. The plugin always registers both `enter_plan_mode` and `exit_plan_mode`, keeping tool schemas stable across transitions. Entry through `enter_plan_mode` queues the selection for the next accepted in-turn pre-step (like the exit tool), is an idempotent no-op while plan mode is active or already entering, and is refused for a delegated child agent, which could never open the exit review; the tool result narrates the entry, so no switch notice is appended. The exit tool's execute path accepts only active plan mode and leaves it only after an exact user approval through `ctx.userQuestions`; a model-initiated re-entry can still override a queued exit within the same batch.
 
 The review question declares the `plan-review` presentation intent, naming `Approve` as the label that approves it, so a capable UI presents the plan as a decision instead of a generic question; the answer the tool reads is the same either way. A dismissed review — the user closing the request to speak instead — is reported to the model as such, telling it to stay in plan mode and wait for the message; every other review failure keeps the seam's own message.
 
@@ -35,9 +35,9 @@ When the composition mounts `ctx.sessionProjections` ([`@deepseek-ai/dsh-session
       plan through exit_plan_mode.
 ```
 
-`section` is required and non-empty. Unknown keys fail at load. The package does not accept arbitrary named modes, tool filters, sandbox settings, or approval policy.
+`section` is required and non-empty. `plansDir` optionally overrides where approved plans are recorded (default `docs/plans`, resolved against the session's working directory). Unknown keys fail at load. The package does not accept arbitrary named modes, tool filters, sandbox settings, or approval policy.
 
-Design: [plan-specific collaboration state](../../../.agents/notes/implemented/simplification/2026-07-22-plan-specific-collaboration-state.md).
+Design: [plan-specific collaboration state](../../../.agents/notes/implemented/simplification/2026-07-22-plan-specific-collaboration-state.md), [approved plans recorded to the workspace](../../../.agents/notes/implemented/feature/2026-08-16-approved-plans-recorded-to-workspace.md), and [model-initiated plan-mode entry](../../../.agents/notes/implemented/feature/2026-08-16-model-initiated-plan-mode-entry.md).
 
 ## Model Experience
 
@@ -75,11 +75,25 @@ The optional message costs the same history tokens as submitting that text separ
 
 The user block is append-only conversation growth. Entering or leaving plan mode changes the earlier policy section; a narrated exit notice is appended after the reusable request prefix.
 
+### Model-initiated entry
+
+#### What the model sees
+
+The `enter_plan_mode` schema is always present, so the model knows plan mode exists and can enter it for complex or multi-step work; its description names `exit_plan_mode` as the reviewed way out. A call while inactive queues the entry for the next accepted in-turn pre-step and returns `{ entered: true }`; while active or already entering it returns `{ entered: true, already: true }` without touching the log. A delegated child agent is refused.
+
+#### Token effect
+
+One small always-present schema; the call and result extend the conversation normally.
+
+#### KV Cache effect
+
+Entry changes the earlier policy section from the next request, exactly like a `/plan` selection; the tool catalog never changes.
+
 ### Exit tool schema and review exchange
 
 #### What the model sees
 
-The [`exit_plan_mode` schema](../../../docs/tool-catalog.md#deepseek-aidsh-plan-mode) remains available in both states; execution outside plan mode fails, while an approved in-mode review returns the canonical `{ approved: true }` value and renders the existing confirmation text. Rejection remains a failed call carrying review feedback, and a dismissed review a failed call naming the user's takeover.
+The [`exit_plan_mode` schema](../../../docs/tool-catalog.md#deepseek-aidsh-plan-mode) remains available in both states; execution outside plan mode fails, while an approved in-mode review returns the canonical `{ approved: true }` value plus the recorded `path` when a filesystem capability is composed, and renders the existing confirmation text. Rejection remains a failed call carrying review feedback, and a dismissed review a failed call naming the user's takeover.
 
 #### Token effect
 
@@ -88,6 +102,16 @@ The stable schema is paid according to ToolRuntime mode, and each plan argument 
 #### KV Cache effect
 
 Mode transitions do not change the tool catalog; plan arguments and review results extend the conversation normally.
+
+### Approved-plan recording
+
+#### What the model sees
+
+On approval, the plan markdown is written to `<plansDir>/yyyy-mm-dd-<slug>.md` resolved against the session's working directory — `docs/plans` unless configured otherwise — where the slug derives from the plan's first heading and same-day same-slug recordings overwrite. The result carries the recorded `path`; the confirmation text names it. A rejected plan leaves no file — its drafts remain in the session log only. A session without a working directory, or a write the sandbox policy forbids, fails the call and keeps plan mode active so the approval can be retried; a composition without a filesystem capability skips the trace entirely.
+
+#### Token effect
+
+The recording adds only the result's `path` line to the request; the plan content itself is already in history as the call argument.
 
 ## Known Limitations and Deferred Work
 

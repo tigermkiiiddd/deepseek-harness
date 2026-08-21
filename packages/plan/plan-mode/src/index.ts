@@ -15,7 +15,9 @@
  *
  * The exit tool remains registered while plan mode is inactive, so entering
  * or leaving plan mode changes only the prompt section, not the request tool
- * catalog.
+ * catalog. An approved plan is recorded to the session workspace's plans
+ * directory (`docs/plans` by default) when a filesystem capability is
+ * composed, so accepted work leaves a durable trace in the project.
  *
  * Agent Note:
  * - .agents/notes/implemented/simplification/2026-07-22-plan-specific-collaboration-state.md
@@ -28,6 +30,7 @@ import { z as zod } from 'zod'
 import type { ZodType } from 'zod'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { currentSessionCwd } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-system-prompt'
@@ -36,6 +39,10 @@ import { UserQuestionError } from '@deepseek-ai/dsh-user-questions'
 import type {} from '@deepseek-ai/dsh-commands'
 // Type-only: resolves ctx.sessionProjections for the optional unit child.
 import type {} from '@deepseek-ai/dsh-session-projection'
+// Type-only edges: resolve `ctx.fs` / `ctx.sandboxPolicy` for recording an
+// approved plan to the session workspace (both optional capabilities).
+import type {} from '@deepseek-ai/dsh-fs'
+import type {} from '@deepseek-ai/dsh-sandbox-policy'
 import type { PlanProjection } from './types.ts'
 // The `plan` projection-key declaration lives in src/types.ts (its one home);
 // this re-export projects the type face onto the package root AND keeps the
@@ -61,6 +68,12 @@ declare module '@deepseek-ai/cordis' {
 }
 
 /**
+ * The model-facing entry tool's name. It stays registered in both states
+ * alongside the exit tool, keeping the request tool catalog stable.
+ */
+export const ENTER_PLAN_MODE = 'enter_plan_mode'
+
+/**
  * The model-facing exit tool's name. It stays registered while plan mode is
  * inactive so the request tool catalog is stable across transitions.
  */
@@ -70,6 +83,11 @@ export const EXIT_PLAN_MODE = 'exit_plan_mode'
 export interface PlanModeConfig {
   /** Guidance rendered as the `plan:policy` prompt section while plan mode is active. */
   section: string
+  /**
+   * Directory an approved plan is recorded to, resolved against the session's
+   * working directory. Defaults to `docs/plans`.
+   */
+  plansDir?: string
 }
 
 /** The review question's id, echoed in the answer this tool reads. */
@@ -81,11 +99,18 @@ const APPROVE_LABEL = 'Approve'
 /** The review question's keep-planning option label. */
 const KEEP_PLANNING_LABEL = 'Keep planning'
 
-const EXIT_DESCRIPTION
-  = 'Use only in plan mode. Present your plan for the user\'s review and, on approval, leave plan mode. '
+const ENTER_DESCRIPTION
+  = 'Enter plan mode for complex or multi-step work: explore and design first, then present the plan through '
+  + 'exit_plan_mode for user approval before making any changes. Already in plan mode, this call is a no-op. '
+  + 'Plan mode is unavailable to delegated subagents.'
+
+const EXIT_DESCRIPTION = (plansDir: string): string =>
+  'Use only in plan mode. Present your plan for the user\'s review and, on approval, leave plan mode. '
   + 'Send the COMPLETE plan as markdown, starting with a # heading that names it. '
   + 'The user may approve (carry out the plan from your next step) or keep '
-  + 'planning — their feedback comes back in the tool result; revise and present again.'
+  + 'planning — their feedback comes back in the tool result; revise and present again. '
+  + `An approved plan is recorded to ${plansDir}/ in your working directory as a durable work trace. `
+  + `Not in plan mode? Enter it with ${ENTER_PLAN_MODE}.`
 
 /** The plan's first markdown heading (any level), or `undefined` when it has none. */
 function firstHeading(plan: string): string | undefined {
@@ -97,13 +122,30 @@ function firstHeading(plan: string): string | undefined {
 }
 
 /**
+ * File slug for a recorded plan: the heading lowercased, every non-letter/digit
+ * run collapsed to one dash (Unicode letters survive, so CJK headings stay
+ * readable). A heading of pure punctuation falls back to `plan`.
+ */
+function planSlug(heading: string): string {
+  const slug = heading.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '')
+  return slug === '' ? 'plan' : slug
+}
+
+/** Local `yyyy-mm-dd` date prefix for a recorded plan's filename. */
+function dateStamp(): string {
+  const now = new Date()
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
+
+/**
  * Validate deployment-owned plan guidance. Missing, blank, non-string, or
  * unknown fields fail at plugin load rather than being ignored.
  *
  * @param config Raw plugin config.
- * @returns A detached validated config.
+ * @returns A detached validated config with defaults applied.
  */
-export function resolveConfig(config: PlanModeConfig): PlanModeConfig {
+export function resolveConfig(config: PlanModeConfig): Required<PlanModeConfig> {
   const section = (config as Partial<PlanModeConfig>).section
   if (typeof section !== 'string') {
     throw new Error('PlanModeConfig needs a string `section`')
@@ -111,11 +153,15 @@ export function resolveConfig(config: PlanModeConfig): PlanModeConfig {
   if (section.trim() === '') {
     throw new Error('PlanModeConfig needs a non-empty `section`')
   }
-  const unknown = Object.keys(config).filter(key => key !== 'section')
-  if (unknown.length > 0) {
-    throw new Error(`PlanModeConfig has unknown key(s) ${unknown.join(', ')} — config is { section }`)
+  const plansDir = (config as Partial<PlanModeConfig>).plansDir
+  if (plansDir !== undefined && (typeof plansDir !== 'string' || plansDir.trim() === '')) {
+    throw new Error('PlanModeConfig `plansDir` must be a non-empty string when given')
   }
-  return { section }
+  const unknown = Object.keys(config).filter(key => key !== 'section' && key !== 'plansDir')
+  if (unknown.length > 0) {
+    throw new Error(`PlanModeConfig has unknown key(s) ${unknown.join(', ')} — config is { section, plansDir? }`)
+  }
+  return { section, plansDir: plansDir ?? 'docs/plans' }
 }
 
 /**
@@ -187,6 +233,9 @@ export class PlanModeController extends Service {
   /** Validated deployment-owned guidance. */
   private readonly section: string
 
+  /** Directory (session-cwd-relative) approved plans are recorded to. */
+  private readonly plansDir: string
+
   /**
    * Latest selection per session awaiting the next accepted in-turn pre-step.
    * `narrate` is true for user selections and false for the exit tool, whose
@@ -196,7 +245,9 @@ export class PlanModeController extends Service {
 
   constructor(ctx: Context, config: PlanModeConfig = { section: '' }) {
     super(ctx, 'planMode')
-    this.section = resolveConfig(config).section
+    const resolved = resolveConfig(config)
+    this.section = resolved.section
+    this.plansDir = resolved.plansDir
     let disposed = false
     // Pre-step is outside Session.append publication, so it can append the
     // log-only mode event inside an open turn without re-entering the session.
@@ -303,8 +354,48 @@ export class PlanModeController extends Service {
     })
 
     ctx.tools.register(defineTool({
+      name: ENTER_PLAN_MODE,
+      description: ENTER_DESCRIPTION,
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            entered: { type: 'boolean', const: true, required: true },
+            /** True when the session was already in (or already entering) plan mode. */
+            already: { type: 'boolean' },
+          },
+        },
+        render: (_args, value: { entered: true; already?: boolean }) => [{ type: 'text', text: value.already === true
+          ? 'Already in plan mode.'
+          : 'Entering plan mode (applies from the next step). Explore and design, then present the plan through exit_plan_mode.' }],
+      },
+      execute: (_args, exec) => {
+        const agent = exec.agent
+        if (agent === undefined) throw new Error(`${ENTER_PLAN_MODE} requires a calling agent (no session to switch)`)
+        // A delegated child cannot open the exit review, so entering would trap
+        // it in plan mode — refuse instead (mirrors the user-questions guard).
+        const agents = ctx.get('agents')
+        if (agents !== undefined) {
+          const live = agents.get(agent.id)
+          if (live === agent && !agents.roots().includes(agent)) {
+            throw new Error('plan mode is unavailable to a delegated subagent; do the delegated work and report back instead')
+          }
+        }
+        const target = this.pendingIntents.get(agent.session)?.active ?? foldPlanMode(agent.session.events)
+        if (target) return Promise.resolve({ entered: true, already: true } as const)
+        // Queue the entry for the next accepted in-turn pre-step, mirroring the
+        // exit tool: the tool result already narrates the transition, so the
+        // boundary appends the mode event without a user-switch notice.
+        this.pendingIntents.set(agent.session, { active: true, narrate: false })
+        return Promise.resolve({ entered: true } as const)
+      },
+    }))
+
+    ctx.tools.register(defineTool({
       name: EXIT_PLAN_MODE,
-      description: EXIT_DESCRIPTION,
+      description: EXIT_DESCRIPTION(this.plansDir),
       parameters: {
         plan: { type: 'string', required: true, description: 'The complete plan, as markdown, starting with a # heading that names it.' },
       },
@@ -314,9 +405,14 @@ export class PlanModeController extends Service {
           additionalProperties: false,
           properties: {
             approved: { type: 'boolean', const: true, required: true },
+            // Present when a filesystem capability recorded the plan; absent
+            // in compositions without one (the approval still stands).
+            path: { type: 'string' },
           },
         },
-        render: () => [{ type: 'text', text: 'Plan approved — plan mode exited; carry out the plan starting with your next step.' }],
+        render: (_args, value: { approved: true; path?: string }) => [{ type: 'text', text: value.path === undefined
+          ? 'Plan approved — plan mode exited; carry out the plan starting with your next step.'
+          : `Plan approved and recorded to ${value.path} — plan mode exited; carry out the plan starting with your next step.` }],
       },
       execute: async (args, exec) => {
         const agent = exec.agent
@@ -324,7 +420,8 @@ export class PlanModeController extends Service {
         if (!foldPlanMode(agent.session.events)) {
           throw new Error(`${EXIT_PLAN_MODE} is only available in plan mode`)
         }
-        if (!/^#\s+\S/.test(args.plan.trim())) {
+        const heading = firstHeading(args.plan)
+        if (heading === undefined || !/^#\s+\S/.test(args.plan.trim())) {
           throw new Error(`${EXIT_PLAN_MODE} requires a non-empty markdown plan starting with a # heading`)
         }
         const interaction = ctx.get('userQuestions')
@@ -373,11 +470,28 @@ export class PlanModeController extends Service {
             ? 'The user chose to keep planning; revise the plan and present it again.'
             : `The user chose to keep planning; their feedback: ${feedback}`)
         }
+        // Record the approved plan to the workspace before leaving: the file
+        // is the durable work trace (the session log already holds the same
+        // content as this call's argument). Compositions without a filesystem
+        // capability skip the trace; a write failure fails the call and keeps
+        // plan mode active so the approval can be retried.
+        const fs = ctx.get('fs')
+        let path: string | undefined
+        if (fs !== undefined) {
+          const cwd = currentSessionCwd(agent.session)
+          if (cwd === undefined) {
+            throw new Error('the plan is approved, but this session has no working directory to record it to')
+          }
+          const policy = ctx.get('sandboxPolicy')?.resolve({ session: agent.session })
+          const target = await fs.resolve(`${this.plansDir}/${dateStamp()}-${planSlug(heading)}.md`, { cwd, signal: exec.signal })
+          await fs.writeText(target, args.plan, undefined, exec.signal, policy)
+          path = target.displayPath
+        }
         // Keep plan guidance for the rest of this assistant tool batch. The
         // silent selection is appended at the next accepted in-turn pre-step,
         // before its request assembly.
         this.pendingIntents.set(agent.session, { active: false, narrate: false })
-        return { approved: true }
+        return { approved: true, ...path === undefined ? {} : { path } }
       },
       presentCall: args => ({
         card: 'generic',

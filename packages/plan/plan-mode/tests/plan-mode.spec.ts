@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, afterEach } from 'vitest'
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, CallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -6,12 +9,13 @@ import ToolRuntime, { RUN_CODE_NAME, defineContentToolFixture } from '@deepseek-
 import { Session, SessionId, type UserMessage } from '@deepseek-ai/dsh-session'
 import AgentRegistry, { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import { createScope } from '@deepseek-ai/dsh-scope'
+import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import UserQuestionService, {
   UserQuestionError, type AskUserQuestionRequest,
 } from '@deepseek-ai/dsh-user-questions'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
 import { CodeRuntime, type CodeRunRequest, type CodeRunResult } from '@deepseek-ai/dsh-code-runtime'
-import PlanModeController, { EXIT_PLAN_MODE, foldPlanMode, resolveConfig } from '../src/index.ts'
+import PlanModeController, { ENTER_PLAN_MODE, EXIT_PLAN_MODE, foldPlanMode, resolveConfig } from '../src/index.ts'
 import type { PlanModeConfig } from '../src/index.ts'
 
 const TEST_PLAN_SECTION = 'Test plan mode instructions.'
@@ -137,7 +141,8 @@ function expectPlanCodeSdkBindings(sdk: string): void {
   expect(sdk).toContain('read: Record<string, JsonValue>;')
   expect(sdk).toContain('write: Record<string, JsonValue>;')
   expect(sdk).toContain('interface ToolOutputMap {')
-  expect(sdk).toContain('exit_plan_mode: {\n    approved: true;\n  };')
+  expect(sdk).toContain('enter_plan_mode: {\n    entered: true;')
+  expect(sdk).toContain('exit_plan_mode: {\n    approved: true;\n    path?: string;\n  };')
   expect(sdk).toContain('[K in ToolName]: (args: ToolArgsMap[K]) => Promise<ToolOutputMap[K]>;')
 }
 
@@ -146,6 +151,16 @@ function execute(ctx: Context, name: string, agent?: Agent) {
   return ctx.tools.execute({
     callId: CallId(`call-${++callCounter}`),
     name,
+    arguments: {},
+    signal: new AbortController().signal,
+    ...agent ? { agent } : {},
+  })
+}
+
+function callEnter(ctx: Context, agent: Agent | undefined) {
+  return ctx.tools.execute({
+    callId: CallId(`call-enter-${++callCounter}`),
+    name: ENTER_PLAN_MODE,
     arguments: {},
     signal: new AbortController().signal,
     ...agent ? { agent } : {},
@@ -162,16 +177,27 @@ describe('resolveConfig', () => {
       .toThrow('needs a non-empty `section`')
   })
 
-  it('returns a detached plan config', () => {
+  it('returns a detached plan config with defaults applied', () => {
     const config = { section: TEST_PLAN_SECTION }
     const resolved = resolveConfig(config)
-    expect(resolved).toEqual(config)
+    expect(resolved).toEqual({ ...config, plansDir: 'docs/plans' })
     expect(resolved).not.toBe(config)
+  })
+
+  it('validates plansDir when given', () => {
+    expect(() => resolveConfig({ section: TEST_PLAN_SECTION, plansDir: '' }))
+      .toThrow('`plansDir` must be a non-empty string')
+    expect(() => resolveConfig({ section: TEST_PLAN_SECTION, plansDir: '  ' }))
+      .toThrow('`plansDir` must be a non-empty string')
+    expect(() => resolveConfig({ section: TEST_PLAN_SECTION, plansDir: 5 } as unknown as PlanModeConfig))
+      .toThrow('`plansDir` must be a non-empty string')
+    expect(resolveConfig({ section: TEST_PLAN_SECTION, plansDir: 'notes/plans' }).plansDir)
+      .toBe('notes/plans')
   })
 
   it('rejects fields outside the plan policy config', () => {
     expect(() => resolveConfig({ section: TEST_PLAN_SECTION, tools: ['read'] } as unknown as PlanModeConfig))
-      .toThrow('unknown key(s) tools — config is { section }')
+      .toThrow('unknown key(s) tools — config is { section, plansDir? }')
   })
 })
 
@@ -403,7 +429,7 @@ describe('the soft layer', () => {
     registerNamedTools(ctx, ['read', 'write'])
     const agent = await agentWithSession(ctx)
     const defaultAssembly = await assembleFor(ctx, agent)
-    expect(defaultAssembly.tools.map(tool => tool.name)).toEqual([EXIT_PLAN_MODE, 'read', 'write'])
+    expect(defaultAssembly.tools.map(tool => tool.name)).toEqual([ENTER_PLAN_MODE, EXIT_PLAN_MODE, 'read', 'write'])
     expect(defaultAssembly.sections.find(section => section.name === 'plan:policy')?.text).toBe('')
 
     agent.session.append('plan/mode', { active: true })
@@ -416,7 +442,7 @@ describe('the soft layer', () => {
     const ctx = await setup()
     registerNamedTools(ctx, ['read'])
     const assembly = await ctx.systemPrompt.assemble()
-    expect(assembly.tools.map(tool => tool.name)).toEqual([EXIT_PLAN_MODE, 'read'])
+    expect(assembly.tools.map(tool => tool.name)).toEqual([ENTER_PLAN_MODE, EXIT_PLAN_MODE, 'read'])
     expect(assembly.sections.find(section => section.name === 'plan:policy')?.text).toBe('')
   })
 
@@ -425,7 +451,7 @@ describe('the soft layer', () => {
     registerNamedTools(ctx, ['read', 'write', 'todo_write'])
     const agent = await agentWithSession(ctx, 'agent-1', { active: true })
     const assembly = await assembleFor(ctx, agent)
-    expect(assembly.tools.map(tool => tool.name).sort()).toEqual([EXIT_PLAN_MODE, 'read', 'todo_write', 'write'])
+    expect(assembly.tools.map(tool => tool.name).sort()).toEqual([ENTER_PLAN_MODE, EXIT_PLAN_MODE, 'read', 'todo_write', 'write'])
     expect(assembly.sections.find(section => section.name === 'plan:policy')?.text).toBe(TEST_PLAN_SECTION)
   })
 
@@ -443,10 +469,10 @@ describe('the soft layer', () => {
     registerNamedTools(ctx, ['read'])
     const planning = await agentWithSession(ctx, 'planning', { active: true })
     expect((await assembleFor(ctx, planning)).tools.map(tool => tool.name))
-      .toEqual(['exit_plan_mode', 'read', 'added-later'])
+      .toEqual(['enter_plan_mode', 'exit_plan_mode', 'read', 'added-later'])
     const defaulted = await agentWithSession(ctx, 'defaulted')
     expect((await assembleFor(ctx, defaulted)).tools.map(tool => tool.name))
-      .toEqual(['exit_plan_mode', 'read', 'added-later'])
+      .toEqual(['enter_plan_mode', 'exit_plan_mode', 'read', 'added-later'])
   })
 
   it('keeps run_code the only wire tool in plan mode under the registry Code Mode; the SDK gains the exit binding', async () => {
@@ -488,7 +514,7 @@ describe('the soft layer', () => {
     const assembly = await assembleFor(ctx, agent)
     // The stable registry contribution reaches both model interfaces: the exit tool
     // is present on the wire AND in the SDK alongside the untouched toolset.
-    expect(assembly.tools.map(tool => tool.name).sort()).toEqual(['exit_plan_mode', 'read', 'run_code', 'write'])
+    expect(assembly.tools.map(tool => tool.name).sort()).toEqual(['enter_plan_mode', 'exit_plan_mode', 'read', 'run_code', 'write'])
     const sdk = assembly.sections.find(section => section.name === 'tools:sdk')?.text ?? ''
     expectPlanCodeSdkBindings(sdk)
   })
@@ -661,6 +687,83 @@ describe('/plan', () => {
   })
 })
 
+describe('enter_plan_mode', () => {
+  it('registers alongside the exit tool and points at it', async () => {
+    const ctx = await setup()
+    const schema = ctx.tools.schemas().find(entry => entry.name === ENTER_PLAN_MODE)
+    expect(schema?.description).toContain('exit_plan_mode')
+    expect(ctx.tools.schemas().map(tool => tool.name)).toContain(EXIT_PLAN_MODE)
+  })
+
+  it('rejects an agent-less call', async () => {
+    const ctx = await setup()
+    const result = await callEnter(ctx, undefined)
+    expect(result.isError).toBe(true)
+    expect(result.content).toEqual([{ type: 'text', text: 'Error: enter_plan_mode requires a calling agent (no session to switch)' }])
+  })
+
+  it('queues entry for the next accepted pre-step and narrates through its own result', async () => {
+    const ctx = await setup()
+    const agent = await agentWithSession(ctx, 'agent-enter')
+    const result = await callEnter(ctx, agent)
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected entered result')
+    expect(result.value).toEqual({ entered: true })
+    expect(result.content).toEqual([{ type: 'text', text: 'Entering plan mode (applies from the next step). Explore and design, then present the plan through exit_plan_mode.' }])
+    // Queued, not committed: the fold flips only at the boundary flush.
+    expect(foldPlanMode(agent.session.events)).toBe(false)
+    expect(ctx.planMode.get(agent)).toEqual({ active: false, pending: true })
+    // A second call while the entry is pending is the idempotent no-op.
+    const again = await callEnter(ctx, agent)
+    expect(again.isError).toBe(false)
+    if (again.isError) throw new Error('expected entered result')
+    expect(again.value).toEqual({ entered: true, already: true })
+    expect(again.content).toEqual([{ type: 'text', text: 'Already in plan mode.' }])
+    await boundary(ctx, agent, 'step-start')
+    expect(foldPlanMode(agent.session.events)).toBe(true)
+    // The tool result already narrated the entry: no plugin switch notice.
+    expect(noticeTexts(agent.session)).toEqual([])
+  })
+
+  it('is a no-op when plan mode is already active', async () => {
+    const ctx = await setup()
+    const agent = await agentWithSession(ctx, 'agent-active', { active: true })
+    const result = await callEnter(ctx, agent)
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected entered result')
+    expect(result.value).toEqual({ entered: true, already: true })
+    // No second mode event: the seeded one remains the only flip.
+    expect(agent.session.events.filter(event => event.type === 'plan/mode')).toHaveLength(1)
+  })
+
+  it('refuses a delegated child, which could never open the exit review', async () => {
+    const ctx = await setup()
+    await ctx.plugin(AgentRegistry)
+    const parent = await agentWithSession(ctx, 'parent')
+    const child = await agentWithSession(ctx, 'child', { owner: parent })
+    const result = await callEnter(ctx, child)
+    expect(result.isError).toBe(true)
+    expect(result.content).toEqual([{
+      type: 'text',
+      text: 'Error: plan mode is unavailable to a delegated subagent; do the delegated work and report back instead',
+    }])
+    expect(foldPlanMode(child.session.events)).toBe(false)
+  })
+
+  it('enters through a stale agent handle that is not the live registration', async () => {
+    const ctx = await setup()
+    await ctx.plugin(AgentRegistry)
+    const agent = await agentWithSession(ctx, 'agent-stray')
+    const stray = { ...agent } as Agent
+    const result = await callEnter(ctx, stray)
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected entered result')
+    expect(result.value).toEqual({ entered: true })
+    await boundary(ctx, agent, 'step-start')
+    expect(foldPlanMode(agent.session.events)).toBe(true)
+  })
+})
+
 describe('exit_plan_mode', () => {
   async function setupWithReview(answer?: { selected: string[]; custom?: string }) {
     const ctx = await setup()
@@ -716,7 +819,7 @@ describe('exit_plan_mode', () => {
 
   it('rejects an empty or heading-less plan before asking the reviewer', async () => {
     const { ctx, agent, asked } = await setupWithReview({ selected: ['Approve'] })
-    for (const plan of ['', 'do things']) {
+    for (const plan of ['', 'do things', 'intro\n# Title']) {
       const result = await callExit(ctx, agent, plan)
       expect(result.isError).toBe(true)
       expect(result.content).toEqual([{ type: 'text', text: 'Error: exit_plan_mode requires a non-empty markdown plan starting with a # heading' }])
@@ -779,6 +882,91 @@ describe('exit_plan_mode', () => {
     expect(asked[0]?.agent).toBe(agent)
     expect(asked[0]?.questions[0]?.detail).toBe('# The plan\n\ndo things')
     expect(asked[0]?.questions[0]?.options?.map(option => option.label)).toEqual(['Approve', 'Keep planning'])
+  })
+
+  it('a queued exit can be overridden by a model-initiated re-entry', async () => {
+    const { ctx, agent } = await setupWithReview({ selected: ['Approve'] })
+    await callExit(ctx, agent)
+    expect(ctx.planMode.get(agent)).toEqual({ active: true, pending: false })
+    const result = await callEnter(ctx, agent)
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected entered result')
+    expect(result.value).toEqual({ entered: true })
+    expect(ctx.planMode.get(agent)).toEqual({ active: true, pending: true })
+    await boundary(ctx, agent, 'step-start')
+    expect(foldPlanMode(agent.session.events)).toBe(true)
+  })
+
+  describe('approved-plan recording', () => {
+    const roots: string[] = []
+    afterEach(() => {
+      for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+    })
+
+    /** Review bench with a real local filesystem; optionally gives the session a working directory. */
+    async function setupRecording(config: PlanModeConfig = PLAN_CONFIG, { withCwd = true } = {}) {
+      const root = mkdtempSync(path.join(tmpdir(), 'dsh-plan-mode-recording-'))
+      roots.push(root)
+      const ctx = await setup(config)
+      await ctx.plugin(LocalFileSystem, { cwd: root })
+      await ctx.plugin(AgentRegistry)
+      await ctx.plugin(UserQuestionService)
+      ctx.userQuestions.registerProvider({
+        ask: () => Promise.resolve({ answers: [{ id: 'plan-review', selected: ['Approve'] }] }),
+      })
+      const agent = await agentWithSession(ctx, 'agent-rec', { active: true })
+      if (withCwd) agent.session.append('session/cwd', { cwd: root })
+      return { ctx, agent, root }
+    }
+
+    it('records an approved plan to docs/plans under a dated slug name and returns its path', async () => {
+      const { ctx, agent, root } = await setupRecording()
+      const plan = '# My Great Plan\n\ndo things'
+      const result = await callExit(ctx, agent, plan)
+      expect(result.isError).toBe(false)
+      if (result.isError) throw new Error('expected approved plan result')
+      const files = readdirSync(path.join(root, 'docs', 'plans'))
+      expect(files).toHaveLength(1)
+      expect(files[0]).toMatch(/^\d{4}-\d{2}-\d{2}-my-great-plan\.md$/)
+      expect(readFileSync(path.join(root, 'docs', 'plans', files[0]!), 'utf8')).toBe(plan)
+      const value = result.value as { approved: true; path?: string }
+      expect(value.path).toContain(files[0]!)
+      expect(result.content[0]?.text).toBe(`Plan approved and recorded to ${value.path} — plan mode exited; carry out the plan starting with your next step.`)
+    })
+
+    it('keeps a CJK heading readable in the recorded filename', async () => {
+      const { ctx, agent, root } = await setupRecording()
+      const result = await callExit(ctx, agent, '# 重构计划\n\n正文')
+      expect(result.isError).toBe(false)
+      const files = readdirSync(path.join(root, 'docs', 'plans'))
+      expect(files[0]).toMatch(/^\d{4}-\d{2}-\d{2}-重构计划\.md$/)
+    })
+
+    it('falls back to the `plan` slug for a punctuation-only heading', async () => {
+      const { ctx, agent, root } = await setupRecording()
+      const result = await callExit(ctx, agent, '# !!!\n\nbody')
+      expect(result.isError).toBe(false)
+      const files = readdirSync(path.join(root, 'docs', 'plans'))
+      expect(files[0]).toMatch(/^\d{4}-\d{2}-\d{2}-plan\.md$/)
+    })
+
+    it('honors a configured plansDir', async () => {
+      const { ctx, agent, root } = await setupRecording({ section: TEST_PLAN_SECTION, plansDir: 'notes/plans' })
+      const result = await callExit(ctx, agent)
+      expect(result.isError).toBe(false)
+      expect(readdirSync(path.join(root, 'notes', 'plans'))[0]).toMatch(/-the-plan\.md$/)
+    })
+
+    it('fails the call and stays in plan mode when the session has no working directory to record to', async () => {
+      const { ctx, agent } = await setupRecording(PLAN_CONFIG, { withCwd: false })
+      const result = await callExit(ctx, agent)
+      expect(result.isError).toBe(true)
+      expect(result.content).toEqual([{
+        type: 'text',
+        text: 'Error: the plan is approved, but this session has no working directory to record it to',
+      }])
+      expect(foldPlanMode(agent.session.events)).toBe(true)
+    })
   })
 
   it('carries the exact plan through a Code Mode review and logs the nested dispatch', async () => {
