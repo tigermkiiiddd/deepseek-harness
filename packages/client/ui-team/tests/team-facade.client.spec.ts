@@ -17,21 +17,28 @@ function fail(message: string): Promise<RpcResponse<never>> {
   })
 }
 
+const memberView = (id: string, title: string, status: string) => ({
+  id, title, description: undefined as string | undefined, status,
+  capabilities: undefined, autostart: true, lastError: undefined,
+})
+
 /** A complete wire face with unused methods failing loudly. */
 function face(overrides: Partial<IApiClient['team']>): IApiClient['team'] {
   return {
     list: overrides.list ?? (() => fail('unused list')),
+    start: overrides.start ?? (() => fail('unused start')),
+    stop: overrides.stop ?? (() => fail('unused stop')),
+    restart: overrides.restart ?? (() => fail('unused restart')),
     sessions: overrides.sessions ?? (() => fail('unused sessions')),
-    history: overrides.history ?? (() => fail('unused history')),
     newSession: overrides.newSession ?? (() => fail('unused newSession')),
-    chat: overrides.chat ?? (() => fail('unused chat')),
-  }
+    addMember: overrides.addMember ?? (() => fail('unused addMember')),
+    removeMember: overrides.removeMember ?? (() => fail('unused removeMember')),
+  } as IApiClient['team']
 }
 
 describe('unwrap', () => {
   it('returns the ok-branch value', async () => {
-    await expect(unwrap(ok([{ id: 'm', title: 'M', description: undefined, status: 'idle' }])))
-      .resolves.toEqual([{ id: 'm', title: 'M', description: undefined, status: 'idle' }])
+    await expect(unwrap(ok([memberView('m', 'M', 'idle')]))).resolves.toEqual([memberView('m', 'M', 'idle')])
   })
 
   it('throws the error-branch message', async () => {
@@ -40,7 +47,7 @@ describe('unwrap', () => {
 })
 
 describe('createTeamFacade', () => {
-  const member = { id: 'm1', title: 'Writer', description: undefined, status: 'idle' }
+  const member = memberView('m1', 'Writer', 'idle')
 
   it('lists members with an empty payload', async () => {
     const list = vi.fn(() => ok([member]))
@@ -49,38 +56,58 @@ describe('createTeamFacade', () => {
     expect(list).toHaveBeenCalledWith({})
   })
 
-  it('lists sessions and history with the member and topic ids', async () => {
+  it('lists sessions and unwraps newSession to the bare id', async () => {
     const sessions = vi.fn(() => ok([{ sessionId: 's1', cwd: '' }]))
-    const history = vi.fn(() => ok([{ role: 'user' as const, text: 'hi' }]))
-    const facade = createTeamFacade(face({ sessions, history }))
+    const newSession = vi.fn(() => ok({ sessionId: 's2' }))
+    const facade = createTeamFacade(face({ sessions, newSession }))
     await expect(facade.sessions('m1')).resolves.toEqual([{ sessionId: 's1', cwd: '' }])
-    await expect(facade.history('m1', 's1')).resolves.toEqual([{ role: 'user', text: 'hi' }])
+    await expect(facade.newSession('m1')).resolves.toBe('s2')
     expect(sessions).toHaveBeenCalledWith({ memberId: 'm1' })
-    expect(history).toHaveBeenCalledWith({ memberId: 'm1', sessionId: 's1' })
+    expect(newSession).toHaveBeenCalledWith({ memberId: 'm1' })
   })
 
-  it('unwraps newSession to the bare id and chat to the settled reply', async () => {
-    const newSession = vi.fn(() => ok({ sessionId: 's2' }))
-    const chat = vi.fn(() => ok({ text: 'reply', stopReason: 'completed' }))
-    const facade = createTeamFacade(face({ newSession, chat }))
-    await expect(facade.newSession('m1')).resolves.toBe('s2')
-    await expect(facade.chat('m1', 's2', 'hi')).resolves.toEqual({ text: 'reply', stopReason: 'completed' })
-    expect(newSession).toHaveBeenCalledWith({ memberId: 'm1' })
-    expect(chat).toHaveBeenCalledWith({ memberId: 'm1', sessionId: 's2', text: 'hi' })
+  it('delegates lifecycle verbs', async () => {
+    const start = vi.fn(() => ok({}))
+    const stop = vi.fn(() => ok({}))
+    const restart = vi.fn(() => ok({}))
+    const facade = createTeamFacade(face({ start, stop, restart }))
+    await facade.start('m1')
+    await facade.stop('m1')
+    await facade.restart('m1')
+    expect(start).toHaveBeenCalledWith({ memberId: 'm1' })
+    expect(stop).toHaveBeenCalledWith({ memberId: 'm1' })
+    expect(restart).toHaveBeenCalledWith({ memberId: 'm1' })
+  })
+
+  it('adds and removes members with their payloads', async () => {
+    const addMember = vi.fn(() => ok(memberView('m2', 'Reviewer', 'connecting')))
+    const removeMember = vi.fn(() => ok({}))
+    const facade = createTeamFacade(face({ addMember, removeMember }))
+    await expect(facade.addMember({ id: 'm2', title: 'Reviewer', command: 'dsh-acp-demo' }))
+      .resolves.toEqual(memberView('m2', 'Reviewer', 'connecting'))
+    await expect(facade.removeMember('m2')).resolves.toBeUndefined()
+    expect(addMember).toHaveBeenCalledWith({ id: 'm2', title: 'Reviewer', command: 'dsh-acp-demo' })
+    expect(removeMember).toHaveBeenCalledWith({ memberId: 'm2' })
   })
 
   it('propagates an error branch through every method', async () => {
     const facade = createTeamFacade(face({
       list: () => fail('team unavailable'),
+      start: () => fail('unknown member'),
+      stop: () => fail('unknown member'),
+      restart: () => fail('unknown member'),
       sessions: () => fail('member offline'),
-      history: () => fail('member offline'),
       newSession: () => fail('member offline'),
-      chat: () => fail('member offline'),
+      addMember: () => fail('duplicate member id'),
+      removeMember: () => fail('unknown member'),
     }))
     await expect(facade.list()).rejects.toThrow('team unavailable')
+    await expect(facade.start('m1')).rejects.toThrow('unknown member')
+    await expect(facade.stop('m1')).rejects.toThrow('unknown member')
+    await expect(facade.restart('m1')).rejects.toThrow('unknown member')
     await expect(facade.sessions('m1')).rejects.toThrow('member offline')
-    await expect(facade.history('m1', 's1')).rejects.toThrow('member offline')
     await expect(facade.newSession('m1')).rejects.toThrow('member offline')
-    await expect(facade.chat('m1', 's1', 'hi')).rejects.toThrow('member offline')
+    await expect(facade.addMember({ id: 'm1', command: 'x' })).rejects.toThrow('duplicate member id')
+    await expect(facade.removeMember('m1')).rejects.toThrow('unknown member')
   })
 })
