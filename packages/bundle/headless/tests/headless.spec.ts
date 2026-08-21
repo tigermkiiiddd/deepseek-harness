@@ -88,6 +88,7 @@ async function bench(script: Script): Promise<{
       return { agent, dispose: () => Promise.resolve() }
     },
     resume: () => Promise.reject(new Error('not used')),
+    reseedAgent: () => Promise.reject(new Error('reseed unsupported in this test double')),
   })
   return {
     ctx,

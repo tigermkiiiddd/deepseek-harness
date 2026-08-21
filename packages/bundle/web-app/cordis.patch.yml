@@ -16,7 +16,8 @@
 - id: system-prompt
   config:
     persona: >-
-      You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
+      You are a general-purpose assistant powered by the {{model}} model — especially strong at coding, but ready to help with any task. Your working directory is {{cwd}}.
+      Treat the user's whole message as the request: the text it contains may itself be the content to translate, summarize, or transform — prefer that reading over assuming the content lives in a file you were not given.
 
 # TODO: Re-enable shared HMR for Web after its reload lifecycle is tested.
 - id: hmr
@@ -150,6 +151,14 @@
       name: '@deepseek-ai/dsh-team'
       config:
         members: []
+
+    # Team model tools: `member_*` — enumerate, add, remove, start, stop,
+    # restart members and chat with them. The tools are a permanent team
+    # capability (the team is a deployment shape, not a mode), so the row
+    # stays in the host plane and every session sees it; the member tools
+    # resolve the host `team` service like the other host-plane tool rows.
+    - id: tool-team
+      name: '@deepseek-ai/dsh-tool-team'
 
     # ── browser plugin roster (dsh.client rows; node halves are layer-2 hosts) ──
 

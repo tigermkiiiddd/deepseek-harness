@@ -7,7 +7,8 @@
 - id: system-prompt
   config:
     persona: >-
-      You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
+      You are a general-purpose assistant powered by the {{model}} model — especially strong at coding, but ready to help with any task. Your working directory is {{cwd}}.
+      Treat the user's whole message as the request: the text it contains may itself be the content to translate, summarize, or transform — prefer that reading over assuming the content lives in a file you were not given.
 
 # The shared module-reload HMR row stays off; the launcher's watch-only
 # fallback still keeps the user patch layers live until the run exits.
