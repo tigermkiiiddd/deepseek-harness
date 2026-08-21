@@ -185,7 +185,7 @@ export class TestSessions implements ISessions {
   /** Calls observed on the service-level face, newest last. */
   readonly calls: {
     method: 'open' | 'openSubagent' | 'setSubagentCatalogOpen' | 'refreshSubagents'
-      | 'clear' | 'search' | 'fork'
+      | 'clear' | 'search' | 'fork' | 'rerun'
     args: unknown[]
   }[] = []
 
@@ -487,6 +487,17 @@ export class TestSessions implements ISessions {
   fork(opts: { sessionId: SessionId; atSeq?: number; increaseTitle?: boolean }): Promise<SessionId> {
     this.calls.push({ method: 'fork', args: [opts] })
     return Promise.resolve(opts.sessionId)
+  }
+
+  /**
+   * Recorded rerun stub: no log is truncated and no instance re-baselines
+   * (benches asserting the full rerun flow drive the production service; this
+   * face only proves the call).
+   * @param opts - session id and the message seq anchoring the cut.
+   */
+  rerun(opts: { sessionId: SessionId; atSeq: number }): Promise<void> {
+    this.calls.push({ method: 'rerun', args: [opts] })
+    return Promise.resolve()
   }
 
   /**
