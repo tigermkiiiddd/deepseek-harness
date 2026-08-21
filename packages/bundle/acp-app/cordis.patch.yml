@@ -1,0 +1,28 @@
+# The dsh-acp-app bundle patch: an automation-only ACP server over dsh-base.
+# This profile is used by first-class `dsh` team members: the member process
+# boots the same installation as the main instance, but with its own harness
+# home so its sessions stay isolated. Settings and credentials are read from
+# the main instance's home (via DSH_MAIN_HOME) so the member inherits the
+# user's providers and keys exactly.
+
+# stdout carries ACP JSON-RPC; keep HMR quiet.
+- id: hmr
+  disabled: true
+
+# Read the user's model settings from the main instance's home, not the
+# per-member home. The `dshHome` config is resolved by dsh-home-paths.
+- id: settings
+  config:
+    dshHome: !!js process.env.DSH_MAIN_HOME || dshHomePath()
+
+# Read the user's credential store from the main instance's home.
+- id: credentials
+  config:
+    dshHome: !!js process.env.DSH_MAIN_HOME || dshHomePath()
+
+# Mount the ACP automation server; provider/model are left unset so agents
+# created through the bridge use the shared agent-default-model service and
+# the settings-driven adapters mounted by dsh-base.
+- insert:
+    - id: acp
+      name: '@deepseek-ai/dsh-acp'
