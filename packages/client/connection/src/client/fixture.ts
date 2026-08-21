@@ -2399,6 +2399,32 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
         }
         return ok(request, { sessionId: child.sessionId })
       },
+      rerun: (request) => {
+        const { sessionId, atSeq } = request.payload
+        if (summaryOf(sessionId) === undefined) {
+          return err(request, {
+            code: 'session-not-found',
+            message: `no session ${sessionId}`,
+            details: { sessionId },
+          })
+        }
+        const log = logs.get(sessionId) ?? []
+        const lastSeq = log.at(-1)?.seq ?? -1
+        if (atSeq > lastSeq) {
+          return err(request, {
+            code: 'rerun-unavailable',
+            message: `session ${sessionId} has no event ${String(atSeq)} to rerun from`,
+            details: { sessionId },
+          })
+        }
+        const boundary = log.findLast(e => e.type === 'turn/end' && e.seq < atSeq)
+        // No agent/inbox/spliced back-up here: the fixture's demo vocabulary
+        // never carries inbox admission splices.
+        let cut = boundary === undefined ? 0 : boundary.seq + 1
+        while (cut < log.length && log[cut]?.type !== 'turn/start') cut++
+        logs.set(sessionId, log.slice(0, cut))
+        return ok(request, { accepted: true as const })
+      },
       history: async (request) => {
         const log = logs.get(request.payload.sessionId) ?? []
         // Snapshot at request time, deliver after the transit delay (mirrors a real host under latency).
@@ -3021,9 +3047,12 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
     },
     team: {
       list: request => ok(request, [
-        { id: 'fx-writer', title: 'Writer', description: 'fixture member', status: 'idle' },
-        { id: 'fx-reviewer', title: 'Reviewer', description: undefined, status: 'idle' },
+        { id: 'fx-writer', title: 'Writer', description: 'fixture member', status: 'idle', capabilities: undefined, autostart: true, lastError: undefined },
+        { id: 'fx-reviewer', title: 'Reviewer', description: undefined, status: 'idle', capabilities: undefined, autostart: true, lastError: undefined },
       ]),
+      start: request => ok(request, {}),
+      stop: request => ok(request, {}),
+      restart: request => ok(request, {}),
       sessions: request => ok(request, request.payload.memberId === 'fx-writer'
         ? [{ sessionId: 'fx-writer-topic-1', cwd: '' }]
         : []),
@@ -3036,10 +3065,19 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
       newSession: request => ok(request, {
         sessionId: `${request.payload.memberId}-topic-${++fixtureTeamSeq}`,
       }),
-      chat: request => ok(request, {
-        text: `(fixture reply to ${request.payload.text})`,
-        stopReason: 'completed',
+      prompt: request => ok(request, { promptId: `fx-prompt-${++fixtureTeamSeq}` }),
+      cancel: request => ok(request, {}),
+      permission: request => ok(request, {}),
+      addMember: request => ok(request, {
+        id: request.payload.id,
+        title: request.payload.title ?? request.payload.id,
+        description: request.payload.description,
+        status: 'connecting',
+        capabilities: undefined,
+        autostart: true,
+        lastError: undefined,
       }),
+      removeMember: request => ok(request, {}),
     },
     respond(message: ClientResponse): Promise<RpcReceipt> {
       // Same routing discipline as the host: rpcId first, then the payload's
@@ -3164,6 +3202,7 @@ export class FixtureApiClient extends AbstractApiClient {
       case 'session.selectModel': return this.api.sessions.selectModel(request)
       case 'session.rename': return this.api.sessions.rename(request)
       case 'session.fork': return this.api.sessions.fork(request)
+      case 'session.rerun': return this.api.sessions.rerun(request)
       case 'session.prompt': return this.api.sessions.prompt(request)
       case 'session.attachment': return this.api.sessions.attachment(request)
       case 'session.updateQueue': return this.api.sessions.updateQueue(request)
@@ -3210,10 +3249,17 @@ export class FixtureApiClient extends AbstractApiClient {
       case 'llm.models': return this.api.llm.models(request)
       case 'llm.discoverModels': return this.api.llm.discoverModels(request, signal)
       case 'team.list': return this.api.team.list(request)
+      case 'team.start': return this.api.team.start(request)
+      case 'team.stop': return this.api.team.stop(request)
+      case 'team.restart': return this.api.team.restart(request)
       case 'team.sessions': return this.api.team.sessions(request)
       case 'team.history': return this.api.team.history(request)
       case 'team.newSession': return this.api.team.newSession(request)
-      case 'team.chat': return this.api.team.chat(request)
+      case 'team.prompt': return this.api.team.prompt(request)
+      case 'team.cancel': return this.api.team.cancel(request)
+      case 'team.permission': return this.api.team.permission(request)
+      case 'team.addMember': return this.api.team.addMember(request)
+      case 'team.removeMember': return this.api.team.removeMember(request)
     }
   }
 

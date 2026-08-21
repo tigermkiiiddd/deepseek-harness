@@ -48,6 +48,7 @@ export class FakeApiClient implements IApiClient {
   onCreate: (payload: unknown) => Promise<RpcResponse<{ sessionId: SessionId }>> = () => Promise.resolve(ok({ sessionId: 'fk-new' as SessionId }))
   onRename: (payload: unknown) => Promise<RpcResponse<{ title: string; seq: number }>> = () => Promise.resolve(ok({ title: 'fk-renamed', seq: 0 }))
   onFork: (payload: unknown) => Promise<RpcResponse<{ sessionId: SessionId }>> = () => Promise.resolve(ok({ sessionId: 'fk-fork' as SessionId }))
+  onRerun: (payload: unknown) => Promise<RpcResponse<{ accepted: true }>> = () => Promise.resolve(ok({ accepted: true as const }))
   onHistory: (payload: { sessionId: SessionId; beforeSeq?: number; maxMessages?: number })
   => Promise<RpcResponse<{ events: never[]; hasMore: boolean; modelSelection: ModelSelection }>> =
     () => Promise.resolve(ok({
@@ -117,6 +118,7 @@ export class FakeApiClient implements IApiClient {
       this.record('session.selectModel', payload, this.onSelectModel(payload)),
     rename: (payload: unknown) => this.record('session.rename', payload, this.onRename(payload)),
     fork: (payload: unknown) => this.record('session.fork', payload, this.onFork(payload)),
+    rerun: (payload: unknown) => this.record('session.rerun', payload, this.onRerun(payload)),
     prompt: (payload: unknown) => this.record('session.prompt', payload, this.onPrompt(payload)),
     attachment: (payload: unknown) => this.record('session.attachment', payload, this.onAttachment(payload)),
     updateQueue: (payload: unknown) => this.record('session.updateQueue', payload, this.onUpdateQueue(payload)),
@@ -230,10 +232,25 @@ export class FakeApiClient implements IApiClient {
 
   readonly team: IApiClient['team'] = {
     list: payload => this.record('team.list', payload, Promise.resolve(ok([]))),
+    start: payload => this.record('team.start', payload, Promise.resolve(ok({}))),
+    stop: payload => this.record('team.stop', payload, Promise.resolve(ok({}))),
+    restart: payload => this.record('team.restart', payload, Promise.resolve(ok({}))),
     sessions: payload => this.record('team.sessions', payload, Promise.resolve(ok([]))),
     history: payload => this.record('team.history', payload, Promise.resolve(ok([]))),
     newSession: payload => this.record('team.newSession', payload, Promise.resolve(ok({ sessionId: 'fk-team-session' }))),
-    chat: payload => this.record('team.chat', payload, Promise.resolve(ok({ text: 'fk-team-reply', stopReason: 'end_turn' }))),
+    prompt: payload => this.record('team.prompt', payload, Promise.resolve(ok({ promptId: 'fk-team-prompt' }))),
+    cancel: payload => this.record('team.cancel', payload, Promise.resolve(ok({}))),
+    permission: payload => this.record('team.permission', payload, Promise.resolve(ok({}))),
+    addMember: payload => this.record('team.addMember', payload, Promise.resolve(ok({
+      id: payload.id,
+      title: payload.title ?? payload.id,
+      description: payload.description,
+      status: 'connecting',
+      capabilities: undefined,
+      autostart: true,
+      lastError: undefined,
+    }))),
+    removeMember: payload => this.record('team.removeMember', payload, Promise.resolve(ok({}))),
   }
 
   /** When true, streams never fire onOpen (misbehaving-carrier material for the handshake timeout guard). */
