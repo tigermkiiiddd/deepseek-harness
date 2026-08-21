@@ -335,9 +335,43 @@ describe('child outlets and the renderSlot binding', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const { view } = mountRoot(h, { 'k.list': { kind: 'list', scope: 'root' } },
       renderSlot => renderSlot('k.list', {}))
+    // The console message carries the flattened stack: the desktop shell's
+    // console forwarding is text-only, so the evidence must live in the
+    // message string, not the attached error object.
+    expect(spy.mock.calls.some(([msg]) => String(msg).includes('entry boom'))).toBe(true)
     spy.mockRestore()
     expect(view.container.textContent).toBe('alive')
     expect(view.container.querySelector('[data-slot-error]')).not.toBeNull()
+  })
+
+  it('flattens a non-Error throw into the crash log message', () => {
+    const h = makeHost()
+    h.declare('k.list', { kind: 'list', scope: 'root' })
+    h.add('k.list', { component: () => { throw 'plain string boom' }, options: { id: 'bad', order: 1 } })
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mountRoot(h, { 'k.list': { kind: 'list', scope: 'root' } },
+      renderSlot => renderSlot('k.list', {}))
+    expect(spy.mock.calls.some(([msg]) => String(msg).includes('plain string boom'))).toBe(true)
+    spy.mockRestore()
+  })
+
+  it('falls back to the error message when the throw carries no stack', () => {
+    const h = makeHost()
+    h.declare('k.list', { kind: 'list', scope: 'root' })
+    h.add('k.list', {
+      component: () => {
+        const error = new Error('stackless boom')
+        Object.defineProperty(error, 'stack', { value: undefined })
+        throw error
+      },
+      options: { id: 'bad', order: 1 },
+    })
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mountRoot(h, { 'k.list': { kind: 'list', scope: 'root' } },
+      renderSlot => renderSlot('k.list', {}))
+    expect(spy.mock.calls.some(([msg]) => String(msg).includes('slot entry crashed') && String(msg).includes('stackless boom')))
+      .toBe(true)
+    spy.mockRestore()
   })
 })
 

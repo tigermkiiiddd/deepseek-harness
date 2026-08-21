@@ -305,6 +305,17 @@ function entryKeyOf(entry: StoredEntry): number {
 }
 
 /**
+ * Flattens a caught error into log text. The desktop shell forwards console
+ * text (not objects) into its diagnostics log, and the crash face carries
+ * this string in `data-slot-error-detail`, so the stack must survive as a
+ * formatted string rather than an attached error object.
+ */
+function crashDetail(error: unknown): string {
+  if (error instanceof Error) return error.stack ?? error.message
+  return String(error)
+}
+
+/**
  * Per-entry isolation: one registrant crashing (component render or inject
  * factory) must not take down siblings. Assembly errors (missing providers)
  * rethrow — a miswired shell must fail loud, not degrade into fallbacks.
@@ -312,22 +323,26 @@ function entryKeyOf(entry: StoredEntry): number {
  * seam); for shadowing kinds the report abdicates the entry, the outlet
  * re-renders onto the cell's next survivor, and this boundary's crash face
  * only shows until that re-render lands (permanently once the cell is dry —
- * the outlet then owns the crash face).
+ * the outlet then owns the crash face). The crash face stays visually empty
+ * but carries the error detail in `data-slot-error-detail` for diagnostics.
  */
 class SlotErrorBoundary extends Component<
-  { slotKey: string; onEntryError: (error: unknown) => void; children: ReactNode }, { failed: boolean }
+  { slotKey: string; onEntryError: (error: unknown) => void; children: ReactNode },
+  { failed: boolean; detail?: string }
 > {
-  override state = { failed: false }
-  static getDerivedStateFromError(error: unknown): { failed: boolean } {
+  override state: { failed: boolean; detail?: string } = { failed: false }
+  static getDerivedStateFromError(error: unknown): { failed: boolean; detail: string } {
     if (error instanceof SlotAssemblyError) throw error
-    return { failed: true }
+    return { failed: true, detail: crashDetail(error) }
   }
   override componentDidCatch(error: unknown): void {
-    console.error(`slot entry crashed in '${this.props.slotKey}':`, error)
+    console.error(`slot entry crashed in '${this.props.slotKey}': ${crashDetail(error)}`)
     this.props.onEntryError(error)
   }
   override render(): ReactNode {
-    if (this.state.failed) return <div data-slot-error={this.props.slotKey} />
+    if (this.state.failed) {
+      return <div data-slot-error={this.props.slotKey} data-slot-error-detail={this.state.detail} />
+    }
     return this.props.children
   }
 }
