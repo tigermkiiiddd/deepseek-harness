@@ -540,6 +540,14 @@ const SERVICE_ROLES: ServiceRole[] = [
     note: 'Provider registration and selection plus normalized query execution over exactly four operations; the seam offers no protocol escape hatch, so a backend translates into the normalized request and result.',
   },
   {
+    key: 'team',
+    pkg: 'team',
+    title: 'ACP virtual team member roster and process seam',
+    mode: 'seam',
+    consumers: ['tool-team', 'host-apiproxy'],
+    note: 'Owns the persistent member roster, spawns member processes, completes the ACP initialize handshake, and drives turns through the Agent Client Protocol.',
+  },
+  {
     key: 'apiProxy',
     pkg: 'apiproxy',
     title: 'Host API dispatch',
