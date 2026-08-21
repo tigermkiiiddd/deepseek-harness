@@ -1,12 +1,11 @@
 /* User-message re-run / re-edit: the actions row (shared icon chrome plus the
-   two re-send controls) and the inline editor that replaces the row's hover
-   chrome while open. */
+   two re-send controls) and the in-place editor that replaces the user bubble
+   while a re-edit is open. */
 
 .root {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 6px;
 }
 
 .actions {

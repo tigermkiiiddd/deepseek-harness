@@ -145,7 +145,7 @@ function TurnStatus({ startTime, t }: {
  */
 export function ChatView({
   useSession, useSessions, useStore, renderSlot, sessionId, openFile, loadOlder, loadImage, inspectCall,
-  chatScroll, forkAt, resendUserMessage, fileMentions, t,
+  chatScroll, forkAt, rerunUserMessage, fileMentions, t,
 }: ChatViewSlotProps) {
   const order = useSession(s => s.chat.order)
   const nodeStore = useSession(s => s.chat.nodes)
@@ -389,7 +389,7 @@ export function ChatView({
               openFile={openFile}
               inspectCall={inspectCall}
               forkAt={forkAt}
-              resendUserMessage={resendUserMessage}
+              rerunUserMessage={rerunUserMessage}
               loadImage={loadImage}
               fileMentions={fileMentions}
               renderSlot={renderSlot}

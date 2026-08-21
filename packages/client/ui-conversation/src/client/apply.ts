@@ -407,12 +407,19 @@ export function apply(ctx: Context): void {
           actions.setInspect({ callId })
           actions.setView('trajectory')
         },
-        // Re-send a settled user message (verbatim or edited) as an ordinary
-        // queued prompt: the host starts a fresh turn; failures surface
-        // through the composer's send-error strip like any prompt.
-        resendUserMessage: (text) => {
-          const session = sessions.binding(sessionId)?.session
-          void session?.prompt([{ type: 'text', text }], 'queue')
+        // Re-run a settled user message (verbatim or edited): the host truncates the
+        // session log to the completed turn before the message and rebuilds the
+        // agent in place, then the text queues as an ordinary prompt — the re-run
+        // starts from exactly the context the original message saw.
+        rerunUserMessage: (seq, text) => {
+          void sessions.rerun({ sessionId, atSeq: seq })
+            .then(() => {
+              const session = sessions.binding(sessionId)?.session
+              void session?.prompt([{ type: 'text', text }], 'queue')
+            })
+            .catch(() => {
+              // A failed rerun leaves the session untouched.
+            })
         },
         chatScroll: {
           save: (position) => {

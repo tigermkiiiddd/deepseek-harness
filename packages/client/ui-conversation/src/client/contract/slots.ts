@@ -362,10 +362,12 @@ export interface ChatNodeOwnerProps {
   inspectCall: (callId: CallId) => void
   forkAt: (seq: number) => void
   /**
-   * Re-send one settled user message verbatim, or with edited text: the host
-   * queues the text as an ordinary prompt that starts its own turn.
+   * Re-run one settled user message verbatim, or with edited text: the host
+   * truncates the session log to the completed turn before that message and
+   * rebuilds the agent in place, then the text queues as an ordinary prompt,
+   * so the re-run starts from exactly the context the original message saw.
    */
-  resendUserMessage: (text: string) => void
+  rerunUserMessage: (seq: number, text: string) => void
   /** Resolve a session-authorized historical image for inline display. */
   loadImage: (attachment: ImageAttachmentRef) => Promise<string>
   fileMentions: (owner: TurnTailOwnerProps) => MarkdownFileMentions | undefined
@@ -691,10 +693,12 @@ export interface ChatViewInjected {
   /** Hand a call off to the trajectory view: write the one-shot inspect target and switch tabs. */
   inspectCall: (callId: CallId) => void
   /**
-   * Re-send one settled user message verbatim, or with edited text: the host
-   * queues the text as an ordinary prompt that starts its own turn.
+   * Re-run one settled user message verbatim, or with edited text: the host
+   * truncates the session log to the completed turn before that message and
+   * rebuilds the agent in place, then the text queues as an ordinary prompt,
+   * so the re-run starts from exactly the context the original message saw.
    */
-  resendUserMessage: (text: string) => void
+  rerunUserMessage: (seq: number, text: string) => void
   /**
    * Per-session scroll memory surviving view switches (in-memory, never
    * persisted): the view saves on every scroll and restores on remount; a

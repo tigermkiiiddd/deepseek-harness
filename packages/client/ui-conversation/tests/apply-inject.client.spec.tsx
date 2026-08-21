@@ -147,6 +147,17 @@ describe('conversation slot inject API', () => {
     expect(b.runtime.sessions.calls).toContainEqual({
       method: 'fork', args: [{ sessionId: ROOT, atSeq: 17, increaseTitle: true }],
     })
+    // A re-run truncates the session log to the completed turn before the
+    // message, rebuilds the agent in place, and queues the (edited) text
+    // there as an ordinary prompt.
+    chatView.injected.rerunUserMessage(23, '再跑一次')
+    await vi.waitFor(() => {
+      expect(b.sessionFake.prompt).toHaveBeenCalledWith([{ type: 'text', text: '再跑一次' }], 'queue')
+    })
+    expect(b.runtime.sessions.calls).toContainEqual({
+      method: 'rerun',
+      args: [{ sessionId: ROOT, atSeq: 23 }],
+    })
     await b.runtime.dispose()
   })
 
