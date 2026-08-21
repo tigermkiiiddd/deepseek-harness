@@ -4,6 +4,9 @@
  * fully scripted by environment variables — no model, no network:
  *
  * - `MOCK_TEXT`        — the assistant text it streams as one `agent_message_chunk`.
+ * - `MOCK_ECHO_USER`   — if `1`, echo the prompt as `user_message_chunk` updates
+ *                        before answering, to exercise the translator's user-message
+ *                        deduplication path.
  * - `MOCK_ECHO_ENV`    — if set to a variable NAME, stream that variable's value
  *                        (or `<NAME unset>`) instead of MOCK_TEXT — asserts what
  *                        environment actually reached the child process.
@@ -68,6 +71,7 @@ import {
   type NewSessionResponse,
   type PromptRequest,
   type PromptResponse,
+  type SessionInfo,
   type StopReason,
 } from '@agentclientprotocol/sdk'
 
@@ -78,13 +82,16 @@ const TEXT = echoEnvName !== undefined
   ? process.env[echoEnvName] ?? `<${echoEnvName} unset>`
   : process.env.MOCK_TEXT ?? 'mock child answer'
 const ECHO_CWD = process.env.MOCK_ECHO_CWD === '1'
+const ECHO_USER = process.env.MOCK_ECHO_USER === '1'
 const STOP = (process.env.MOCK_STOP ?? 'end_turn') as StopReason
 const HANG = process.env.MOCK_HANG === '1'
 const WANT_PERMISSION = process.env.MOCK_PERMISSION === '1'
 const NO_ALLOW = process.env.MOCK_NO_ALLOW === '1'
 const THOUGHT = process.env.MOCK_THOUGHT === '1'
+const HISTORY_RICH = process.env.MOCK_HISTORY_RICH === '1'
 const CRASH_ON_CANCEL = process.env.MOCK_CRASH_ON_CANCEL === '1'
 const CRASH_ON_PROMPT = process.env.MOCK_CRASH_ON_PROMPT === '1'
+const REJECT_ON_PROMPT = process.env.MOCK_REJECT_PROMPT === '1'
 const IGNORE_CANCEL = process.env.MOCK_IGNORE_CANCEL === '1'
 const READY_FILE = process.env.MOCK_READY_FILE
 const FLUSH_ON_EOF = process.env.MOCK_FLUSH_ON_EOF
@@ -113,14 +120,22 @@ function makeAgent(conn: AgentSideConnection): Agent {
         authMethods: [],
       })
     },
-    async listSessions(): Promise<{ sessions: { sessionId: string; cwd: string }[] }> {
+    async listSessions(params?: { cwd?: string }): Promise<{ sessions: SessionInfo[] }> {
       // The mock's persisted topic set: the fixed session id plus any extras.
+      // Like a real agent, topics belong to one workspace: a cwd filter that
+      // names another workspace returns nothing.
+      const storeCwd = process.env.MOCK_SESSION_CWD ?? process.cwd()
+      if (params?.cwd !== undefined && params.cwd !== storeCwd) return { sessions: [] }
       const extras = (process.env.MOCK_EXTRA_SESSIONS ?? '').split(',').filter(Boolean)
       const ids = [process.env.MOCK_SESSION_ID ?? 'mock-session', ...extras]
+      const title = process.env.MOCK_SESSION_TITLE
+      const updatedAt = process.env.MOCK_SESSION_UPDATED_AT
       return {
         sessions: ids.map(sessionId => ({
           sessionId,
-          cwd: process.env.MOCK_SESSION_CWD ?? process.cwd(),
+          cwd: storeCwd,
+          ...title === undefined ? {} : { title },
+          ...updatedAt === undefined ? {} : { updatedAt },
         })),
       }
     },
@@ -139,6 +154,33 @@ function makeAgent(conn: AgentSideConnection): Agent {
         await conn.sessionUpdate({
           sessionId: params.sessionId,
           update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'earlier answer' } },
+        })
+      }
+      if (HISTORY_RICH) {
+        await conn.sessionUpdate({
+          sessionId: params.sessionId,
+          update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'run the tool' } },
+        })
+        await conn.sessionUpdate({
+          sessionId: params.sessionId,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'I will help.' } },
+        })
+        await conn.sessionUpdate({
+          sessionId: params.sessionId,
+          update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking…' } },
+        })
+        await conn.sessionUpdate({
+          sessionId: params.sessionId,
+          update: { sessionUpdate: 'tool_call', toolCallId: 'rich-call', title: 'rich_tool', rawInput: { query: 'value' } },
+        })
+        await conn.sessionUpdate({
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'rich-call',
+            status: 'completed',
+            content: [{ type: 'content', content: { type: 'text', text: 'tool output' } }],
+          },
         })
       }
       return {}
@@ -161,6 +203,9 @@ function makeAgent(conn: AgentSideConnection): Agent {
     },
     async prompt(params: PromptRequest): Promise<PromptResponse> {
       if (CRASH_ON_PROMPT) process.exit(1)
+      // A member that refuses the turn: the SDK maps the throw to a protocol
+      // error response, so the client's prompt() rejects with a RequestError.
+      if (REJECT_ON_PROMPT) throw new Error('mock: prompt rejected by member')
       if (WANT_PERMISSION) {
         // Ask the client to approve before answering; honor its decision. Under
         // MOCK_NO_ALLOW the only options are reject-shaped, so an `allow`-policy
@@ -178,6 +223,17 @@ function makeAgent(conn: AgentSideConnection): Agent {
         })
         if (decision.outcome.outcome === 'cancelled') {
           return { stopReason: 'cancelled' }
+        }
+      }
+      // Optionally echo the user's prompt as user_message_chunk updates before
+      // answering, so the translator's deduplication path can be exercised.
+      if (ECHO_USER) {
+        const text = params.prompt.map(part => part.type === 'text' ? part.text : '').join('')
+        for (const chunk of text.split(' ').filter(Boolean)) {
+          await conn.sessionUpdate({
+            sessionId: params.sessionId,
+            update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: chunk + ' ' } },
+          })
         }
       }
       // Optionally emit a NON-message update first (a thought), so the client's
