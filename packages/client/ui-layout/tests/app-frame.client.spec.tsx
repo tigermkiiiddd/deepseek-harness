@@ -96,8 +96,9 @@ function mountFrame() {
 }
 
 function tracks(frame: HTMLElement): number[] {
-  const m = /^(\d+)px minmax\(0, 1fr\) (\d+)px$/.exec(frame.style.gridTemplateColumns)
-  if (m === null) throw new Error(`unexpected template: ${frame.style.gridTemplateColumns}`)
+  const row = frame.querySelector('[data-dsh-main-row]') as HTMLElement
+  const m = /^(\d+)px minmax\(0, 1fr\) (\d+)px$/.exec(row.style.gridTemplateColumns)
+  if (m === null) throw new Error(`unexpected template: ${row.style.gridTemplateColumns}`)
   return [Number(m[1]), Number(m[2])]
 }
 

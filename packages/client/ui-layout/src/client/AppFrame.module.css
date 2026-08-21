@@ -1,13 +1,32 @@
 .frame {
   position: relative; /* anchors the drag handles, which straddle column borders */
-  display: grid;
-  grid-template-rows: 100%;
+  display: flex;
+  flex-direction: column;
   height: 100%;
   overflow: hidden;
   background: var(--dsw-alias-bg-base);
   /* Collapse/expand animates the tracks on the deepsuite sider curve
      (--ds-ease-in-out / --ds-transition-duration-slow, ui-theme base.css). */
   transition: grid-template-columns var(--ds-transition-duration-slow) var(--ds-ease-in-out);
+}
+
+/* The global visualization lane above the columns (ui-team's global view). */
+.topbar {
+  flex: 0 0 auto;
+  height: 44px;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  background: var(--dsw-specific-sidebar-fill);
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+/* The three-column grid below the top bar; drag handles are anchored to it. */
+.mainRow {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
 }
 
 /* Dragging writes widths at pointer cadence; easing them would detach the
