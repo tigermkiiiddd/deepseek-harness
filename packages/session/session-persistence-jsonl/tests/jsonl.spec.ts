@@ -10,7 +10,7 @@ import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import {
   encodeSegment, eventLines, logPath, projectDir, projectKey, scanLog, sessionDir, SessionLogScanner, toHeaderLine,
 } from '../src/format.ts'
-import { runPersistenceContract, meta, oneTurnLog, appendLog } from '../../session-persistence/tests/contract.ts'
+import { runPersistenceContract, meta, oneTurnLog, twoTurnLog, appendLog } from '../../session-persistence/tests/contract.ts'
 import { runCoordinatorContract, type CoordinatorFixture } from '../../session-persistence/tests/coordinator-contract.ts'
 
 const statRace = vi.hoisted(() => ({
@@ -131,6 +131,34 @@ runCoordinatorContract('jsonl-none', async (): Promise<CoordinatorFixture> => {
     },
     cleanup: async () => { await rm(dir, { recursive: true, force: true }) },
   }
+})
+
+describe('JsonlSessionPersistence: truncate', () => {
+  it.each(['none', 'zstd'] as const)('rewrites a %s log to its kept prefix', async (compression) => {
+    const dir = await freshRoot()
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const fiber = await ctx.plugin(JsonlSessionPersistence, { root: dir, compression })
+    try {
+      const m = meta(`truncate-${compression}`, '/work')
+      await ctx.sessionPersistence.create(m)
+      await ctx.sessionPersistence.append(m.id, twoTurnLog())
+
+      await ctx.sessionPersistence.truncate(m.id, oneTurnLog().length)
+      expect((await ctx.sessionPersistence.load(m.id)).events).toEqual(oneTurnLog())
+
+      // Appends continue at the kept length through the rewritten encoding.
+      await ctx.sessionPersistence.append(m.id, [{ type: 'turn/start', seq: 6, time: 13, data: { turn: 3 } }])
+      expect((await ctx.sessionPersistence.readFrom(m.id, 6)).events.map(event => event.seq)).toEqual([6])
+
+      // Truncating to zero writes a header-only log (no torn empty body frame).
+      await ctx.sessionPersistence.truncate(m.id, 0)
+      expect((await ctx.sessionPersistence.load(m.id)).events).toEqual([])
+      expect((await ctx.sessionPersistence.list()).map(header => header.id)).toContain(m.id)
+    } finally {
+      await fiber.dispose()
+    }
+  })
 })
 
 describe('JsonlSessionPersistence: format helpers', () => {

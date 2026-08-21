@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const MOVEFILE_WRITE_THROUGH = 0x00000008
+const MOVEFILE_REPLACE_EXISTING = 0x00000001
 const ERROR_FILE_NOT_FOUND = 2
 const ERROR_PATH_NOT_FOUND = 3
 const ERROR_ACCESS_DENIED = 5
@@ -139,6 +140,32 @@ describe('Windows durable namespace helpers', () => {
     await publishNewFileWin32(tmp, final)
     expect(existsSync(tmp)).toBe(false)
     expect(readFileSync(final, 'utf8')).toBe('content')
+  })
+
+  it('publishes a replacement over an existing file with write-through semantics', async () => {
+    const { publishReplacementWin32 } = await importWithMove((existing, replacement, flags, setLastError) => {
+      expect(flags).toBe(MOVEFILE_WRITE_THROUGH | MOVEFILE_REPLACE_EXISTING)
+      const from = stripNamespace(existing)
+      const to = stripNamespace(replacement)
+      if (!existsSync(from)) { setLastError(ERROR_FILE_NOT_FOUND); return 0 }
+      renameSync(from, to)
+      return 1
+    })
+    const root = await tempRoot()
+    const tmp = join(root, 'log.tmp')
+    const final = join(root, 'log.jsonl')
+    await writeFile(final, 'old')
+    await writeFile(tmp, 'new')
+
+    await publishReplacementWin32(tmp, final)
+    expect(existsSync(tmp)).toBe(false)
+    expect(readFileSync(final, 'utf8')).toBe('new')
+  })
+
+  it('maps Win32 replacement failures to Node-style errno codes', async () => {
+    const { publishReplacementWin32 } = await importWithError(ERROR_ACCESS_DENIED)
+    await expect(publishReplacementWin32('from', 'to'))
+      .rejects.toMatchObject({ code: 'EACCES', win32Code: ERROR_ACCESS_DENIED, path: 'from', dest: 'to' })
   })
 
   it('maps Win32 publish failures to Node-style errno codes', async () => {

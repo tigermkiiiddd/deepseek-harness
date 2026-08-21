@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import SessionStore, { Session, SessionId, isJsonValue } from '@deepseek-ai/dsh-session'
+import SessionStore, { Session, SessionId, isJsonValue, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
 import {
   DEFAULT_PREPARED_SESSION_CACHE_SIZE, DEFAULT_WRITE_BATCH_MAX_DELAY_MS, MAX_WRITE_BATCH_DELAY_MS,
   SessionPersistence, SessionPersistenceRevision, PersistenceCoordinator,
   type PersistenceBackend, type SessionPersistenceSnapshot, type StoredPrefix, type StoredSuffix,
 } from '../src/index.ts'
-import { runPersistenceContract, meta, oneTurnLog } from './contract.ts'
+import { runPersistenceContract, meta, oneTurnLog, twoTurnLog } from './contract.ts'
 import { runCoordinatorContract, type CoordinatorFixture } from './coordinator-contract.ts'
 
 /** The durable store shape: materialized sessions only (no lazy entries). */
@@ -118,6 +118,10 @@ class MemoryPersistence extends SessionPersistence implements PersistenceBackend
     return this.coordinator.readFrom(id, fromSeq, signal)
   }
 
+  override truncate(id: SessionId, keepSeqs: number): Promise<void> {
+    return this.coordinator.truncate(id, keepSeqs)
+  }
+
   // --- PersistenceBackend hooks (the Map storage primitives) ---
 
   // A Map-backed store has no torn tails, so `tornMarker` is never set.
@@ -159,6 +163,13 @@ class MemoryPersistence extends SessionPersistence implements PersistenceBackend
     /* v8 ignore next -- commitRepair only runs for a materialized (stored) session */
     if (!entry) return
     if (closers.length > 0) entry.events.push(...structuredClone(closers) as SessionEvent[])
+  }
+
+  async truncateStored(m: SessionHeader, keepSeqs: number): Promise<void> {
+    const entry = this.store.get(m.id)
+    /* v8 ignore next -- truncateStored only runs for a materialized (stored) session */
+    if (!entry) return
+    entry.events = entry.events.filter(event => event.seq < keepSeqs)
   }
 
   async list(signal?: AbortSignal): Promise<SessionHeader[]> {
@@ -228,6 +239,11 @@ class ControlledBackend implements PersistenceBackend<never> {
     if (entry !== undefined) entry.events.push(...structuredClone(closers) as SessionEvent[])
   }
 
+  async truncateStored(m: SessionHeader, keepSeqs: number): Promise<void> {
+    const entry = this.store.get(m.id)
+    if (entry !== undefined) entry.events = entry.events.filter(event => event.seq < keepSeqs)
+  }
+
   async list(): Promise<SessionHeader[]> {
     return [...this.store.values()].map(entry => structuredClone(entry.meta))
   }
@@ -266,6 +282,17 @@ describe('the inherited readRaw default', () => {
     await expect(
       ctx.sessionPersistence.readRaw(SessionId('any-session'), controller.signal),
     ).rejects.toThrow('aborted')
+  })
+})
+
+describe('the inherited truncate default', () => {
+  it('rejects on backends that do not override it', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(MemoryPersistence)
+    await expect(
+      SessionPersistence.prototype.truncate.call(ctx.sessionPersistence, SessionId('any-session'), 0),
+    ).rejects.toThrow('does not support log truncation')
   })
 })
 
@@ -464,6 +491,156 @@ describe('PersistenceCoordinator stored identity', () => {
       loadGate.resolve(true)
       await fiber.dispose()
       await ctx.fiber.dispose()
+    }
+  })
+})
+
+describe('PersistenceCoordinator truncate', () => {
+  /** Mount a coordinator over a ControlledBackend, mirroring the identity-suite wiring. */
+  async function mountCoordinator(backend: ControlledBackend): Promise<{
+    ctx: Context
+    coordinator: PersistenceCoordinator<never>
+    dispose: () => Promise<void>
+  }> {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    let coordinator!: PersistenceCoordinator<never>
+    const fiber = await ctx.plugin(Object.assign((inner: Context) => {
+      coordinator = new PersistenceCoordinator(inner, backend)
+    }, { inject: ['sessions'] }))
+    return {
+      ctx,
+      coordinator,
+      dispose: async () => {
+        await fiber.dispose()
+        await ctx.fiber.dispose()
+      },
+    }
+  }
+
+  it('rewrites the log to its kept prefix and re-reads it fresh', async () => {
+    const backend = new ControlledBackend()
+    const id = SessionId('truncate-prefix')
+    backend.store.set(id, { meta: meta(id), events: twoTurnLog() })
+    const { coordinator, dispose } = await mountCoordinator(backend)
+    try {
+      // Seed the shared cold-read cache so the test proves truncate invalidates it.
+      expect((await coordinator.load(id)).events).toHaveLength(twoTurnLog().length)
+
+      await coordinator.truncate(id, oneTurnLog().length)
+      const loaded = await coordinator.load(id)
+      expect(loaded.events).toEqual(oneTurnLog())
+
+      // prepare observes exactly the truncated prefix as well (followed by the
+      // prepared Session constructor's own end-seed marker).
+      const preparation = await coordinator.prepare(id)
+      expect(preparation.session.events.map(event => event.type)).toEqual([
+        ...oneTurnLog().map(event => event.type),
+        'session/end-seed',
+      ])
+      preparation[Symbol.dispose]()
+
+      // The ownerless cursor moved back: an append continues at the kept length.
+      await coordinator.append(id, [
+        { type: 'turn/start', seq: 6, time: 7, data: { turn: 2 } },
+        { type: 'turn/end', seq: 7, time: 8, data: { turn: 2, reason: { kind: 'completed' } } },
+      ])
+      expect((await coordinator.load(id)).events.map(event => event.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('establishes an ownerless cursor for an id with no prior in-memory state', async () => {
+    const backend = new ControlledBackend()
+    const id = SessionId('truncate-cold')
+    backend.store.set(id, { meta: meta(id), events: oneTurnLog() })
+    const { coordinator, dispose } = await mountCoordinator(backend)
+    try {
+      await coordinator.truncate(id, 4)
+      await coordinator.append(id, [
+        { type: 'step/end', seq: 4, time: 5, data: { turn: 1, step: 1 } },
+        { type: 'turn/end', seq: 5, time: 6, data: { turn: 1, reason: { kind: 'completed' } } },
+      ])
+      expect((await coordinator.load(id)).events.map(event => event.seq)).toEqual([0, 1, 2, 3, 4, 5])
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('refuses while the session is live in this coordinator', async () => {
+    const backend = new ControlledBackend()
+    const id = SessionId('truncate-live')
+    const { ctx, coordinator, dispose } = await mountCoordinator(backend)
+    try {
+      const live = ctx.sessions.create(id, { seed: oneTurnLog(), meta: meta(id) })
+      await expect(ctx.sessions.flush(live)).resolves.toBe(true)
+      await expect(coordinator.truncate(id, 0)).rejects.toThrow(`cannot truncate session "${id}" while it is live`)
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('refuses a live persistence owner without a published session', async () => {
+    const backend = new ControlledBackend()
+    const id = SessionId('truncate-owned')
+    backend.store.set(id, { meta: meta(id), events: oneTurnLog() })
+    const { coordinator, dispose } = await mountCoordinator(backend)
+    const owner = Session.create(id, oneTurnLog(), meta(id))
+    const states = (coordinator as unknown as {
+      states: Map<SessionId, {
+        meta: SessionHeader
+        cursor: number
+        materialized: boolean
+        owner?: Session
+      }>
+    }).states
+    states.set(id, {
+      meta: owner.header,
+      cursor: oneTurnLog().length,
+      materialized: true,
+      owner,
+    })
+    try {
+      await expect(coordinator.truncate(id, 1)).rejects.toThrow(/live persistence owner/)
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('rejects an unknown id and an out-of-range keepSeqs without publishing state', async () => {
+    const backend = new ControlledBackend()
+    const id = SessionId('truncate-validation')
+    backend.store.set(id, { meta: meta(id), events: oneTurnLog() })
+    const { coordinator, dispose } = await mountCoordinator(backend)
+    try {
+      await expect(coordinator.truncate(SessionId('truncate-absent'), 0)).rejects.toThrow(/not found/)
+      await expect(coordinator.truncate(id, -1)).rejects.toThrow('non-negative safe integer')
+      await expect(coordinator.truncate(id, 1.5)).rejects.toThrow('non-negative safe integer')
+      await expect(coordinator.truncate(id, oneTurnLog().length + 1))
+        .rejects.toThrow(/exceeds the stored log length/)
+      expect((coordinator as unknown as CoordinatorInternals).states.size).toBe(0)
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('refuses a foreign format version instead of rewriting the log', async () => {
+    const backend = new ControlledBackend()
+    const id = SessionId('truncate-foreign-version')
+    backend.store.set(id, {
+      meta: { ...meta(id), version: SESSION_FORMAT_VERSION + 1 },
+      events: oneTurnLog(),
+    })
+    const { coordinator, dispose } = await mountCoordinator(backend)
+    try {
+      const failure = await coordinator.truncate(id, 0)
+        .then(() => undefined, (error: unknown) => error as Error)
+      expect(failure?.name).toBe('SessionFormatUnsupportedError')
+      expect(failure?.message).toMatch(/upgrade the harness/)
+      expect(backend.store.get(id)?.events).toHaveLength(oneTurnLog().length)
+    } finally {
+      await dispose()
     }
   })
 })

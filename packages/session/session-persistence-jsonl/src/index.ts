@@ -9,7 +9,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { readdirSync } from 'node:fs'
-import { open, mkdir, readFile, readdir, realpath, link, rm, stat, truncate } from 'node:fs/promises'
+import { open, mkdir, readFile, readdir, realpath, link, rename, rm, stat, truncate } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { scheduler } from 'node:timers/promises'
@@ -30,7 +30,7 @@ import {
 import {
   compressZstdFrame, createZstdFrameDecoder, decompressZstdFrame, decompressZstdPrefix, scanZstdFrames,
 } from './zstd.ts'
-import { ensureDurableDirectoryWin32, publishNewFileWin32 } from './win32.ts'
+import { ensureDurableDirectoryWin32, publishNewFileWin32, publishReplacementWin32 } from './win32.ts'
 
 export type { JsonlCompression } from './format.ts'
 
@@ -209,6 +209,10 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
   // parses the stored prefix (both encodings) and skips forward to fromSeq.
   readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
     return this.coordinator.readFrom(id, fromSeq, signal)
+  }
+
+  override truncate(id: SessionId, keepSeqs: number): Promise<void> {
+    return this.coordinator.truncate(id, keepSeqs)
   }
 
   // One method serves both public `list` and the backend hook; delegating it to
@@ -456,6 +460,22 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
     if (repairedEvents.length > 0) await this.appendLines(meta, repairedEvents)
   }
 
+  /**
+   * Rewrite the log to its first `keepSeqs` events: re-read the committed
+   * prefix, re-encode header + kept events through the same serialization as
+   * materialization (both physical encodings), and durably replace the file.
+   * A full rewrite is required because a zstd frame boundary does not align
+   * with an event boundary, so a byte offset for `keepSeqs` does not exist.
+   */
+  async truncateStored(meta: SessionHeader, keepSeqs: number): Promise<void> {
+    await this.ensureRootEncoding()
+    const path = logPath(this.root, meta.cwd, meta.id, this.compression)
+    const { events } = await this.readPrefix(path, meta.id)
+    const content = await this.encodeTruncatedLog(meta, events.filter(event => event.seq < keepSeqs))
+    await this.publishRewrite(path, content)
+    this.expectedTails.set(path, Buffer.byteLength(content))
+  }
+
   /** List valid unique stored sessions' metadata (header line only — no full-log parse). */
   async list(signal?: AbortSignal): Promise<SessionHeader[]> {
     return (await this.listArtifacts(signal)).map(artifact => artifact.header)
@@ -638,6 +658,40 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
     const eventFrame = await compressZstdFrame(body)
     return Buffer.concat([headerFrame, eventFrame])
   }
+
+  /**
+   * Encode the header plus a kept prefix for a truncation rewrite. Unlike
+   * materialization, the kept prefix may be empty (`keepSeqs = 0`): emit no
+   * event body at all, because an empty body would write a blank line/frame
+   * that reads back as a torn record.
+   */
+  private async encodeTruncatedLog(meta: SessionHeader, events: readonly SessionEvent[]): Promise<Buffer | string> {
+    if (events.length > 0) return this.encodeMaterialization(meta, events)
+    const header = JSON.stringify(toHeaderLine(meta)) + '\n'
+    return this.compression === 'zstd' ? compressZstdFrame(header) : header
+  }
+
+  /* v8 ignore start -- platform dispatch: native Windows and POSIX coverage each exercise their own peer. */
+  /**
+   * Durably replace a live log with rewritten content: write and fsync a
+   * sibling temp, publish it over the final path atomically (write-through
+   * replace on Windows; rename + parent-directory fsync on POSIX).
+   */
+  private async publishRewrite(finalPath: string, content: Buffer | string): Promise<void> {
+    const tmp = await this.writeSyncedTempFile(finalPath, content)
+    try {
+      if (process.platform === 'win32') {
+        await publishReplacementWin32(tmp, finalPath)
+      } else {
+        await rename(tmp, finalPath)
+        await this.syncDirPosix(dirname(finalPath))
+      }
+    } catch (error) {
+      await rm(tmp, { force: true })
+      throw error
+    }
+  }
+  /* v8 ignore stop */
 
   /** Encode one durable append batch in the configured physical representation. */
   private async encodeEventBatch(events: readonly SessionEvent[]): Promise<Buffer | string> {

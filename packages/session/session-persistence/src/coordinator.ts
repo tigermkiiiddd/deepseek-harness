@@ -193,6 +193,18 @@ export interface PersistenceBackend<TornMarker = unknown> {
   commitRepair(meta: SessionHeader, tornMarker: TornMarker | undefined, closers: readonly SessionEvent[]): Promise<void>
 
   /**
+   * Rewrite one stored log to exactly its first `keepSeqs` events, physically
+   * dropping every event with `seq >= keepSeqs`. The coordinator calls this
+   * only after any live owner has detached and after validating `keepSeqs` as
+   * an integer in `[0, stored length]`; the stored header (`meta`) is left
+   * unchanged. Once this hook resolves, the log's durable next-seq IS
+   * `keepSeqs`, so a later append continues there.
+   * @param meta - the header of the stored log to rewrite.
+   * @param keepSeqs - number of leading events to keep.
+   */
+  truncateStored(meta: SessionHeader, keepSeqs: number): Promise<void>
+
+  /**
    * List all stored (materialized) sessions' metadata.
    * @param signal - optional cancellation for backend listing work.
    */
@@ -886,6 +898,59 @@ export class PersistenceCoordinator<TornMarker = unknown> {
       meta: structuredClone(stored.meta),
       events,
     }
+  }
+
+  /**
+   * Rewrite one stored log to exactly its first `keepSeqs` events — the
+   * durability primitive behind an in-place rerun. The session MUST NOT be
+   * live in this coordinator: the agent layer disposes the live agent first,
+   * and this method waits out its persistence retirement before refusing a
+   * still-attached identity. The stored header is unchanged. Cached
+   * preparations are invalidated and the ownerless durable cursor is
+   * re-established at `keepSeqs`, so a later {@link prepare}/{@link load}
+   * reads exactly the kept prefix and a later append continues there. Runs on
+   * the per-id serialization chain, so it never interleaves with appends.
+   * @param id - persisted session to truncate.
+   * @param keepSeqs - number of leading events to keep; an integer in
+   *   `[0, stored length]`.
+   */
+  async truncate(id: SessionId, keepSeqs: number): Promise<void> {
+    if (!Number.isSafeInteger(keepSeqs) || keepSeqs < 0) {
+      throw new TypeError(`truncate keepSeqs must be a non-negative safe integer, got ${String(keepSeqs)}`)
+    }
+    await this.waitForRetirement(id)
+    if (this.ctx.sessions.get(id) !== undefined) {
+      throw new Error(`cannot truncate session "${id}" while it is live`)
+    }
+    return this.serialize(id, () => this.truncateCore(id, keepSeqs))
+  }
+
+  private async truncateCore(id: SessionId, keepSeqs: number): Promise<void> {
+    if (this.states.get(id)?.owner !== undefined) {
+      throw new Error(`cannot truncate session "${id}" while it has a live persistence owner`)
+    }
+    const stored = await this.backend.loadStored(id)
+    if (stored === undefined) throw new Error(`session "${id}" not found`)
+    this.assertStoredId(id, stored.meta)
+    // A log this build cannot interpret is never rewritten: re-encoding a
+    // foreign format through today's serializers could mangle it.
+    this.assertVersion(stored.meta)
+    if (keepSeqs > stored.events.length) {
+      throw new RangeError(
+        `truncate keepSeqs ${keepSeqs} exceeds the stored log length ${stored.events.length} for session "${id}"`,
+      )
+    }
+    await this.backend.truncateStored(stored.meta, keepSeqs)
+    // The rewrite changed the durable log: drop every cached view and
+    // re-establish the exact ownerless cursor (mirroring commitPrepared), so
+    // stale prepared graphs cannot be published over the truncated log.
+    this.preparations.invalidate(id)
+    const existing = this.states.get(id)
+    const state = existing ?? { meta: stored.meta, cursor: keepSeqs, materialized: true }
+    state.meta = stored.meta
+    state.cursor = keepSeqs
+    state.materialized = true
+    this.states.set(id, state)
   }
 
   /** Read, repair in memory, validate, and freeze one cold source once. */

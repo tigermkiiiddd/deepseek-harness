@@ -17,7 +17,7 @@ import {
   SESSION_PERSISTENCE_SQLITE_APPLICATION_ID,
   type EventRow,
 } from '../src/schema.ts'
-import { runPersistenceContract, meta, oneTurnLog, appendLog } from '../../session-persistence/tests/contract.ts'
+import { runPersistenceContract, meta, oneTurnLog, twoTurnLog, appendLog } from '../../session-persistence/tests/contract.ts'
 import { runCoordinatorContract, type CoordinatorFixture } from '../../session-persistence/tests/coordinator-contract.ts'
 
 const dirs: string[] = []
@@ -79,6 +79,35 @@ runCoordinatorContract('sqlite', async (): Promise<CoordinatorFixture> => {
     },
     cleanup: async () => { await rm(dir, { recursive: true, force: true }) },
   }
+})
+
+describe('SqliteSessionPersistence: truncate', () => {
+  it('deletes the dropped rows and bumps the session revision', async () => {
+    const path = await freshDbPath()
+    const { ctx, dispose } = await backend(path)
+    try {
+      const m = meta('truncate-sqlite')
+      await ctx.sessionPersistence.create(m)
+      await ctx.sessionPersistence.append(m.id, twoTurnLog())
+      const before = (await ctx.sessionPersistence.listSnapshots())
+        .find(snapshot => snapshot.header.id === m.id)?.revision
+
+      await ctx.sessionPersistence.truncate(m.id, oneTurnLog().length)
+
+      const after = (await ctx.sessionPersistence.listSnapshots())
+        .find(snapshot => snapshot.header.id === m.id)?.revision
+      expect(after).not.toBe(before)
+      expect((await ctx.sessionPersistence.load(m.id)).events).toEqual(oneTurnLog())
+      // The rows are physically deleted, not just hidden from reads.
+      const db = openDatabase(path, 'wal')
+      const { n } = db.prepare('SELECT COUNT(*) AS n FROM events WHERE session_id = ?')
+        .get(m.id) as { n: number }
+      expect(n).toBe(oneTurnLog().length)
+      db.close()
+    } finally {
+      await dispose()
+    }
+  })
 })
 
 describe('scanRows', () => {

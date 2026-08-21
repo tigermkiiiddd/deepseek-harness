@@ -57,6 +57,20 @@ export function oneTurnLog(): SessionEvent[] {
   ]
 }
 
+/** A well-formed two-turn event log (contiguous seqs from 0, distinct turn numbers). */
+export function twoTurnLog(): SessionEvent[] {
+  const second = oneTurnLog().map((event) => {
+    const data = event.data as Record<string, unknown>
+    return {
+      ...event,
+      seq: event.seq + 6,
+      time: event.time + 6,
+      data: { ...data, ...'turn' in data ? { turn: 2 } : {} },
+    } as SessionEvent
+  })
+  return [...oneTurnLog(), ...second]
+}
+
 /**
  * Append recorded events to a live session while forwarding surface metadata verbatim. The broad
  * `SessionEvent` union makes the typed marker optional, but the runtime guard must still reject a
@@ -326,6 +340,33 @@ export function runPersistenceContract(name: string, make: () => Promise<Contrac
         await expect(persistence.readFrom(SessionId('absent-read-from'), 0)).rejects.toThrow('not found')
         await expect(persistence.readFrom(m.id, -1)).rejects.toThrow('non-negative safe integer')
         await expect(persistence.readFrom(m.id, 1.5)).rejects.toThrow('non-negative safe integer')
+      } finally {
+        await dispose()
+      }
+    })
+
+    it('truncate rewrites the stored log to exactly its kept prefix', async () => {
+      const { persistence, dispose } = await make()
+      try {
+        const m = meta('truncate-prefix')
+        const first = oneTurnLog()
+        await persistence.create(m)
+        await persistence.append(m.id, twoTurnLog())
+
+        // Keeping a turn boundary returns exactly that prefix on the next load.
+        await persistence.truncate(m.id, first.length)
+        const truncated = await persistence.load(m.id)
+        expect(truncated.meta).toMatchObject({ id: m.id })
+        expect(truncated.events).toEqual(first)
+
+        // Truncating to zero leaves a materialized, empty log (still listed).
+        await persistence.truncate(m.id, 0)
+        expect((await persistence.load(m.id)).events).toEqual([])
+        expect((await persistence.list()).map(x => x.id)).toContain(m.id)
+
+        // The kept prefix remains continuable: appends resume at the kept length.
+        await persistence.append(m.id, first)
+        expect((await persistence.load(m.id)).events).toEqual(first)
       } finally {
         await dispose()
       }
