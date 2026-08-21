@@ -25,6 +25,7 @@ import {
   sessionModelsRequestSchema,
   sessionPromptRequestSchema,
   sessionRenameRequestSchema,
+  sessionRerunRequestSchema,
   sessionSearchRequestSchema,
   sessionSelectModelRequestSchema,
   sessionUpdateQueueRequestSchema,
@@ -66,8 +67,9 @@ import {
 } from '../api/credentials.schema.ts'
 import { llmDiscoverModelsRequestSchema, llmModelsRequestSchema, llmProvidersRequestSchema } from '../api/llm.schema.ts'
 import {
-  teamChatRequestSchema, teamHistoryRequestSchema, teamListRequestSchema,
-  teamNewSessionRequestSchema, teamSessionsRequestSchema,
+  teamAddMemberRequestSchema, teamCancelRequestSchema, teamHistoryRequestSchema, teamListRequestSchema,
+  teamNewSessionRequestSchema, teamPermissionRequestSchema, teamPromptRequestSchema, teamRemoveMemberRequestSchema,
+  teamRestartRequestSchema, teamSessionsRequestSchema, teamStartRequestSchema, teamStopRequestSchema,
 } from '../api/team.schema.ts'
 import {
   subagentHistoryRequestSchema,
@@ -101,6 +103,7 @@ const UNARY_ROUTES: UnaryRoutes = {
   'session.selectModel': { schema: sessionSelectModelRequestSchema, invoke: (api, r) => api.sessions.selectModel(r) },
   'session.rename': { schema: sessionRenameRequestSchema, invoke: (api, r) => api.sessions.rename(r) },
   'session.fork': { schema: sessionForkRequestSchema, invoke: (api, r) => api.sessions.fork(r) },
+  'session.rerun': { schema: sessionRerunRequestSchema, invoke: (api, r) => api.sessions.rerun(r) },
   'session.prompt': { schema: sessionPromptRequestSchema, invoke: (api, r) => api.sessions.prompt(r) },
   'session.attachment': { schema: sessionAttachmentRequestSchema, invoke: (api, r) => api.sessions.attachment(r) },
   'session.updateQueue': { schema: sessionUpdateQueueRequestSchema, invoke: (api, r) => api.sessions.updateQueue(r) },
@@ -147,10 +150,17 @@ const UNARY_ROUTES: UnaryRoutes = {
   'llm.models': { schema: llmModelsRequestSchema, invoke: (api, r) => api.llm.models(r) },
   'llm.discoverModels': { schema: llmDiscoverModelsRequestSchema, invoke: (api, r, signal) => api.llm.discoverModels(r, signal) },
   'team.list': { schema: teamListRequestSchema, invoke: (api, r) => api.team.list(r) },
+  'team.start': { schema: teamStartRequestSchema, invoke: (api, r) => api.team.start(r) },
+  'team.stop': { schema: teamStopRequestSchema, invoke: (api, r) => api.team.stop(r) },
+  'team.restart': { schema: teamRestartRequestSchema, invoke: (api, r) => api.team.restart(r) },
   'team.sessions': { schema: teamSessionsRequestSchema, invoke: (api, r) => api.team.sessions(r) },
   'team.history': { schema: teamHistoryRequestSchema, invoke: (api, r) => api.team.history(r) },
   'team.newSession': { schema: teamNewSessionRequestSchema, invoke: (api, r) => api.team.newSession(r) },
-  'team.chat': { schema: teamChatRequestSchema, invoke: (api, r) => api.team.chat(r) },
+  'team.prompt': { schema: teamPromptRequestSchema, invoke: (api, r) => api.team.prompt(r) },
+  'team.cancel': { schema: teamCancelRequestSchema, invoke: (api, r) => api.team.cancel(r) },
+  'team.permission': { schema: teamPermissionRequestSchema, invoke: (api, r) => api.team.permission(r) },
+  'team.addMember': { schema: teamAddMemberRequestSchema, invoke: (api, r) => api.team.addMember(r) },
+  'team.removeMember': { schema: teamRemoveMemberRequestSchema, invoke: (api, r) => api.team.removeMember(r) },
 }
 
 /** Route lookup that narrows an arbitrary path segment to a map key (single cast point for the string→key refinement). */

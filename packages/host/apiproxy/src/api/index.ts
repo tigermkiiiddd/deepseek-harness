@@ -64,7 +64,7 @@ export type { SettingsApi, SettingsNamespaceView, SettingsPathOpView, SettingsSe
 export type { CredentialsApi, CredentialView } from './credentials.ts'
 export type { ConfigurableProviderView, DiscoveredModelView, LlmApi } from './llm.ts'
 export type {
-  TeamApi, TeamChatResultView, TeamHistoryEntryView, TeamMemberView, TeamSessionView,
+  TeamAddMemberRequest, TeamApi, TeamHistoryEntryView, TeamMemberView, TeamPermissionOutcomeView, TeamSessionView,
 } from './team.ts'
 export type { DownloadsApi } from './downloads.ts'
 export type { ApprovalResponsePayload } from './approvals.ts'

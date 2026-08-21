@@ -31,6 +31,7 @@ export interface RpcMethodMap {
   'session.selectModel': SessionsApi['selectModel']
   'session.rename': SessionsApi['rename']
   'session.fork': SessionsApi['fork']
+  'session.rerun': SessionsApi['rerun']
   'session.prompt': SessionsApi['prompt']
   'session.attachment': SessionsApi['attachment']
   'session.updateQueue': SessionsApi['updateQueue']
@@ -77,10 +78,17 @@ export interface RpcMethodMap {
   'llm.models': LlmApi['models']
   'llm.discoverModels': LlmApi['discoverModels']
   'team.list': TeamApi['list']
+  'team.start': TeamApi['start']
+  'team.stop': TeamApi['stop']
+  'team.restart': TeamApi['restart']
   'team.sessions': TeamApi['sessions']
   'team.history': TeamApi['history']
   'team.newSession': TeamApi['newSession']
-  'team.chat': TeamApi['chat']
+  'team.prompt': TeamApi['prompt']
+  'team.cancel': TeamApi['cancel']
+  'team.permission': TeamApi['permission']
+  'team.addMember': TeamApi['addMember']
+  'team.removeMember': TeamApi['removeMember']
 }
 
 /** Business request payload of method K (reaches through the RpcRequest narrow form to payload). */

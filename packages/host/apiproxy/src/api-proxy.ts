@@ -83,17 +83,32 @@ import type { SettingsDescriptor, SettingsNamespace, SettingsPathOp } from '@dee
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 // Value edge: the rename impl narrows the title service's validation failure; the import also resolves `ctx.get('sessionTitle')`.
 import { SessionTitleInvalidError } from '@deepseek-ai/dsh-session-title'
-import type { CallId } from '@deepseek-ai/dsh-llm/brand'
+import { CallId } from '@deepseek-ai/dsh-llm/brand'
 import type { ScopeKey } from '@deepseek-ai/dsh-scope'
-import type { ApprovalOutcome, ApprovalRequestId } from '@deepseek-ai/dsh-user-approval'
+import { ApprovalRequestId } from '@deepseek-ai/dsh-user-approval'
+import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 // Side-effect type import: resolves the `approval/request` waterfall and
 // `ctx.get('approval')` without a value dependency on the seam (optional composition).
 import type {} from '@deepseek-ai/dsh-user-approval'
+// Side-effect type import: the team status/update/permission/turn-end events
+// the host stream forwards verbatim (their allowlist is api-remotes').
+import type {} from '@deepseek-ai/dsh-team/types'
 import { approvalResponsePayloadSchema } from './api/approvals.schema.ts'
 import { imageLimitsProjectionSchema, sessionListMetadataProjectionSchema } from './api/sessions.schema.ts'
 import { questionResponsePayloadSchema } from './api/questions.schema.ts'
 import type { ClientResponse, RpcError, RpcReceipt, RpcRequest, RpcResponse } from './api/rpc.ts'
 import { RpcId } from './api/rpc.ts'
+import { AcpUpdateTranslator } from '@deepseek-ai/dsh-team'
+import type { TranslatedSessionEvent } from '@deepseek-ai/dsh-team'
+import type { MemberSession } from '@deepseek-ai/dsh-team/types'
+import type { PermissionOption } from '@agentclientprotocol/sdk'
+import {
+  isMemberSessionId,
+  makeMemberSessionId,
+  memberSessionDisplayTitle,
+  memberTopicSummary,
+  parseMemberSessionId,
+} from './team-sessions.ts'
 import type {
   AskUserQuestionAnswer, AskUserQuestionItem, AskUserQuestionRequest,
 } from '@deepseek-ai/dsh-user-questions'
@@ -1134,6 +1149,14 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
   const pendingQuestions = new Map<RpcId, PendingQuestion>()
   const pendingApprovals = new Map<RpcId, PendingApproval>()
   const muxQueues = new Set<FrameQueue<RpcRequest<MuxFrame>>>()
+  /** Host stream queues, mirroring muxQueues, so member-session lifecycle frames can be broadcast. */
+  const hostQueues = new Set<FrameQueue<RpcRequest<HostFrame>>>()
+  /** Per-member-topic ACP→session-event translator; one instance per topic survives across turns. */
+  const memberTranslators = new Map<SessionId, AcpUpdateTranslator>()
+  /** Next seq for each member topic (monotonic across replay + live within this process). */
+  const memberSeqs = new Map<SessionId, number>()
+  /** Stable first-seen time for member topics (used for list sorting). */
+  const memberTopicFirstSeenAt = new Map<SessionId, number>()
   const imageAdmissionChains = new WeakMap<Agent, Promise<void>>()
 
   /** Serialize image admission with model selection for one agent. */
@@ -1279,6 +1302,168 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     const envelope = frame(payload)
     for (const queue of muxQueues) queue.push(envelope)
   }
+
+  /** Send one host-level frame to every connected host-stream consumer. */
+  function broadcastHost(payload: HostFrame): void {
+    const envelope = frame(payload)
+    for (const queue of hostQueues) queue.push(envelope)
+  }
+
+  /** Resolve the team service if composed. */
+  function teamService(): TeamServiceShape | undefined {
+    return ctx.get('team')
+  }
+
+  /**
+   * Look up a member's configured title, falling back to its id.
+   * @param memberId - the member whose title is wanted.
+   * @returns the configured title or the id.
+   */
+  function memberTitleFor(memberId: string): string {
+    return teamService()?.list().find(member => member.id === memberId)?.title ?? memberId
+  }
+
+  /**
+   * Initialize seq tracking and publish the title projection for one member topic
+   * the first time this process sees it.
+   * @param memberId - the member that owns the topic.
+   * @param topicId - the member's topic id.
+   * @returns the virtual session id.
+   */
+  function ensureMemberTopicSeen(memberId: string, topicId: string): SessionId {
+    const sessionId = makeMemberSessionId(memberId, topicId)
+    if (!memberTopicFirstSeenAt.has(sessionId)) {
+      const now = Date.now()
+      memberTopicFirstSeenAt.set(sessionId, now)
+      memberSeqs.set(sessionId, 0)
+      broadcast({
+        type: 'session/projection',
+        sessionId,
+        key: 'title',
+        value: memberSessionDisplayTitle(memberTitleFor(memberId), topicId),
+        seq: -1,
+      })
+    }
+    return sessionId
+  }
+
+  /** Get or create the translator for one member topic. */
+  function memberTranslatorFor(sessionId: SessionId): AcpUpdateTranslator {
+    let translator = memberTranslators.get(sessionId)
+    if (translator === undefined) {
+      translator = new AcpUpdateTranslator()
+      memberTranslators.set(sessionId, translator)
+    }
+    return translator
+  }
+
+  /**
+   * Stamp seq/time on translated events and push them as `session/event` mux frames.
+   * @param sessionId - the virtual member session id.
+   * @param translated - events from the ACP translator.
+   */
+  function emitMemberEvents(sessionId: SessionId, translated: TranslatedSessionEvent[]): void {
+    if (translated.length === 0) return
+    let nextSeq = memberSeqs.get(sessionId) ?? 0
+    for (const item of translated) {
+      const seq = nextSeq++
+      const event: SessionEvent = {
+        type: item.type,
+        seq,
+        time: Date.now(),
+        data: item.data,
+        ...('surfaceOp' in item ? { surfaceOp: item.surfaceOp } : {}),
+      } as SessionEvent
+      const view = viewFor(ctx, event, () => undefined, undefined)
+      for (const queue of muxQueues) {
+        queue.push(frame({
+          type: 'session/event',
+          sessionId,
+          event,
+          ...view === undefined ? {} : { view },
+        }))
+      }
+    }
+    memberSeqs.set(sessionId, nextSeq)
+  }
+
+  /**
+   * Map a harness approval outcome to the ACP permission option vocabulary.
+   * The wire frame carries no option id, so the bridge picks the closest option:
+   * allow → first allow option, reject → first reject option, otherwise cancel.
+   * @param outcome - the harness outcome from the client.
+   * @param options - the options the member offered.
+   * @returns the team-permission outcome.
+   */
+  function mapApprovalOutcomeToTeam(
+    outcome: ApprovalOutcome,
+    options: readonly PermissionOption[],
+  ): { outcome: 'selected'; optionId: string } | { outcome: 'cancelled' } {
+    if (outcome === 'allowed-once') {
+      const allow = options.find(option => option.kind === 'allow_once' || option.kind === 'allow_always')
+      if (allow !== undefined) return { outcome: 'selected', optionId: allow.optionId }
+      return { outcome: 'cancelled' }
+    }
+    if (outcome === 'rejected') {
+      const reject = options.find(option => option.kind === 'reject_once' || option.kind === 'reject_always')
+      if (reject !== undefined) return { outcome: 'selected', optionId: reject.optionId }
+      return { outcome: 'cancelled' }
+    }
+    return { outcome: 'cancelled' }
+  }
+
+  // Member-session bridge: ACP agents become first-class sessions in the main
+  // conversation UI. Each member topic gets a virtual `member:<member>:<topic>`
+  // session id, a persistent translator, and a monotonic seq counter.
+  const team = teamService()
+  if (team !== undefined) {
+    // Register a permission subscriber so the team service surfaces asks via
+    // `team/permission-requested` and waits for an external answer through
+    // `team.permission`. Returning `undefined` lets the event-driven bridge own
+    // the pending approval and the eventual `approval/resolved` frame.
+    ctx.effect(() => team.onPermissionRequest(() => undefined), 'api-proxy: member permission subscriber')
+  }
+  ctx.on('team/member-update', (memberId, topicId, update) => {
+    const sessionId = ensureMemberTopicSeen(memberId, topicId)
+    const translator = memberTranslatorFor(sessionId)
+    emitMemberEvents(sessionId, translator.update(update))
+  })
+  ctx.on('team/turn-end', (memberId, topicId, _promptId, stopReason, error) => {
+    const sessionId = ensureMemberTopicSeen(memberId, topicId)
+    const translator = memberTranslatorFor(sessionId)
+    // A member-rejected turn carries error; the stopReason is a placeholder then.
+    emitMemberEvents(sessionId, error === undefined ? translator.endTurn(stopReason) : translator.failTurn(error))
+    broadcastHost({ type: 'host/session-status', sessionId, running: false })
+    // Any permission ask that outlived its turn is moot; settle it cancelled.
+    for (const pending of [...pendingApprovals.values()]) {
+      if (pending.sessionId === sessionId) pending.resolve('cancelled')
+    }
+  })
+  ctx.on('team/permission-requested', (request) => {
+    const team = teamService()
+    if (team === undefined) return
+    const sessionId = ensureMemberTopicSeen(request.memberId, request.sessionId)
+    const approvalId = ApprovalRequestId(request.requestId)
+    const rpcId = RpcId(randomUUID())
+    const callId = request.toolCall.toolCallId
+    const pending: PendingApproval = {
+      rpcId,
+      sessionId,
+      approvalId,
+      toolName: request.toolCall.title ?? 'permission-request',
+      ...(typeof callId === 'string' && callId.length > 0 ? { callId: CallId(callId) } : {}),
+      resolve: (outcome) => {
+        if (!pendingApprovals.delete(rpcId)) return
+        const teamOutcome = mapApprovalOutcomeToTeam(outcome, request.options)
+        team.permission(request.memberId, request.requestId, teamOutcome).catch((error: unknown) => {
+          ctx.logger.warn(`api-proxy: failed to answer member permission request: ${String(error)}`)
+        })
+        broadcast({ type: 'approval/resolved', sessionId, approvalId, outcome })
+      },
+    }
+    pendingApprovals.set(rpcId, pending)
+    for (const queue of muxQueues) queue.push(requestedFrame(pending))
+  })
 
   // Projection change feed → session/projection push frames. The carrier
   // mints the wire frame (the Service Definition package holds no wire vocabulary); the
@@ -1619,6 +1804,159 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
   }
 
   /**
+   * Read one member topic's full history through the team service, stamp it
+   * with contiguous seq numbers, and shape it into the history page the client
+   * expects. Member sessions do not support loadOlder, so `hasMore` is always
+   * false and a `beforeSeq` request is rejected loud.
+   * @param request - the history RPC request.
+   * @param beforeSeq - pagination anchor; must be absent for member sessions.
+   * @param maxMessages - unused; the bridge returns the full replayed history.
+   * @returns the history page or a wire error.
+   */
+  async function memberHistory(
+    request: RpcRequest<{ sessionId: SessionId; beforeSeq?: number; maxMessages?: number }>,
+    beforeSeq: number | undefined,
+    _maxMessages: number | undefined,
+  ): Promise<RpcResponse<{ events: HistoryEntry[]; hasMore: boolean; projections?: SessionProjectionsBlock }>> {
+    const parsed = parseMemberSessionId(request.payload.sessionId)
+    if (parsed === undefined) {
+      return err(request, {
+        code: 'session-not-found',
+        message: `invalid member session id "${request.payload.sessionId}"`,
+        details: { sessionId: request.payload.sessionId },
+      })
+    }
+    if (beforeSeq !== undefined) {
+      return err(request, {
+        code: 'internal',
+        message: 'loadOlder is not supported for member sessions',
+        details: {},
+      })
+    }
+    const team = teamService()
+    if (team === undefined) return teamUnavailable(request)
+    let translated: TranslatedSessionEvent[]
+    try {
+      translated = await team.readHistoryEvents(parsed.memberId, parsed.topicId)
+    } catch (error: unknown) {
+      return teamError(request, error)
+    }
+    const sessionId = makeMemberSessionId(parsed.memberId, parsed.topicId)
+    ensureMemberTopicSeen(parsed.memberId, parsed.topicId)
+    let nextSeq = memberSeqs.get(sessionId) ?? 0
+    const events: SessionEvent[] = []
+    for (const item of translated) {
+      events.push({
+        type: item.type,
+        seq: nextSeq++,
+        time: Date.now(),
+        data: item.data,
+        ...('surfaceOp' in item ? { surfaceOp: item.surfaceOp } : {}),
+      } as SessionEvent)
+    }
+    memberSeqs.set(sessionId, nextSeq)
+    return ok(request, { events: historyPage(ctx, events, undefined, undefined).events, hasMore: false })
+  }
+
+  /**
+   * Accept one text prompt for a member topic, route it to the team service,
+   * then mint the opening `turn/start` + `user/message` so the main conversation
+   * UI shows the turn immediately. Rejects image/audio parts and steer mode loud.
+   * @param request - the prompt RPC request.
+   * @returns the accepted response or a wire error.
+   */
+  async function memberPrompt(
+    request: RpcRequest<{ sessionId: SessionId; mode: 'queue' | 'steer'; content: PromptContentPart[]; clientTimeZone?: string }>,
+  ): Promise<RpcResponse<{ accepted: true }>> {
+    const { sessionId, mode, content } = request.payload
+    const parsed = parseMemberSessionId(sessionId)
+    if (parsed === undefined) {
+      return err(request, {
+        code: 'session-not-found',
+        message: `invalid member session id "${sessionId}"`,
+        details: { sessionId },
+      })
+    }
+    if (mode === 'steer') {
+      return err(request, {
+        code: 'internal',
+        message: 'steer mode is not supported for member sessions',
+        details: {},
+      })
+    }
+    const nonText = content.find(part => part.type !== 'text')
+    if (nonText !== undefined) {
+      return err(request, {
+        code: 'attachment-error',
+        message: 'member sessions accept text content only',
+        details: { reason: 'MEMBER_NON_TEXT_PROMPT' },
+      })
+    }
+    const text = content.filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+      .map(part => part.text).join('')
+    if (text.trim().length === 0) {
+      return err(request, {
+        code: 'agent-busy',
+        message: 'empty prompt',
+        details: { reason: 'MEMBER_EMPTY_PROMPT' },
+      })
+    }
+    const team = teamService()
+    if (team === undefined) return teamUnavailable(request)
+    try {
+      await team.prompt(parsed.memberId, parsed.topicId, text)
+    } catch (error: unknown) {
+      return teamError(request, error)
+    }
+    ensureMemberTopicSeen(parsed.memberId, parsed.topicId)
+    broadcastHost({ type: 'host/session-status', sessionId, running: true })
+    const translator = memberTranslatorFor(sessionId)
+    emitMemberEvents(sessionId, translator.startTurn(text))
+    return ok(request, { accepted: true as const })
+  }
+
+  /**
+   * Cancel the in-flight prompt turn of one member topic.
+   * @param request - the cancel RPC request.
+   * @returns the accepted response or a wire error.
+   */
+  async function memberCancel(
+    request: RpcRequest<{ sessionId: SessionId }>,
+  ): Promise<RpcResponse<{ accepted: true }>> {
+    const parsed = parseMemberSessionId(request.payload.sessionId)
+    if (parsed === undefined) {
+      return err(request, {
+        code: 'session-not-found',
+        message: `invalid member session id "${request.payload.sessionId}"`,
+        details: { sessionId: request.payload.sessionId },
+      })
+    }
+    const team = teamService()
+    if (team === undefined) return teamUnavailable(request)
+    try {
+      await team.cancel(parsed.memberId, parsed.topicId)
+    } catch (error: unknown) {
+      return teamError(request, error)
+    }
+    return ok(request, { accepted: true as const })
+  }
+
+  /**
+   * Shared refusal for session-domain operations that read host logs and
+   * therefore cannot apply to member topics.
+   * @param request - the RPC request being refused.
+   * @param operation - the human-readable operation name for the message.
+   * @returns a wire error response.
+   */
+  function memberUnsupported<T>(request: RpcRequest<unknown>, operation: string): RpcResponse<T> {
+    return err(request, {
+      code: 'internal',
+      message: `${operation} is not supported for member sessions`,
+      details: {},
+    })
+  }
+
+  /**
    * Resolve one requested identity to a live agent, creating or resuming it once.
    * An undefined cwd is the free-session request: the new session's header
    * records no working directory, and identity matching accepts only a
@@ -1794,6 +2132,38 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         items.push(...summaries)
       }
     }
+    const team = teamService()
+    if (team !== undefined) {
+      for (const member of team.list()) {
+        let topics: MemberSession[]
+        try {
+          topics = await team.listSessions(member.id)
+        } catch {
+          // A offline/failed member with no cached sessions rejects listSessions;
+          // skip it rather than failing the whole list — the member's own status
+          // event explains why.
+          continue
+        }
+        signal?.throwIfAborted()
+        for (const topic of topics) {
+          const sessionId = makeMemberSessionId(member.id, topic.sessionId)
+          const isNewTopic = !memberTopicFirstSeenAt.has(sessionId)
+          const firstSeenAt = memberTopicFirstSeenAt.get(sessionId) ?? Date.now()
+          if (isNewTopic) {
+            memberTopicFirstSeenAt.set(sessionId, firstSeenAt)
+            memberSeqs.set(sessionId, 0)
+            broadcastHost({ type: 'host/session-added', sessionId, blank: false, cwd: topic.cwd })
+            broadcast({ type: 'session/subscribed', sessionId, lastSeq: -1 })
+          }
+          const updatedAt = topic.updatedAt !== undefined ? new Date(topic.updatedAt).getTime() : firstSeenAt
+          items.push(memberTopicSummary(member.id, topic, {
+            updatedAt,
+            running: team.isTurnInFlight(member.id, topic.sessionId),
+            memberTitle: member.title,
+          }))
+        }
+      }
+    }
     items.sort((a, b) => b.updatedAt - a.updatedAt)
     return items
   }
@@ -1824,11 +2194,59 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
   /** The host team service's minimal shape (the full contract lives in @deepseek-ai/dsh-team). */
   interface TeamServiceShape {
-    list(): { id: string; title: string; description: string | undefined; status: string }[]
-    listSessions(memberId: string): Promise<{ sessionId: string; cwd: string }[]>
+    list(): {
+      id: string
+      title: string
+      description: string | undefined
+      kind: 'dsh' | undefined
+      status: string
+      capabilities: unknown
+      autostart: boolean
+      lastError: string | undefined
+    }[]
+    start(memberId: string): Promise<void>
+    stop(memberId: string): Promise<void>
+    restart(memberId: string): Promise<void>
+    listSessions(memberId: string): Promise<MemberSession[]>
     readHistory(memberId: string, sessionId: string): Promise<{ role: 'user' | 'assistant'; text: string }[]>
+    readHistoryEvents(memberId: string, sessionId: string): Promise<TranslatedSessionEvent[]>
+    isTurnInFlight(memberId: string, sessionId: string): boolean
     newSession(memberId: string): Promise<string>
-    chat(memberId: string, sessionId: string, text: string): Promise<{ text: string; stopReason: string }>
+    prompt(memberId: string, sessionId: string, text: string): Promise<{ promptId: string }>
+    cancel(memberId: string, sessionId: string): Promise<void>
+    permission(
+      memberId: string,
+      requestId: string,
+      outcome: { outcome: 'selected'; optionId: string } | { outcome: 'cancelled' },
+    ): Promise<void>
+    onPermissionRequest(handler: (request: {
+      readonly requestId: string
+      readonly memberId: string
+      readonly sessionId: string
+      readonly options: readonly PermissionOption[]
+    }) => { outcome: 'selected'; optionId: string } | { outcome: 'cancelled' } | undefined | Promise<undefined>): () => void
+    addMember(config: {
+      id: string
+      title?: string
+      description?: string
+      kind?: 'dsh'
+      command?: string
+      args?: string[]
+      cwd?: string
+      env?: Record<string, string>
+      permission?: 'allow' | 'reject'
+      autostart?: boolean
+    }): Promise<{
+      id: string
+      title: string
+      description: string | undefined
+      kind: 'dsh' | undefined
+      status: string
+      capabilities: unknown
+      autostart: boolean
+      lastError: string | undefined
+    }>
+    removeMember(memberId: string): Promise<void>
   }
 
   /** Wire error for a deployment that composes no team service. */
@@ -2085,7 +2503,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
           const visible = await listVisibleSessionSummaries(signal)
           if (isAborted(signal)) return cancelled()
           if (visible.length === 0) return ok(request, { items: [], hasMore: false })
-          const visibleIds = new Set(visible.map(item => item.sessionId))
+          const visibleIds = new Set(visible.map(item => item.sessionId).filter(id => !isMemberSessionId(id)))
           const authorized: SessionSearchItem[] = []
           const acceptedIds = new Set<SessionId>()
           const seenCursors = new Set<SessionSearchCursor>()
@@ -2279,6 +2697,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       async history(request) {
         const { sessionId, beforeSeq, maxMessages } = request.payload
+        if (isMemberSessionId(sessionId)) {
+          return memberHistory(request, beforeSeq, maxMessages)
+        }
         try {
           const source = await historySourceFor(sessionId)
           // Both awaits happen BEFORE the cut. Ensuring the recorded
@@ -2370,6 +2791,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       async rename(request) {
         const { sessionId, title } = request.payload
+        if (isMemberSessionId(sessionId)) return memberUnsupported(request, 'rename')
         const found = await agentFor(sessionId)
         if ('error' in found) return err(request, found.error)
         const titles = ctx.get('sessionTitle')
@@ -2400,6 +2822,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       async fork(request) {
         const { sessionId, atSeq } = request.payload
+        if (isMemberSessionId(sessionId)) return memberUnsupported(request, 'fork')
         let source: SessionReadState
         try {
           source = await readSessionState(sessionId)
@@ -2496,8 +2919,92 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         return ok(request, { sessionId: childId })
       },
 
+      async rerun(request) {
+        const { sessionId, atSeq } = request.payload
+        if (isMemberSessionId(sessionId)) return memberUnsupported(request, 'rerun')
+        let source: SessionReadState
+        try {
+          source = await readSessionState(sessionId)
+        } catch (error: unknown) {
+          if (error instanceof SessionNotFound) {
+            return err(request, { code: 'session-not-found', message: error.message, details: { sessionId } })
+          }
+          return err(request, {
+            code: 'internal',
+            message: `rerun source unavailable for session "${sessionId}": ${String(error)}`,
+            details: {},
+          })
+        }
+        const live = ctx.agents.get(sessionId)
+        if (hasSubagentOwner({ header: source.header }, live)) {
+          return err(request, subagentOwnershipError(sessionId))
+        }
+        const events = source.events
+        // An anchor beyond the log end names no message to drop.
+        if (atSeq > (events.at(-1)?.seq ?? -1)) {
+          return err(request, {
+            code: 'rerun-unavailable',
+            message: `session "${sessionId}" has no event ${String(atSeq)} to rerun from`,
+            details: { sessionId },
+          })
+        }
+        // The cut is the last completed turn strictly before the anchor, so
+        // the anchor's own turn and everything after it is dropped; an anchor
+        // inside the first turn keeps an empty prefix. The extension stops at
+        // the next turn/start OR at an agent/inbox/spliced admission: a
+        // followup message's splice lands BEFORE its turn/start, and keeping
+        // it would re-admit the dropped message into the rebuilt agent's inbox.
+        const boundary = events.findLast(e => e.type === 'turn/end' && e.seq < atSeq)
+        let cut = boundary === undefined ? 0 : boundary.seq + 1
+        while (cut < events.length && events[cut]?.type !== 'turn/start' && events[cut]?.type !== 'agent/inbox/spliced') cut++
+        if (live !== undefined) {
+          // The rebuilt agent inherits the session's composition for the same
+          // reason a forked child does: the kept history was produced under
+          // those tools.
+          const composition = await composeAgent(resolveSessionPreset(source))
+          try {
+            await ctx.agents.reseed({
+              sessionId,
+              keepSeqs: cut,
+              agentOptions: agentOptions(),
+              setup: composition.setup,
+            })
+          } catch (error: unknown) {
+            return err(request, {
+              code: 'internal',
+              message: `failed to rerun session "${sessionId}": ${String(error)}`,
+              details: {},
+            })
+          }
+          return ok(request, { accepted: true as const })
+        }
+        const persistence = ctx.get('sessionPersistence')
+        if (persistence === undefined) {
+          return err(request, {
+            code: 'internal',
+            message: 'rerun is unavailable: this deployment mounts no session-persistence service',
+            details: {},
+          })
+        }
+        try {
+          // A persisted-but-not-live session is truncated in place; its next
+          // resume rebuilds the agent from the kept prefix.
+          await persistence.truncate(sessionId, cut)
+        } catch (error: unknown) {
+          return err(request, {
+            code: 'internal',
+            message: `failed to rerun session "${sessionId}": ${String(error)}`,
+            details: {},
+          })
+        }
+        return ok(request, { accepted: true as const })
+      },
+
       async prompt(request) {
         const { sessionId, mode, content, clientTimeZone } = request.payload
+        if (isMemberSessionId(sessionId)) {
+          return memberPrompt(request)
+        }
         const canonicalTimeZone = clientTimeZone === undefined
           ? undefined
           : canonicalClientTimeZone(clientTimeZone)
@@ -2556,6 +3063,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       async attachment(request) {
         const { sessionId, attachmentId } = request.payload
+        if (isMemberSessionId(sessionId)) return memberUnsupported(request, 'attachment')
         let state: SessionReadState
         try {
           state = await readSessionState(sessionId)
@@ -2655,6 +3163,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       cancel(request) {
         const { sessionId } = request.payload
+        if (isMemberSessionId(sessionId)) {
+          return memberCancel(request)
+        }
         const agent = ctx.agents.get(sessionId)
         if (agent === undefined) {
           return Promise.resolve(err(request, {
@@ -3100,11 +3611,44 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       // The team service is optional: a deployment without team members (the
       // default roster is empty) answers with an empty list rather than an
       // error, so the browser simply shows no members.
-      async list(request) {
+      list(request) {
         const team = ctx.get('team') as TeamServiceShape | undefined
-        if (team === undefined) return ok(request, [])
+        if (team === undefined) return Promise.resolve(ok(request, []))
         try {
-          return ok(request, team.list())
+          return Promise.resolve(ok(request, team.list()))
+        } catch (error: unknown) {
+          return Promise.resolve(teamError(request, error))
+        }
+      },
+
+      async start(request) {
+        const team = ctx.get('team') as TeamServiceShape | undefined
+        if (team === undefined) return teamUnavailable(request)
+        try {
+          await team.start(request.payload.memberId)
+          return ok(request, {})
+        } catch (error: unknown) {
+          return teamError(request, error)
+        }
+      },
+
+      async stop(request) {
+        const team = ctx.get('team') as TeamServiceShape | undefined
+        if (team === undefined) return teamUnavailable(request)
+        try {
+          await team.stop(request.payload.memberId)
+          return ok(request, {})
+        } catch (error: unknown) {
+          return teamError(request, error)
+        }
+      },
+
+      async restart(request) {
+        const team = ctx.get('team') as TeamServiceShape | undefined
+        if (team === undefined) return teamUnavailable(request)
+        try {
+          await team.restart(request.payload.memberId)
+          return ok(request, {})
         } catch (error: unknown) {
           return teamError(request, error)
         }
@@ -3131,20 +3675,81 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       },
 
       async newSession(request) {
+        const team = teamService()
+        if (team === undefined) return teamUnavailable(request)
+        let topicId: string
+        try {
+          topicId = await team.newSession(request.payload.memberId)
+        } catch (error: unknown) {
+          return teamError(request, error)
+        }
+        const sessionId = makeMemberSessionId(request.payload.memberId, topicId)
+        const now = Date.now()
+        memberTopicFirstSeenAt.set(sessionId, now)
+        memberSeqs.set(sessionId, 0)
+        // Find the new topic's cwd so the client can group it immediately.
+        let cwd: string | undefined
+        try {
+          cwd = (await team.listSessions(request.payload.memberId))
+            .find(topic => topic.sessionId === topicId)?.cwd
+        } catch {
+          cwd = undefined
+        }
+        broadcastHost({ type: 'host/session-added', sessionId, blank: false, ...(cwd === undefined ? {} : { cwd }) })
+        broadcast({ type: 'session/subscribed', sessionId, lastSeq: -1 })
+        return ok(request, { sessionId: topicId })
+      },
+
+      // Accepts the turn immediately; chunks stream to the browser as
+      // team/member-update remote events and settlement as team/turn-end.
+      async prompt(request) {
         const team = ctx.get('team') as TeamServiceShape | undefined
         if (team === undefined) return teamUnavailable(request)
         try {
-          return ok(request, { sessionId: await team.newSession(request.payload.memberId) })
+          return ok(request, await team.prompt(request.payload.memberId, request.payload.sessionId, request.payload.text))
         } catch (error: unknown) {
           return teamError(request, error)
         }
       },
 
-      async chat(request) {
+      async cancel(request) {
         const team = ctx.get('team') as TeamServiceShape | undefined
         if (team === undefined) return teamUnavailable(request)
         try {
-          return ok(request, await team.chat(request.payload.memberId, request.payload.sessionId, request.payload.text))
+          await team.cancel(request.payload.memberId, request.payload.sessionId)
+          return ok(request, {})
+        } catch (error: unknown) {
+          return teamError(request, error)
+        }
+      },
+
+      async permission(request) {
+        const team = ctx.get('team') as TeamServiceShape | undefined
+        if (team === undefined) return teamUnavailable(request)
+        try {
+          await team.permission(request.payload.memberId, request.payload.requestId, request.payload.outcome)
+          return ok(request, {})
+        } catch (error: unknown) {
+          return teamError(request, error)
+        }
+      },
+
+      async addMember(request) {
+        const team = ctx.get('team') as TeamServiceShape | undefined
+        if (team === undefined) return teamUnavailable(request)
+        try {
+          return ok(request, await team.addMember(request.payload))
+        } catch (error: unknown) {
+          return teamError(request, error)
+        }
+      },
+
+      async removeMember(request) {
+        const team = ctx.get('team') as TeamServiceShape | undefined
+        if (team === undefined) return teamUnavailable(request)
+        try {
+          await team.removeMember(request.payload.memberId)
+          return ok(request, {})
         } catch (error: unknown) {
           return teamError(request, error)
         }
@@ -3545,6 +4150,11 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         for (const session of ctx.sessions.list()) {
           subscribeSession(queue, session)
         }
+        // Member sessions are not in ctx.sessions; replay their subscribed baselines.
+        for (const sessionId of memberSeqs.keys()) {
+          const lastSeq = (memberSeqs.get(sessionId) ?? 0) - 1
+          queue.push(frame({ type: 'session/subscribed', sessionId, lastSeq }))
+        }
         for (const pending of pendingQuestions.values()) {
           queue.push({
             rpcId: pending.rpcId,
@@ -3645,6 +4255,12 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       host(_request, signal) {
         const queue = new FrameQueue<RpcRequest<HostFrame>>()
+        hostQueues.add(queue)
+        // Reconnect baseline: member sessions already seen by this bridge are
+        // added (blank is always false) with their current running flag.
+        for (const sessionId of memberSeqs.keys()) {
+          queue.push(frame({ type: 'host/session-added', sessionId, blank: false }))
+        }
         const committedWorkspaces = ctx.workspaceRegistry.list()
         const committedWorkspaceIds = new Set(
           committedWorkspaces.map(workspace => String(workspace.id)),
@@ -3744,7 +4360,10 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             }),
           )),
         ]
-        return queue.iterate(signal, () => { for (const dispose of disposers) dispose() })
+        return queue.iterate(signal, () => {
+          hostQueues.delete(queue)
+          for (const dispose of disposers) dispose()
+        })
       },
     },
 
@@ -3753,6 +4372,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         // Clean error path first: missing services answer 500 and a missing
         // root artifact 404 before any zip byte is produced. The root content
         // read here is reused as the first zip entry, so nothing is read twice.
+        if (isMemberSessionId(request.sessionId)) {
+          return new Response('session log export is not supported for member sessions', { status: 400 })
+        }
         const deps = sessionLogExportDeps(ctx)
         if (deps.sessionQuery === undefined || deps.sessionPersistence === undefined || deps.attachments === undefined) {
           return new Response(

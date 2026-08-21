@@ -93,6 +93,9 @@ function fakeApi(overrides: Partial<{ muxFrames: MuxFrame[]; hostFrames: HostFra
       async fork(request) {
         return { rpcId: request.rpcId, result: { ok: true, value: { sessionId: 's-fork' as never } } }
       },
+      async rerun(request) {
+        return { rpcId: request.rpcId, result: { ok: true, value: { accepted: true as const } } }
+      },
       async prompt(request) {
         return { rpcId: request.rpcId, result: { ok: true, value: { accepted: true as const } } }
       },
@@ -299,8 +302,44 @@ function fakeApi(overrides: Partial<{ muxFrames: MuxFrame[]; hostFrames: HostFra
       async newSession(request) {
         return { rpcId: request.rpcId, result: { ok: true, value: { sessionId: 's-team' } } }
       },
-      async chat(request) {
-        return { rpcId: request.rpcId, result: { ok: true, value: { text: 'stub', stopReason: 'end_turn' } } }
+      async addMember(request) {
+        return {
+          rpcId: request.rpcId,
+          result: {
+            ok: true,
+            value: {
+              id: request.payload.id,
+              title: request.payload.title ?? request.payload.id,
+              description: request.payload.description,
+              kind: undefined,
+              status: 'connecting',
+              capabilities: undefined,
+              autostart: true,
+              lastError: undefined,
+            },
+          },
+        }
+      },
+      async removeMember(request) {
+        return { rpcId: request.rpcId, result: { ok: true, value: {} } }
+      },
+      async start(request) {
+        return { rpcId: request.rpcId, result: { ok: true, value: {} } }
+      },
+      async stop(request) {
+        return { rpcId: request.rpcId, result: { ok: true, value: {} } }
+      },
+      async restart(request) {
+        return { rpcId: request.rpcId, result: { ok: true, value: {} } }
+      },
+      async prompt(request) {
+        return { rpcId: request.rpcId, result: { ok: true, value: { promptId: 's-team-prompt' } } }
+      },
+      async cancel(request) {
+        return { rpcId: request.rpcId, result: { ok: true, value: {} } }
+      },
+      async permission(request) {
+        return { rpcId: request.rpcId, result: { ok: true, value: {} } }
       },
     },
     events: {
@@ -377,6 +416,8 @@ describe('unary round trip (handler ⇄ client, no network)', () => {
     })
     const renamed = await c.sessions.rename({ sessionId: 's' as never, title: 'named' })
     expect(renamed.result).toMatchObject({ ok: true, value: { title: 'named', seq: 0 } })
+    expect((await c.sessions.rerun({ sessionId: 's' as never, atSeq: 3 })).result)
+      .toEqual({ ok: true, value: { accepted: true } })
     expect((await c.sessions.prompt({ sessionId: 's' as never, mode: 'queue', content: [{ type: 'text', text: 'x' }] })).result.ok).toBe(true)
     expect((await c.sessions.attachment({ sessionId: 's' as never, attachmentId: 'a' as never })).result.ok).toBe(true)
     expect((await c.sessions.updateQueue({

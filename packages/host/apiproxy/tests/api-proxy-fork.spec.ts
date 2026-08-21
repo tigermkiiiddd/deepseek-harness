@@ -43,6 +43,7 @@ async function composed(workspaces: readonly Workspace[] = []): Promise<Context>
       return { agent, dispose: () => Promise.resolve() }
     },
     resume: () => Promise.reject(new Error('fork test sources are live')),
+    reseedAgent: () => Promise.reject(new Error('reseed unsupported in this test double')),
   })
   return ctx
 }

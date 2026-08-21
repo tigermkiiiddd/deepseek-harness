@@ -27,6 +27,7 @@ import {
   sessionModelsValueSchema,
   sessionPromptValueSchema,
   sessionRenameValueSchema,
+  sessionRerunValueSchema,
   sessionSearchValueSchema,
   sessionSelectModelValueSchema,
   sessionUpdateQueueValueSchema,
@@ -63,8 +64,9 @@ import {
 } from '../api/credentials.schema.ts'
 import { llmDiscoverModelsValueSchema, llmModelsValueSchema, llmProvidersValueSchema } from '../api/llm.schema.ts'
 import {
-  teamChatValueSchema, teamHistoryValueSchema, teamListValueSchema,
-  teamNewSessionValueSchema, teamSessionsValueSchema,
+  teamAddMemberValueSchema, teamCancelValueSchema, teamHistoryValueSchema, teamListValueSchema,
+  teamNewSessionValueSchema, teamPermissionValueSchema, teamPromptValueSchema, teamRemoveMemberValueSchema,
+  teamRestartValueSchema, teamSessionsValueSchema, teamStartValueSchema, teamStopValueSchema,
 } from '../api/team.schema.ts'
 import {
   subagentHistoryValueSchema,
@@ -99,6 +101,7 @@ export interface IApiClient {
     selectModel(payload: RequestPayload<'session.selectModel'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'session.selectModel'>>>
     rename(payload: RequestPayload<'session.rename'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'session.rename'>>>
     fork(payload: RequestPayload<'session.fork'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'session.fork'>>>
+    rerun(payload: RequestPayload<'session.rerun'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'session.rerun'>>>
     prompt(payload: RequestPayload<'session.prompt'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'session.prompt'>>>
     attachment(payload: RequestPayload<'session.attachment'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'session.attachment'>>>
     updateQueue(payload: RequestPayload<'session.updateQueue'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'session.updateQueue'>>>
@@ -169,10 +172,17 @@ export interface IApiClient {
   }
   team: {
     list(payload: RequestPayload<'team.list'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.list'>>>
+    start(payload: RequestPayload<'team.start'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.start'>>>
+    stop(payload: RequestPayload<'team.stop'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.stop'>>>
+    restart(payload: RequestPayload<'team.restart'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.restart'>>>
     sessions(payload: RequestPayload<'team.sessions'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.sessions'>>>
     history(payload: RequestPayload<'team.history'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.history'>>>
     newSession(payload: RequestPayload<'team.newSession'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.newSession'>>>
-    chat(payload: RequestPayload<'team.chat'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.chat'>>>
+    prompt(payload: RequestPayload<'team.prompt'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.prompt'>>>
+    cancel(payload: RequestPayload<'team.cancel'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.cancel'>>>
+    permission(payload: RequestPayload<'team.permission'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.permission'>>>
+    addMember(payload: RequestPayload<'team.addMember'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.addMember'>>>
+    removeMember(payload: RequestPayload<'team.removeMember'>, signal?: AbortSignal): Promise<RpcResponse<ResponseValue<'team.removeMember'>>>
   }
   /** client-response passthrough (rpcId is a backfill of the server-request's id — never minted here). */
   respond(message: ClientResponse, signal?: AbortSignal): Promise<RpcReceipt>
@@ -191,6 +201,7 @@ const UNARY_VALUE_SCHEMAS: { [K in keyof RpcMethodMap]: z.ZodType<Wire<ResponseV
   'session.selectModel': sessionSelectModelValueSchema,
   'session.rename': sessionRenameValueSchema,
   'session.fork': sessionForkValueSchema,
+  'session.rerun': sessionRerunValueSchema,
   'session.prompt': sessionPromptValueSchema,
   'session.attachment': sessionAttachmentValueSchema,
   'session.updateQueue': sessionUpdateQueueValueSchema,
@@ -237,10 +248,17 @@ const UNARY_VALUE_SCHEMAS: { [K in keyof RpcMethodMap]: z.ZodType<Wire<ResponseV
   'llm.models': llmModelsValueSchema,
   'llm.discoverModels': llmDiscoverModelsValueSchema,
   'team.list': teamListValueSchema,
+  'team.start': teamStartValueSchema,
+  'team.stop': teamStopValueSchema,
+  'team.restart': teamRestartValueSchema,
   'team.sessions': teamSessionsValueSchema,
   'team.history': teamHistoryValueSchema,
   'team.newSession': teamNewSessionValueSchema,
-  'team.chat': teamChatValueSchema,
+  'team.prompt': teamPromptValueSchema,
+  'team.cancel': teamCancelValueSchema,
+  'team.permission': teamPermissionValueSchema,
+  'team.addMember': teamAddMemberValueSchema,
+  'team.removeMember': teamRemoveMemberValueSchema,
 }
 
 /** Default timeout for bounded unary calls (rpc-compare 2026-07-19: a hung host must not leave callers pending forever). */
@@ -437,6 +455,7 @@ export abstract class AbstractApiClient implements IApiClient {
     selectModel: (payload, signal) => this.callUnary('session.selectModel', payload, signal),
     rename: (payload, signal) => this.callUnary('session.rename', payload, signal),
     fork: (payload, signal) => this.callUnary('session.fork', payload, signal),
+    rerun: (payload, signal) => this.callUnary('session.rerun', payload, signal),
     prompt: (payload, signal) => this.callUnary('session.prompt', payload, signal),
     attachment: (payload, signal) => this.callUnary('session.attachment', payload, signal),
     updateQueue: (payload, signal) => this.callUnary('session.updateQueue', payload, signal),
@@ -522,10 +541,17 @@ export abstract class AbstractApiClient implements IApiClient {
 
   readonly team: IApiClient['team'] = {
     list: (payload, signal) => this.callUnary('team.list', payload, signal),
+    start: (payload, signal) => this.callUnary('team.start', payload, signal),
+    stop: (payload, signal) => this.callUnary('team.stop', payload, signal),
+    restart: (payload, signal) => this.callUnary('team.restart', payload, signal),
     sessions: (payload, signal) => this.callUnary('team.sessions', payload, signal),
     history: (payload, signal) => this.callUnary('team.history', payload, signal),
     newSession: (payload, signal) => this.callUnary('team.newSession', payload, signal),
-    chat: (payload, signal) => this.callUnary('team.chat', payload, signal),
+    prompt: (payload, signal) => this.callUnary('team.prompt', payload, signal),
+    cancel: (payload, signal) => this.callUnary('team.cancel', payload, signal),
+    permission: (payload, signal) => this.callUnary('team.permission', payload, signal),
+    addMember: (payload, signal) => this.callUnary('team.addMember', payload, signal),
+    removeMember: (payload, signal) => this.callUnary('team.removeMember', payload, signal),
   }
 
   readonly events: IApiClient['events'] = {

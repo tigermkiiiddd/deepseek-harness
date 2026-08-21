@@ -49,6 +49,7 @@ async function composed(withTitles = true): Promise<Context> {
       return Promise.resolve({ agent, dispose: () => Promise.resolve() })
     },
     resume: () => Promise.reject(new Error('resume must not run: every source is attached')),
+    reseedAgent: () => Promise.reject(new Error('reseed unsupported in this test double')),
   })
   return ctx
 }

@@ -341,6 +341,21 @@ export interface SessionsApi {
   Promise<RpcResponse<{ sessionId: SessionId }>>
 
   /**
+   * Reruns a session in place from before one message's turn. `atSeq` anchors
+   * the cut: the boundary is the last `turn/end` strictly before the anchor,
+   * so the anchor's own turn and everything after it is dropped from the
+   * durable log (an anchor inside the first turn keeps an empty prefix), and
+   * the live agent is rebuilt in place under the SAME session id from the kept
+   * prefix — no new session is created. Pending queue/inbox state dies with
+   * the rebuild. An anchor beyond the log end fails with `rerun-unavailable`.
+   * Live sessions go through `ctx.agents.reseed`; a persisted-but-not-live
+   * session is truncated directly and rebuilds on its next resume.
+   * Session-backed subagents reject with `agent-busy`.
+   */
+  rerun(request: RpcRequest<{ sessionId: SessionId; atSeq: number }>):
+  Promise<RpcResponse<{ accepted: true }>>
+
+  /**
    * Sends text and temporary image bytes to an ordinary session Agent after durable host admission.
    * Browser callers attach their current IANA zone;
    * the Host validates, canonicalizes, and records it on that exact user message. Omission remains

@@ -133,6 +133,7 @@ async function harness(
     async resume() {
       throw new Error('test harness has no persisted sessions')
     },
+    reseedAgent: () => Promise.reject(new Error('reseed unsupported in this test double')),
   }
   ctx.agents.setFactory(factory)
   const api = createApiProxy(ctx, {
