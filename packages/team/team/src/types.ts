@@ -1,10 +1,15 @@
 /**
- * Team-member connection types: the durable identities and wire results the
- * team service exposes. A member is a persistent ACP agent process that owns
- * its own sessions (topics) — the harness never mirrors or stores them.
+ * Team-member connection types and the team's Cordis event vocabulary: the
+ * durable identities, wire results, and push events the team service exposes.
+ * A member is a persistent ACP agent process that owns its own sessions
+ * (topics) — the harness never mirrors or stores them. Type-only and
+ * client-safe: the same module declares the events the Host emits and the
+ * browser face subscribes to (`ctx.remote.$on`).
  *
  * @module @deepseek-ai/dsh-team/types
  */
+
+import type { AgentCapabilities, PermissionOption, SessionUpdate, StopReason, ToolCallUpdate } from '@agentclientprotocol/sdk'
 
 /** One configured team member: how to spawn its persistent ACP process. */
 export interface MemberConfig {
@@ -14,36 +19,99 @@ export interface MemberConfig {
   readonly title?: string
   /** One-line role/persona description shown in team views. */
   readonly description?: string
-  /** Executable spawned for the member process (any ACP server, e.g. `dsh-acp-demo`). */
-  readonly command: string
-  /** Arguments passed to {@link MemberConfig.command}. */
-  readonly args: string[]
   /**
-   * Working directory for the member process. When omitted, the first caller's
-   * session workspace is used at connect time and kept for the process lifetime.
+   * Member kind. When `'dsh'` the harness relaunches the current installation
+   * (`dsh --profile acp`) with a per-member harness home; `command` and `args`
+   * must be absent. When omitted, `command` is required and the member runs
+   * any ACP server.
+   */
+  readonly kind?: 'dsh'
+  /** Executable spawned for the member process (any ACP server, e.g. `dsh-acp-demo`). Required unless `kind: 'dsh'`. */
+  readonly command?: string
+  /** Arguments passed to {@link MemberConfig.command}. */
+  readonly args?: string[]
+  /**
+   * Working directory for the member process and its ACP sessions. When
+   * omitted, the member runs in the harness process's launch directory; no
+   * caller session workspace is ever bound to a member.
    */
   readonly cwd?: string
-  /** Extra environment layered over a credential-scrubbed parent environment. */
+  /**
+   * Extra environment layered over the FULL parent environment. Members are
+   * trusted peers: they inherit the main process's environment (credentials
+   * included) unless a key is overridden or removed here.
+   */
   readonly env?: Record<string, string>
-  /** Auto-answer the member's `session/request_permission` prompts. */
+  /** Auto-answer the member's `session/request_permission` prompts when no GUI subscriber answers them. */
   readonly permission?: 'allow' | 'reject'
+  /** Spawn and connect this member when the service loads (default `true`). */
+  readonly autostart?: boolean
 }
 
-/** A member process's connection state. */
-export type MemberStatus = 'connecting' | 'connected' | 'failed' | 'closed'
+/**
+ * A member process's public status — the single external vocabulary:
+ * `idle` (process up, handshake done, no prompt turn in flight),
+ * `running` (at least one prompt turn in flight, `prompt` or blocking
+ * `chat` alike), `offline` (process not running: never started, stopped, or
+ * the connection was lost), `failed` (the last start's spawn or handshake
+ * failed). Connecting is internal-only: while a start is in flight the
+ * snapshot and events keep reporting the previous public status.
+ */
+export type MemberStatus = 'idle' | 'running' | 'offline' | 'failed'
 
-/** Read-only member identity and liveness for views and tools. */
+/**
+ * Runtime member-addition input: {@link MemberConfig} with the collection
+ * fields optional. The team service resolves the defaults (`args: []`,
+ * `env: {}`) at the `addMember` funnel, so every caller — host API, model
+ * tool, future seams — reaches the connection with a complete config.
+ */
+export type MemberConfigInput = Omit<MemberConfig, 'args' | 'env'> & {
+  readonly args?: string[]
+  readonly env?: Record<string, string>
+}
+
+/** Resolved spawn parameters after kind expansion; `env` is merged last so explicit per-member entries win. */
+export interface ResolvedMemberSpawnSpec {
+  /** Executable to spawn. */
+  readonly command: string
+  /** Arguments after the executable. */
+  readonly args: readonly string[]
+  /** Environment entries merged after inherited env and `config.env`. */
+  readonly env: Record<string, string>
+}
+
+/** The agent capabilities the member advertised in `initialize`, retained per connection. */
+export type MemberCapabilities = AgentCapabilities
+
+/** Read-only member identity, liveness, and negotiated capabilities for views and tools. */
 export interface MemberSnapshot {
   readonly id: string
   readonly title: string
   readonly description: string | undefined
+  readonly kind: 'dsh' | undefined
   readonly status: MemberStatus
+  /** The member's `initialize` capabilities, when a connection has completed. */
+  readonly capabilities: MemberCapabilities | undefined
+  /** Whether this member autostarts with the service. */
+  readonly autostart: boolean
+  /** The last connection failure's message, for views. */
+  readonly lastError: string | undefined
 }
 
 /** One conversation topic the member itself owns. */
 export interface MemberSession {
   readonly sessionId: string
   readonly cwd: string
+  /** Human-readable title the member reported, when any. */
+  readonly title?: string | undefined
+  /** ISO 8601 last-activity timestamp the member reported, when any. */
+  readonly updatedAt?: string | undefined
+}
+
+/** One replayed conversation message (the member's own record of a topic). */
+export interface MemberHistoryEntry {
+  readonly role: 'user' | 'assistant'
+  readonly text: string
 }
 
 /** The terminal outcome of one chat turn against a member session. */
@@ -51,5 +119,82 @@ export interface ChatResult {
   /** The member's committed assistant text for this turn. */
   readonly text: string
   /** The ACP stop reason, mapped verbatim. */
-  readonly stopReason: import('@agentclientprotocol/sdk').StopReason
+  readonly stopReason: StopReason
+}
+
+/** The outcome a permission subscriber (or the deployment policy) returns. */
+export type TeamPermissionOutcome =
+  | { readonly outcome: 'selected'; readonly optionId: string }
+  | { readonly outcome: 'cancelled' }
+
+/** One `session/request_permission` prompt surfaced to subscribers. */
+export interface TeamPermissionRequest {
+  /** Locally minted stable id used to answer this request. */
+  readonly requestId: string
+  /** The member that raised the request. */
+  readonly memberId: string
+  /** The member's session the request belongs to. */
+  readonly sessionId: string
+  /** The tool call awaiting permission, verbatim from the wire. */
+  readonly toolCall: ToolCallUpdate
+  /** The permission options the member offered, verbatim. */
+  readonly options: readonly PermissionOption[]
+}
+
+/**
+ * A permission-request subscriber: receives the request and may answer with an
+ * outcome. Returning `undefined` (or resolving to it) means the subscriber
+ * surfaced the request and an external answer will arrive through
+ * `team.permission` — the request stays pending until then.
+ */
+export type TeamPermissionHandler = (
+  request: TeamPermissionRequest,
+) => TeamPermissionOutcome | undefined | Promise<TeamPermissionOutcome | undefined>
+
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /**
+     * A member's status migrated. Every transition emits exactly one public
+     * event (`idle` / `running` / `offline` / `failed`). `connecting` is an
+     * internal transition: during startup a member reads as `offline` until the
+     * handshake completes. Consumers never poll. `error` carries the failure
+     * message on `failed`.
+     * @mode emit
+     * @param memberId - the member whose status moved.
+     * @param status - the new public status.
+     * @param error - the failure message, on `failed`.
+     */
+    'team/status'(memberId: string, status: MemberStatus, error?: string): void
+    /**
+     * One typed `session/update` notification from a member, forwarded
+     * losslessly: text/thought chunks, tool calls, plans, usage — the member
+     * interface is a projection of this stream. Replays collected by a
+     * `readHistory` call are consumed there and not re-forwarded.
+     * @mode emit
+     * @param memberId - the member that sent the update.
+     * @param sessionId - the member's session the update belongs to.
+     * @param update - one lossless ACP session update.
+     */
+    'team/member-update'(memberId: string, sessionId: string, update: SessionUpdate): void
+    /**
+     * A member raised `session/request_permission`. The GUI answers through
+     * `team.permission`; with no subscriber the deployment policy answers.
+     * @mode emit
+     * @param request - the surfaced permission request.
+     */
+    'team/permission-requested'(request: TeamPermissionRequest): void
+    /**
+     * A prompt turn settled: the member answered `session/prompt` (or the
+     * connection died and the turn was settled `cancelled` locally). A turn
+     * the member rejected with a protocol error carries `error`; consumers
+     * must branch on `error` first and treat `stopReason` as a placeholder.
+     * @mode emit
+     * @param memberId - the member whose turn settled.
+     * @param sessionId - the member's session the turn belonged to.
+     * @param promptId - the prompt id minted when the turn was accepted.
+     * @param stopReason - the ACP stop reason the member returned.
+     * @param error - the failure message when the member rejected the prompt.
+     */
+    'team/turn-end'(memberId: string, sessionId: string, promptId: string, stopReason: StopReason, error?: string): void
+  }
 }

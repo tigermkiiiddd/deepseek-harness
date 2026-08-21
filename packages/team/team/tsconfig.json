@@ -7,7 +7,12 @@
   "include": ["src/**/*.ts"],
   "references": [
     { "path": "../../../vendor/cordis" },
+    { "path": "../../../vendor/schemastery" },
     { "path": "../../../packages/subprocess/subprocess" },
-    { "path": "../../../packages/util/timeout" }
+    { "path": "../../../packages/storage/storage-domain" },
+    { "path": "../../../packages/util/home-paths" },
+    { "path": "../../../packages/util/timeout" },
+    { "path": "../../../packages/llm/llm" },
+    { "path": "../../../packages/core/session" }
   ]
 }
