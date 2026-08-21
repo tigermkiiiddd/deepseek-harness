@@ -4,7 +4,9 @@
  * The bridge exposes fresh harness sessions to trusted programmatic clients. It
  * carries prompt text, committed assistant text, cancellation, and one-shot
  * permission decisions; presentation and human-interaction features stay with
- * the harness's UI modules.
+ * the harness's UI modules. A client that negotiates
+ * `InitializeRequest._meta.fullFidelity` additionally receives thought,
+ * tool-call, plan, and usage updates (see `fidelity.ts`).
  *
  * @module @deepseek-ai/dsh-acp
  */
@@ -43,6 +45,7 @@ import { SessionId, type SessionEvent, type SessionHeader, type TurnEndReason } 
 // Side-effect type import: declaration-merges the approval waterfall answered below.
 import type {} from '@deepseek-ai/dsh-user-approval'
 import { acpPromptToText, promptHasUnsupportedContent, turnEndToStopReason } from './codec.ts'
+import { thoughtToChunk, todosToPlan, toolCallToUpdate, toolResultToUpdate, usageToUpdate } from './fidelity.ts'
 
 export const name = 'acp'
 /** The bridge creates and owns agents; every other concern is carried by the agent composition. */
@@ -91,6 +94,12 @@ interface SessionRecord {
   agent: Agent
   /** Exact owned-agent disposer; resolves after registry, loop, and session teardown. */
   dispose: () => Promise<void>
+  /**
+   * The route's advertised context window, tracked from `request/context`
+   * events only in full-fidelity mode; `usage_update` stays unsent without it
+   * because ACP requires the window size.
+   */
+  contextWindow?: number
   /** In-flight prompt and its captured turn number for exact settlement. */
   inflight: {
     resolve: (reason: StopReason) => void
@@ -120,6 +129,13 @@ export function apply(ctx: Context, config: AcpConfig): void {
   const logger = ctx.logger
   const sessions = new Map<SessionId, SessionRecord>()
   let closed = false
+  /**
+   * Per-connection negotiation: a client that sent
+   * `InitializeRequest._meta.fullFidelity === true` additionally receives
+   * thought, tool-call, plan, and usage updates; every other client gets the
+   * unchanged committed-text automation stream.
+   */
+  let fullFidelity = false
   let conn: AgentSideConnection
 
   /** Return the bridge-owned record for an agent, rejecting same-id impostors. */
@@ -160,6 +176,44 @@ export function apply(ctx: Context, config: AcpConfig): void {
     inflight.reject(internalError(`turn failed: ${reason.error.message}`))
   }
 
+  /**
+   * Translate one session event into its full-fidelity protocol updates. Runs
+   * only for negotiated connections; SessionEvent is merge-extensible, so
+   * events without an ACP analogue fall through without emitting.
+   */
+  const emitFullFidelity = (record: SessionRecord, event: SessionEvent): void => {
+    const sessionId = record.agent.session.id
+    switch (event.type) {
+      case 'assistant/message':
+        for (const block of event.data.message.content) {
+          if (block.type === 'reasoning' && block.text.length > 0) {
+            notify({ sessionId, update: thoughtToChunk(block.text) })
+          }
+        }
+        if (event.data.usage !== undefined && record.contextWindow !== undefined) {
+          notify({ sessionId, update: usageToUpdate(event.data.usage, record.contextWindow) })
+        }
+        break
+      case 'tool/call':
+        notify({ sessionId, update: toolCallToUpdate(event.data) })
+        break
+      case 'tool/result':
+        notify({ sessionId, update: toolResultToUpdate(event.data) })
+        break
+      case 'todo/write':
+        notify({ sessionId, update: todosToPlan(event.data.todos) })
+        break
+      case 'request/context':
+        // exactOptionalPropertyTypes: an absent window retracts the route's
+        // advertised capacity rather than assigning undefined.
+        if (event.data.contextWindow === undefined) delete record.contextWindow
+        else record.contextWindow = event.data.contextWindow
+        break
+      default:
+        break
+    }
+  }
+
   // Emit only committed assistant text. Raw chunks, reasoning, tools, plans,
   // titles, and retry markers are presentation or trace data and stay off the
   // automation wire.
@@ -191,6 +245,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
           }
         }
       }
+      if (fullFidelity) emitFullFidelity(record, event)
     } finally {
       const inflight = record.inflight
       if (inflight !== undefined && event.type === 'turn/end' && inflight.turn === event.data.turn) {
@@ -242,7 +297,11 @@ export function apply(ctx: Context, config: AcpConfig): void {
   const makeAgent = (connection: AgentSideConnection): AcpAgent => {
     conn = connection
     return {
-      initialize(_params: InitializeRequest): Promise<InitializeResponse> {
+      initialize(params: InitializeRequest): Promise<InitializeResponse> {
+        // Full-fidelity mode is opt-in per connection: a client that sets
+        // `_meta.fullFidelity` additionally receives thought, tool-call, plan,
+        // and usage updates; the response itself is unchanged either way.
+        fullFidelity = params._meta?.fullFidelity === true
         // Single-version agent: the spec's "same version if supported, else
         // the latest supported" both resolve to this server's one version.
         return Promise.resolve({
@@ -312,19 +371,30 @@ export function apply(ctx: Context, config: AcpConfig): void {
           await handle.dispose()
           throw internalError('connection closed during session/load')
         }
-        sessions.set(sessionId, {
+        const record: SessionRecord = {
           agent: handle.agent,
           dispose: () => handle.dispose(),
           inflight: undefined,
-        })
+        }
+        sessions.set(sessionId, record)
         // The loadSession contract streams the session's history back to the
-        // client as user/agent message chunks, so a GUI can render the topic
-        // without a second read path.
+        // client so a GUI can render the topic without a second read path.
+        // Automation clients receive the same text-only chunks as before;
+        // full-fidelity clients also receive the per-event updates mapped live
+        // by `emitFullFidelity`, preserving log order and the context-window
+        // gating that suppresses `usage_update` until a `request/context` event
+        // advertises the route's capacity.
         for (const event of events) {
-          const update = historyChunk(event)
-          if (update !== undefined) {
-            /* v8 ignore next 3 -- a disconnected client must not fail the load. */
-            void conn.sessionUpdate({ sessionId, update }).catch(() => { /* client gone */ })
+          if (fullFidelity) {
+            const base = historyChunk(event)
+            if (base !== undefined) notify({ sessionId, update: base })
+            emitFullFidelity(record, event)
+          } else {
+            const update = historyChunk(event)
+            if (update !== undefined) {
+              /* v8 ignore next 3 -- a disconnected client must not fail the load. */
+              void conn.sessionUpdate({ sessionId, update }).catch(() => { /* client gone */ })
+            }
           }
         }
         return {}

@@ -4,7 +4,7 @@
 
 通过 JSON-RPC stdio 提供的仅面向自动化的 [ACP（Agent Client Protocol）](https://agentclientprotocol.com) 服务器。程序化客户端可以创建新 harness agent（智能体）、发送文本提示词、收集已提交的 assistant 文本、按策略响应一次性权限请求并取消工作。仓库中的主要客户端是 [`dsh-subagent-acp`](../../subagent/subagent-acp/README.md)。
 
-此包是传输适配器，而非 UI 集成或能力 seam。它不公开编辑器导航、transcript（文本记录）回放、命令、模式、配置选择器、信息征集、推理（reasoning）、计划、标题或工具展示。交互式渲染与向用户提问属于 Web 宿主和客户端模块。
+此包是传输适配器，而非 UI 集成或能力 seam。它不公开编辑器导航、transcript（文本记录）回放、命令、模式、配置选择器、信息征集或标题；推理、计划与工具活动只会送达协商了全保真模式的客户端。交互式渲染与向用户提问属于 Web 宿主和客户端模块。
 
 ## 插件
 
@@ -21,17 +21,33 @@
 
 | 方法 | 行为 |
 |---|---|
-| `initialize` | 协商受支持的版本，并仅公布基线提示词（无图像、音频或嵌入上下文能力）。不公布会话、编辑器、终端、文件系统或 MCP 能力。 |
+| `initialize` | 协商受支持的版本，并仅公布基线提示词（无图像、音频或嵌入上下文能力）。不公布会话、编辑器、终端、文件系统或 MCP 能力。客户端发送 `_meta.fullFidelity: true` 可让该连接启用全保真更新（见下文）；无论是否启用，响应都保持不变。 |
 | `authenticate` | 空操作，因为服务器不公布身份验证方法。 |
 | `session/new` | 以绝对路径作为主 `cwd` 创建新 agent；接受空的 `additionalDirectories` 和 `mcpServers`，拒绝非空值。 |
+| `session/list` | 返回已知 `cwd` 的已持久化会话，可选按客户端的 `cwd` 过滤。需要会话持久化。 |
+| `session/load` | 恢复已持久化会话，并通过 `session/update` 回放其历史。需要会话持久化。在全保真连接上，回放使用与实时更新相同的逐事件映射；否则仅发出纯文本的用户/assistant 消息块。 |
 | `session/prompt` | 拼接文本块，将基线资源链接渲染为带方括号的文本引用，拒绝空输入或超出基线的输入，每个会话只允许一个正在处理的请求，并等待整个 agent 进入空闲状态。正常完全停稳时报告 `end_turn`；显式 ACP 取消、资源释放，或准入被丢弃的提示词（无轮次槽位）时报告 `cancelled`。 |
 | `session/cancel` | 仅取消指定的 agent，并将其待处理提示词结算为 `cancelled`；未知 id 为空操作。 |
-| `session/update` | 为每个非空文本块发出一个 `agent_message_chunk`；这些文本块来自已提交的 `assistant/message`。省略原始增量和非消息事件。 |
+| `session/update` | 为每个非空文本块发出一个 `agent_message_chunk`；这些文本块来自已提交的 `assistant/message`。省略原始增量和非消息事件。在全保真连接上还会额外发出下列映射更新。`session/load` 回放已持久化历史时遵循相同规则。 |
 | `session/request_permission` | 为携带工具调用 id、由桥接层拥有的批准请求提供一次性允许／拒绝选项。客户端可以自动回答。 |
 
 一个连接可以拥有多个会话。桥接层以带品牌的会话 id 作为记录键，并在路由事件或权限请求前检查 agent 是否为同一对象。每个会话都有独立的提示词槽位、工作区、取消路径和资源释放器。
 
 已提交消息输出有意牺牲逐 token 输出的低延迟，以换取干净的自动化结果。未提交的提供方分片和重试尝试无法泄漏部分文本；推理与工具活动仍保留在会话日志中，以便其他界面观测。
+
+## 全保真模式
+
+在 `initialize` 中发送 `_meta: { fullFidelity: true }` 的客户端，会在完整自动化流之上额外收到会话事件日志的保真投影，按已提交事件逐条映射：
+
+| Harness 事件 | ACP 更新 |
+|---|---|
+| `assistant/message` 的推理块 | 携带该块文本的 `agent_thought_chunk` |
+| 带用量的 `assistant/message` | `usage_update`（`used` = 输入 + 缓存 + 输出 token，`size` = 路由公布的上下文窗口）；在获知 `request/context` 窗口之前不发送 |
+| `tool/call` | `tool_call`（`toolCallId`、工具名作为 `title`、`in_progress`、解析后的参数作为 `rawInput`——参数不是合法 JSON 时保留原始字符串） |
+| `tool/result` | `tool_call_update`（`completed`/`failed`，文本块作为 `content`，原始结果块作为 `rawOutput`） |
+| `todo/write` | 替换整个条目列表的 `plan`（`status` 一一对应；ACP 要求 priority，因此条目一律报告中性的 `medium`） |
+
+harness 事件未携带的字段（工具 `kind`、locations）保持缺省，绝不臆造。
 
 ## 生命周期
 
@@ -75,7 +91,7 @@ ACP 要求每个提示词响应都携带 `stopReason`，但桥接层不声称它
 
 ## 已知限制与暂缓事项
 
-- **仅新会话**：不支持加载、列出、恢复、删除和 fork。
+- **不支持删除与 fork**：尚未实现会话删除和 fork。
 - **仅基线提示词和一个 workspace**：图像、音频、嵌入资源、非空附加目录和 MCP 服务器都会被拒绝；资源链接只会展平为文本引用，不会获取其内容。
-- **仅已提交答案**：实时进度、推理、工具活动、计划、标题和用量不会通过协议传输。
+- **默认仅已提交答案**：实时进度、推理、工具活动、计划、标题和用量不会通过协议传输，除非客户端协商 `_meta.fullFidelity`（见上文）。
 - **由连接管理的生命周期**：一个连接会释放其所有会话；尚未实现单个会话关闭功能。

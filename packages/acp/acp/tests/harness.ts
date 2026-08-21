@@ -12,6 +12,7 @@ import {
   type Stream,
 } from '@agentclientprotocol/sdk'
 import { type GenerateOptions, LlmAdapter, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import { CallId } from '@deepseek-ai/dsh-llm'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
@@ -22,13 +23,25 @@ import type { AcpConfig } from '../src/index.ts'
 class MockAdapter extends LlmAdapter {
   readonly requests: GenerateOptions[] = []
 
-  constructor(private readonly script: (StreamChunk[] | 'hang')[]) {
+  constructor(
+    private readonly script: (StreamChunk[] | 'hang')[],
+    private readonly contextWindow?: number,
+  ) {
     super()
   }
 
   override providerInfo(provider: string) {
     if (provider !== 'mock') throw new Error(`MockAdapter: unknown provider ${provider}`)
     return { id: 'mock', name: 'Mock' }
+  }
+
+  override resolveModel(provider: string, model: string) {
+    return Promise.resolve({
+      provider,
+      id: model,
+      name: model,
+      ...this.contextWindow === undefined ? {} : { context: { contextWindow: this.contextWindow } },
+    })
   }
 
   override listModels(provider: string) {
@@ -66,6 +79,27 @@ export function textResponse(text: string): StreamChunk[] {
     { type: 'block-end', index: 0, block: { type: 'text', text } },
     { type: 'usage', usage: { inputTokens: 5, outputTokens: text.length } },
     { type: 'finish', reason: { kind: 'stop' } },
+  ]
+}
+
+/** Scripted reasoning + tool-call response that hands one call to the loop. */
+export function reasoningToolCallResponse(
+  reasoning: string,
+  rawCallId: string,
+  name: string,
+  args: object,
+): StreamChunk[] {
+  const callId = CallId(rawCallId)
+  const argumentsJson = JSON.stringify(args)
+  return [
+    { type: 'block-start', index: 0, blockType: 'reasoning' },
+    { type: 'reasoning-delta', index: 0, text: reasoning },
+    { type: 'block-end', index: 0, block: { type: 'reasoning', text: reasoning } },
+    { type: 'block-start', index: 1, blockType: 'tool-call' },
+    { type: 'tool-call-delta', index: 1, id: callId, name, argumentsDelta: argumentsJson },
+    { type: 'block-end', index: 1, block: { type: 'tool-call', id: callId, name, arguments: argumentsJson } },
+    { type: 'usage', usage: { inputTokens: 7, outputTokens: 3 } },
+    { type: 'finish', reason: { kind: 'tool-calls' } },
   ]
 }
 
@@ -121,8 +155,10 @@ export async function makeBridgeHarness(options: {
   config?: AcpConfigOverrides
   persona?: string
   persistence?: PersistenceFixture
+  /** Advertised context window the mock route resolves with, when set. */
+  contextWindow?: number
 } = {}): Promise<BridgeHarness> {
-  const adapter = new MockAdapter(options.script ?? [])
+  const adapter = new MockAdapter(options.script ?? [], options.contextWindow)
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: options.persona ?? '' } })
   const loopFiber = await ctx.plugin(AgentLoop, { agents: [] })

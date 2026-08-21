@@ -4,7 +4,7 @@ English | [中文](README.zh.md)
 
 Automation-only [Agent Client Protocol](https://agentclientprotocol.com) server over JSON-RPC stdio. Programmatic clients create fresh harness agents, send text prompts, collect committed assistant text, resolve one-shot permission requests by policy, and cancel work. The primary in-repository client is [`dsh-subagent-acp`](../../subagent/subagent-acp/README.md).
 
-This package is a transport adapter, not a UI integration or a capability seam. It does not expose editor navigation, transcript replay, commands, modes, configuration pickers, elicitation, reasoning, plans, titles, or tool presentation. Interactive rendering and human questions belong to the Web host and client modules.
+This package is a transport adapter, not a UI integration or a capability seam. It does not expose editor navigation, transcript replay, commands, modes, configuration pickers, elicitation, or titles; reasoning, plans, and tool activity reach only clients that negotiate full-fidelity mode. Interactive rendering and human questions belong to the Web host and client modules.
 
 ## Plugin
 
@@ -21,17 +21,33 @@ Both fields are optional so another agent/request listener may supply the target
 
 | Method | Behavior |
 |---|---|
-| `initialize` | Negotiates the supported version and advertises baseline-only prompts (no image, audio, or embedded-context capability). No session, editor, terminal, filesystem, or MCP capability is advertised. |
+| `initialize` | Negotiates the supported version and advertises baseline-only prompts (no image, audio, or embedded-context capability). No session, editor, terminal, filesystem, or MCP capability is advertised. A client that sends `_meta.fullFidelity: true` opts the connection into full-fidelity updates (below); the response is unchanged either way. |
 | `authenticate` | No-op because the server advertises no authentication methods. |
 | `session/new` | Creates a fresh agent with an absolute primary `cwd`; empty `additionalDirectories` and `mcpServers` are accepted, non-empty values reject. |
+| `session/list` | Returns persisted sessions whose `cwd` is known, optionally filtered by the client's `cwd`. Requires session persistence. |
+| `session/load` | Resumes a persisted session and replays its history through `session/update`. Requires session persistence. On a full-fidelity connection the replay uses the same per-event mapping as live updates; otherwise only the text-only user/agent message chunks are emitted. |
 | `session/prompt` | Concatenates text blocks, renders baseline resource links as bracketed textual references, rejects empty or beyond-baseline input, permits one in-flight request per session, and waits for the whole agent to become idle. Normal quiescence reports `end_turn`; explicit ACP cancellation, disposal, or a prompt whose admission was discarded (a turnless slot) reports `cancelled`. |
 | `session/cancel` | Cancels only the addressed agent and settles its pending prompt as `cancelled`; unknown ids are no-ops. |
-| `session/update` | Emits one `agent_message_chunk` per non-empty text block in a committed `assistant/message`. Raw deltas and non-message events are omitted. |
+| `session/update` | Emits one `agent_message_chunk` per non-empty text block in a committed `assistant/message`. Raw deltas and non-message events are omitted. On a full-fidelity connection it additionally emits the mapped updates listed below. The same rules apply when `session/load` replays persisted history. |
 | `session/request_permission` | Offers one-shot allow/reject choices for bridge-owned approval requests carrying a tool call id. Clients may answer automatically. |
 
 One connection may own several sessions. The bridge keys records by branded session id and checks exact agent identity before routing events or permission requests. Each session has an independent prompt slot, workspace, cancellation path, and disposer.
 
 Committed-message output intentionally trades token-by-token latency for a clean automation result. Uncommitted provider chunks and retry attempts cannot leak partial text; reasoning and tool activity remain in the session log for observability through other interfaces.
+
+## Full-fidelity mode
+
+A client that sends `_meta: { fullFidelity: true }` on `initialize` receives the complete automation stream plus a faithful projection of the session event log, mapped per committed event:
+
+| Harness event | ACP update |
+|---|---|
+| `assistant/message` reasoning block | `agent_thought_chunk` with the block text |
+| `assistant/message` with usage | `usage_update` (`used` = input + cache + output tokens, `size` = the route's advertised context window); omitted while no `request/context` window is known |
+| `tool/call` | `tool_call` (`toolCallId`, tool name as `title`, `in_progress`, parsed arguments as `rawInput` — the raw string when it is not valid JSON) |
+| `tool/result` | `tool_call_update` (`completed`/`failed`, text blocks as `content`, the raw result blocks as `rawOutput`) |
+| `todo/write` | `plan` replacing the whole entry list (`status` maps 1:1; ACP requires a priority, so entries report the neutral `medium`) |
+
+Fields the harness event does not carry (tool `kind`, locations) stay unset rather than invented.
 
 ## Lifecycle
 
@@ -75,7 +91,7 @@ Append-only through the owning tool result.
 
 ## Known Limitations and Deferred Work
 
-- **Fresh sessions only** — load, list, resume, delete, and fork are unsupported.
+- **No delete or fork** — session deletion and forking are unsupported.
 - **Baseline prompts and one workspace only** — images, audio, embedded resources, non-empty additional directories, and MCP servers reject; resource links flatten to textual references rather than fetched content.
-- **Committed answers only** — live progress, reasoning, tool activity, plans, titles, and usage stay off the wire.
+- **Committed answers only by default** — live progress, reasoning, tool activity, plans, titles, and usage stay off the wire unless the client negotiates `_meta.fullFidelity` (above).
 - **Connection-owned lifetime** — one connection releases all of its sessions; per-session close is not implemented.
