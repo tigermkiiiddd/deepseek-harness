@@ -241,6 +241,14 @@ export default defineConfig({
         'packages/client/ui-sidebar/src/client/index.ts',
         'packages/client/ui-skill/src/client/index.ts',
         'packages/client/ui-workspace/src/client/index.ts',
+        // Assembly-only faces of the team plugin: the host node half, the
+        // invariant companion, and the browser apply/bridge ride the slot
+        // registry and the forwarded Remote events; their real-composition
+        // coverage belongs to the assembled GUI lane (same debt as the other
+        // ui-* assembly entries). TODO(gui): cover and remove with the lane.
+        'packages/client/ui-team/src/index.ts',
+        'packages/client/ui-team/src/invariant.ts',
+        'packages/client/ui-team/src/client/index.ts',
         'packages/test-support/client-runtime/src/translate.ts',
         'packages/client/ui-primitives/src/JsonTree.tsx',
         'packages/client/ui-settings-models/src/client/DeepSeekOnboardingDialog.tsx',
