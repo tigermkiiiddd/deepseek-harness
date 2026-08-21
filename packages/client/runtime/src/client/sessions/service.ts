@@ -135,6 +135,22 @@ export class SessionForkError extends Error {
   }
 }
 
+/** Structured session-rerun failure. */
+export class SessionRerunError extends Error {
+  override readonly name = 'SessionRerunError'
+
+  /**
+   * @param rpcError - Host business or folded transport error.
+   * @param sourceSessionId - the session the rerun was anchored in.
+   */
+  constructor(
+    readonly rpcError: RpcError,
+    readonly sourceSessionId: SessionId,
+  ) {
+    super(`session rerun failed: ${rpcError.code}: ${rpcError.message}`)
+  }
+}
+
 /** Session assembly handle for SessionProvider/inject factories (identity-stable per session). */
 export interface SessionBinding {
   readonly sessionId: SessionId
@@ -530,6 +546,27 @@ export class SessionRuntime implements ISessions {
       if (!renamed.ok) throw new Error(`fork child rename failed: ${renamed.error.code}: ${renamed.error.message}`)
     }
     return childId
+  }
+
+  /**
+   * Re-run from a message anchor in place: the host truncates the session log
+   * to the completed turn before the anchor's turn and rebuilds the agent
+   * under the same session id; on resolution every seq cursor is stale, so a
+   * resident instance re-baselines through the reconnect resync path. The
+   * caller queues the replacement prompt afterwards; a failure leaves the
+   * session untouched.
+   * @param opts - session id and the message seq anchoring the cut. A
+   *   fractional anchor floors to a real event seq (same frozen-node hazard
+   *   as {@link SessionRuntime.fork}).
+   * @throws {SessionRerunError} with the session id.
+   */
+  async rerun(opts: { sessionId: SessionId; atSeq: number }): Promise<void> {
+    const result = await this.manager.rerun({
+      sessionId: opts.sessionId,
+      atSeq: Math.floor(opts.atSeq),
+    })
+    if (!result.ok) throw new SessionRerunError(result.error, opts.sessionId)
+    this.manager.resync(opts.sessionId)
   }
 
   /**

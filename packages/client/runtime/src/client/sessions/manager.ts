@@ -264,6 +264,17 @@ export class SessionManager {
   }
 
   /**
+   * Re-baseline one resident instance after its log was physically shortened
+   * (rerun): the same resync the reconnect sweep drives, for a single
+   * session. No instance is created — a session never opened has no stale
+   * window to drop.
+   * @param sessionId - the session whose instance re-runs open.
+   */
+  resync(sessionId: SessionId): void {
+    void this.sessions.get(sessionId)?.resync()
+  }
+
+  /**
    * Lazy build: return the existing instance or construct one (no auto-open —
    * open is triggered by the container's select callback).
    * @param sessionId - the session to get.
@@ -598,6 +609,28 @@ export class SessionManager {
           ...(source?.cwd !== undefined ? { cwd: source.cwd } : {}),
         } })
       }
+      return result
+    } catch (error) {
+      return transportError(error)
+    }
+  }
+
+  /**
+   * Contract session.rerun: the host truncates the log before the anchor's
+   * turn and rebuilds the agent under the SAME session id, so there is no
+   * summary to merge — the caller re-baselines the resident instance instead
+   * (see {@link SessionManager.resync}).
+   * @param opts - session id and the message seq anchoring the cut.
+   * @returns the rerun acceptance.
+   */
+  async rerun(
+    opts: { sessionId: SessionId; atSeq: number },
+  ): Promise<RpcResult<{ accepted: true }>> {
+    try {
+      const { result } = await this.api.sessions.rerun({
+        sessionId: opts.sessionId,
+        atSeq: opts.atSeq,
+      })
       return result
     } catch (error) {
       return transportError(error)

@@ -9,7 +9,8 @@
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
-import { SessionCreateError, SessionRuntime, scopeOf } from '../src/client/sessions/service.ts'
+import { SessionCreateError, SessionRerunError, SessionRuntime, scopeOf } from '../src/client/sessions/service.ts'
+import { Session } from '../src/client/sessions/session.ts'
 import { FakeApiClient, deferred, err, fakeRemote, ok } from './fake-api.client.ts'
 
 const sid = (s: string): SessionId => s as SessionId
@@ -591,6 +592,70 @@ describe('fork', () => {
     await expect(b.svc.fork({ sessionId: sid('source'), increaseTitle: true }))
       .rejects.toThrow('fork child rename failed: title-invalid: rejected')
     expect(b.svc.binding(sid('child'))).toBeDefined()
+  })
+})
+
+describe('rerun', () => {
+  it('passes the anchor through and resolves after the host rebuilds', async () => {
+    const b = bench()
+    await feedList(b, [{ id: 'source', cwd: '/work' }])
+
+    await expect(b.svc.rerun({ sessionId: sid('source'), atSeq: 7 })).resolves.toBeUndefined()
+
+    expect(b.api.callsOf('session.rerun')).toEqual([{ sessionId: 'source', atSeq: 7 }])
+  })
+
+  it('floors a fractional anchor to the real event seq the wire accepts', async () => {
+    const b = bench()
+    await feedList(b, [{ id: 'source', cwd: '/work' }])
+
+    await expect(b.svc.rerun({ sessionId: sid('source'), atSeq: 41.9 })).resolves.toBeUndefined()
+
+    expect(b.api.callsOf('session.rerun')).toEqual([{ sessionId: 'source', atSeq: 41 }])
+  })
+
+  it('re-baselines the resident instance after success (its seq cursors are stale)', async () => {
+    const b = bench()
+    await feedList(b, [{ id: 'source', cwd: '/work' }])
+    // Mint the resident instance the way a bound view does.
+    expect(b.svc.binding(sid('source'))).toBeDefined()
+    const resync = vi.spyOn(Session.prototype, 'resync').mockResolvedValue(undefined)
+
+    await b.svc.rerun({ sessionId: sid('source'), atSeq: 7 })
+
+    expect(resync).toHaveBeenCalledTimes(1)
+    resync.mockRestore()
+  })
+
+  it('has no instance to re-baseline when the session was never opened', async () => {
+    const b = bench()
+    await feedList(b, [{ id: 'source', cwd: '/work' }])
+    const resync = vi.spyOn(Session.prototype, 'resync').mockResolvedValue(undefined)
+
+    await b.svc.rerun({ sessionId: sid('source'), atSeq: 7 })
+
+    expect(resync).not.toHaveBeenCalled()
+    resync.mockRestore()
+  })
+
+  it('throws SessionRerunError on failure and leaves the instance untouched', async () => {
+    const b = bench()
+    await feedList(b, [{ id: 'source', cwd: '/work' }])
+    expect(b.svc.binding(sid('source'))).toBeDefined()
+    const resync = vi.spyOn(Session.prototype, 'resync').mockResolvedValue(undefined)
+    b.api.onRerun = () => Promise.resolve(err({
+      code: 'rerun-unavailable', message: 'no event 41 to rerun from', details: { sessionId: sid('source') },
+    }))
+
+    const failure = await b.svc.rerun({ sessionId: sid('source'), atSeq: 41 }).catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(SessionRerunError)
+    expect(failure).toMatchObject({
+      sourceSessionId: 'source',
+      rpcError: { code: 'rerun-unavailable' },
+    })
+    expect(resync).not.toHaveBeenCalled()
+    resync.mockRestore()
   })
 })
 

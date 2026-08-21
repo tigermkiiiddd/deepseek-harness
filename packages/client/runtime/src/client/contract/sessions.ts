@@ -96,6 +96,17 @@ export interface ISessions {
    */
   fork(opts: { sessionId: SessionId; atSeq?: number; increaseTitle?: boolean }): Promise<SessionId>
   /**
+   * Re-run from a message anchor in place: the host truncates the session log
+   * to the completed turn before the anchor's turn and rebuilds the agent
+   * under the same session id. Resolves after the host rebuilds — every seq
+   * cursor the client held is stale, so an open instance has already
+   * re-baselined through the reconnect resync path; the caller prompts
+   * afterwards. A failed rerun leaves the session untouched.
+   * @param opts - session id and the message seq anchoring the cut.
+   * @throws {SessionRerunError} with the session id.
+   */
+  rerun(opts: { sessionId: SessionId; atSeq: number }): Promise<void>
+  /**
    * Register a per-session standard-props provider (hooks become `use<Name>`
    * selector hooks on the render side; props spread verbatim).
    * @param descriptor - static member roster plus per-session resolver.
