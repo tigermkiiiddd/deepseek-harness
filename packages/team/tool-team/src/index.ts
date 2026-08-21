@@ -1,8 +1,10 @@
 /**
  * Model-facing team tools: enumerate the team members and each member's own
- * conversation topics, and chat with a member on a chosen topic (or a new
- * one). The member process owns its sessions; these tools only read and drive
- * them through the ACP wire.
+ * conversation topics, chat with a member on a chosen topic (or a new one),
+ * and manage the roster and member lifecycle (add / remove / start / stop /
+ * restart). The member process owns its sessions; these tools only read and
+ * drive them through the ACP wire. The tools are a permanent team capability:
+ * they resolve the host `team` service and need no preset.
  *
  * @module @deepseek-ai/dsh-tool-team
  */
@@ -43,7 +45,12 @@ export function apply(ctx: Context): void {
       }
       const lines: string[] = []
       for (const member of members) {
-        lines.push(`## ${member.title} (${member.id}) — ${member.status}${member.description === undefined ? '' : ` — ${member.description}`}`)
+        const capability = member.capabilities?.loadSession === true ? 'loadSession' : 'no loadSession'
+        lines.push(`## ${member.title} (${member.id}) — ${member.status} — ${capability}${member.description === undefined ? '' : ` — ${member.description}`}`)
+        if (member.status === 'offline' || member.status === 'failed') {
+          lines.push(`  (${member.status === 'failed' && member.lastError !== undefined ? `failed: ${member.lastError}` : 'not running — use member_start to start it'})`)
+          continue
+        }
         try {
           const sessions = await team.listSessions(member.id)
           if (sessions.length === 0) {
@@ -90,7 +97,7 @@ export function apply(ctx: Context): void {
         return [{ type: 'text', text: value }]
       },
     },
-    async execute(args: { member_id: string; text: string; topic?: string; new_topic?: boolean }) {
+    async execute(args: { member_id: string; text: string; topic?: string; new_topic?: boolean }, exec) {
       if (args.new_topic === true && args.topic !== undefined) {
         throw new Error('member_chat: pass either topic or new_topic, not both')
       }
@@ -100,11 +107,195 @@ export function apply(ctx: Context): void {
       const sessionId = args.new_topic === true
         ? await team.newSession(args.member_id)
         : args.topic as string
-      const result = await team.chat(args.member_id, sessionId, args.text)
+      // The tool's cancellation signal drives the member's ACP cancel, so a
+      // cancelled tool call stops the member's turn instead of leaking it.
+      const result = await team.chat(args.member_id, sessionId, args.text, exec.signal)
       if (result.stopReason !== 'end_turn' && result.stopReason !== 'max_tokens') {
         return `Member ${args.member_id} stopped with ${result.stopReason}.\n${result.text}`
       }
       return result.text
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'member_add',
+    description: 'Add a new team member at runtime: spawn its ACP agent process, persist it in the team roster, and join it to the team. The member is re-spawned automatically after a host restart (unless autostart is false). Use member_remove to tear it down and forget it.',
+    parameters: {
+      member_id: {
+        type: 'string',
+        required: true,
+        description: 'Stable member id, unique within the team.',
+      },
+      title: {
+        type: 'string',
+        description: 'Display name shown in the team view.',
+      },
+      description: {
+        type: 'string',
+        description: 'One-line role or persona description.',
+      },
+      kind: {
+        type: 'string',
+        enum: ['dsh'],
+        description: 'Member kind: "dsh" relaunches the current harness installation as an ACP server; command and args must be omitted.',
+      },
+      command: {
+        type: 'string',
+        description: 'Executable that runs an ACP agent (any ACP server). Required unless kind is "dsh".',
+      },
+      args: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Arguments passed to the member command.',
+      },
+      cwd: {
+        type: 'string',
+        description: 'Working directory for the member process and its sessions; omit to use the harness launch directory.',
+      },
+      env: {
+        type: 'object',
+        additionalProperties: true,
+        description: 'Extra environment variables layered over the full parent environment (credentials included); every value must be a string.',
+      },
+      permission: {
+        type: 'string',
+        enum: ['allow', 'reject'],
+        description: 'Auto-answer the member\'s permission prompts with this policy when no GUI subscriber answers them.',
+      },
+      autostart: {
+        type: 'boolean',
+        description: 'Start the member now and on every host restart (default true).',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render(_args, value) {
+        return [{ type: 'text', text: value }]
+      },
+    },
+    async execute(args: {
+      member_id: string
+      title?: string
+      description?: string
+      kind?: 'dsh'
+      command?: string
+      args?: string[]
+      cwd?: string
+      env?: Record<string, unknown>
+      permission?: 'allow' | 'reject'
+      autostart?: boolean
+    }) {
+      if (args.env !== undefined) {
+        for (const [key, value] of Object.entries(args.env)) {
+          if (typeof value !== 'string') {
+            throw new Error(`member_add: env value for "${key}" must be a string`)
+          }
+        }
+      }
+      const env = args.env as Record<string, string> | undefined
+      const snapshot = await team.addMember({
+        id: args.member_id,
+        ...args.kind === undefined ? {} : { kind: args.kind },
+        ...args.kind === 'dsh' ? {} : { command: args.command as string },
+        ...args.title === undefined ? {} : { title: args.title },
+        ...args.description === undefined ? {} : { description: args.description },
+        ...args.cwd === undefined ? {} : { cwd: args.cwd },
+        ...env === undefined ? {} : { env },
+        ...args.permission === undefined ? {} : { permission: args.permission },
+        ...args.autostart === undefined ? {} : { autostart: args.autostart },
+        args: args.args ?? [],
+      })
+      return `Member ${snapshot.id} (${snapshot.title}) joined the team; connection status: ${snapshot.status}. Use member_sessions to see its topics and member_chat to talk to it.`
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'member_remove',
+    description: 'Remove a team member: tear down its process, drop it from the roster, and delete its persisted roster record. The member\'s own sessions stay with the member; adding the same id later spawns a fresh process. A member that is also declared in the deployment config reappears at the next restart.',
+    parameters: {
+      member_id: {
+        type: 'string',
+        required: true,
+        description: 'The member to remove.',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render(_args, value) {
+        return [{ type: 'text', text: value }]
+      },
+    },
+    async execute(args: { member_id: string }) {
+      await team.removeMember(args.member_id)
+      return `Member ${args.member_id} was removed from the team; its process was torn down and its roster record deleted.`
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'member_start',
+    description: 'Start a team member: spawn its ACP agent process and complete the protocol handshake. Idempotent — starting a running member settles immediately. Members autostart by default; use this to bring a stopped or failed member back up.',
+    parameters: {
+      member_id: {
+        type: 'string',
+        required: true,
+        description: 'The member to start.',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render(_args, value) {
+        return [{ type: 'text', text: value }]
+      },
+    },
+    async execute(args: { member_id: string }) {
+      await team.start(args.member_id)
+      const member = team.list().find(candidate => candidate.id === args.member_id)
+      return `Member ${args.member_id} started; connection status: ${member?.status ?? 'unknown'}.`
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'member_stop',
+    description: 'Stop a team member: tear down its process and return it to offline. The member\'s own sessions stay with the member and remain listable after a later start.',
+    parameters: {
+      member_id: {
+        type: 'string',
+        required: true,
+        description: 'The member to stop.',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render(_args, value) {
+        return [{ type: 'text', text: value }]
+      },
+    },
+    async execute(args: { member_id: string }) {
+      await team.stop(args.member_id)
+      return `Member ${args.member_id} stopped; its process was torn down.`
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'member_restart',
+    description: 'Restart a team member: stop its process, then start it again. Use after a member is offline or misbehaving.',
+    parameters: {
+      member_id: {
+        type: 'string',
+        required: true,
+        description: 'The member to restart.',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render(_args, value) {
+        return [{ type: 'text', text: value }]
+      },
+    },
+    async execute(args: { member_id: string }) {
+      await team.restart(args.member_id)
+      const member = team.list().find(candidate => candidate.id === args.member_id)
+      return `Member ${args.member_id} restarted; connection status: ${member?.status ?? 'unknown'}.`
     },
   }))
 }

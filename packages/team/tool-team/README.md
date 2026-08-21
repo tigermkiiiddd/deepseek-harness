@@ -2,12 +2,17 @@
 
 English | [中文](README.zh.md)
 
-Model-facing team tools over the [`team` service](../team/README.md): enumerate the team members and each member's own conversation topics, and chat with a member on a chosen topic or a new one.
+Model-facing team tools over the [`team` service](../team/README.md): enumerate the team members and each member's own conversation topics, chat with a member on a chosen topic or a new one, mutate the roster, and drive the member lifecycle. The tools are a permanent team capability: the web-app bundle mounts the row in the host plane, so every session sees them without any preset.
 
 ## Tools
 
-- `member_sessions` — list every member (or one `member_id`) with status, plus each member's own topic ids (from ACP `session/list`). Start here to pick the topic to continue.
-- `member_chat` — send `text` to a member. Pass an existing `topic` id to continue that conversation, or `new_topic: true` to open a fresh topic on the member. Returns the member's committed reply (and its stop reason when not `end_turn`/`max_tokens`).
+- `member_sessions` — list every member (or one `member_id`) with status and capabilities, plus each member's own topic ids (from ACP `session/list`). A member that is not running reports how to start it. Start here to pick the topic to continue.
+- `member_chat` — send `text` to a member. Pass an existing `topic` id to continue that conversation, or `new_topic: true` to open a fresh topic on the member. Returns the member's committed reply (and its stop reason when not `end_turn`/`max_tokens`). The tool's cancellation signal cancels the member's turn through ACP.
+- `member_add` — spawn a member process at runtime, persist it in the durable roster, and join it. Accepts the full member config: `command`, `args`, `cwd`, `env` (layered over the full parent environment), `permission` (`allow` / `reject` fallback policy), and `autostart`.
+- `member_remove` — stop the member, drop it from the roster, and attempt to delete it from persistence. A failed delete is logged and the record may reappear on restart; a member also declared in the deployment config reappears at the next restart.
+- `member_start` — start a stopped or failed member (spawn + handshake). Idempotent.
+- `member_stop` — stop a member and return it to `idle`; its own sessions stay with the member.
+- `member_restart` — stop then start a member, e.g. after it went `offline`.
 
 ## Model Experience
 
@@ -15,7 +20,7 @@ Model-facing team tools over the [`team` service](../team/README.md): enumerate 
 
 #### What the model sees
 
-The member roster, topic ids, and committed replies. The member's own persona, tools, and history stay in the member process; only user text crosses, only committed assistant text returns.
+The member roster, topic ids, and committed replies from `member_chat`. The member's own persona, tools, and history stay in the member process; only user text crosses, only committed assistant text returns.
 
 #### Token effect
 
