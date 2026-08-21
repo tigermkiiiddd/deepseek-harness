@@ -198,6 +198,10 @@ export class SqliteSessionPersistence extends SessionPersistence implements Pers
     return this.coordinator.readFrom(id, fromSeq, signal)
   }
 
+  override truncate(id: SessionId, keepSeqs: number): Promise<void> {
+    return this.coordinator.truncate(id, keepSeqs)
+  }
+
   // One method serves both public `list` and the backend hook; delegating it to
   // the coordinator would call this hook recursively.
 
@@ -330,6 +334,27 @@ export class SqliteSessionPersistence extends SessionPersistence implements Pers
       // The DELETE+INSERT cannot collide (a row at a closer's seq is preserved or
       // deleted as torn first); this rolls back a DB-level failure (disk full,
       // etc.), unreachable in test.
+      /* v8 ignore start */
+      this.db.exec('ROLLBACK')
+      throw error
+      /* v8 ignore stop */
+    }
+  }
+
+  /**
+   * Rewrite one stored log to its first `keepSeqs` events in ONE transaction:
+   * DELETE the dropped rows and bump the revision, mirroring the repair path.
+   * The `sessions` row (and with it materialization and metadata) is kept.
+   */
+  async truncateStored(meta: SessionHeader, keepSeqs: number): Promise<void> {
+    await this.ready
+    this.db.exec('BEGIN')
+    try {
+      this.db.prepare('DELETE FROM events WHERE session_id = ? AND seq >= ?').run(meta.id, keepSeqs)
+      this.db.prepare('UPDATE sessions SET revision = revision + 1 WHERE id = ?').run(meta.id)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      // This rolls back a DB-level failure (disk full, etc.), unreachable in test.
       /* v8 ignore start */
       this.db.exec('ROLLBACK')
       throw error
