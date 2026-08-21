@@ -23,6 +23,10 @@ pnpm --filter dsh-desktop dist:win
 
 产物输出到 `apps/desktop/release/`：NSIS 安装包 + 便携版 exe。
 
+## 诊断日志
+
+打包后的应用没有可访问的渲染进程控制台，因此渲染进程的 warning/error、`render-process-gone` 事件和每分钟一次的内存采样会写入 `<userData>/logs/renderer.log`（超过 4 MB 时轮转（rotate）为 `renderer.old.log`）。Windows 上打包版本的 userData 是 `%APPDATA%\DeepSeek Harness`。界面异常时先查这个文件——UI 槽位崩溃会记录 `slot entry crashed in '<slot key>': <stack>`。
+
 ## 备注
 
 - 服务器始终从 deepseek-harness 仓库检出目录运行。解析顺序：`$DSH_REPO_DIR` → 已保存配置（userData）→ 相对本文件的 `../../`（monorepo 布局）。均不匹配时应用会询问一次仓库目录并记住选择。检出目录需先完成 `pnpm install` 与 `pnpm run build`。

@@ -28,6 +28,15 @@ pnpm --filter dsh-desktop dist:win
 
 Outputs NSIS installer + portable exe under `apps/desktop/release/`.
 
+## Diagnostics log
+
+The packaged app has no reachable renderer console, so renderer warnings and
+errors, `render-process-gone` events, and a per-minute memory sample are
+mirrored to `<userData>/logs/renderer.log` (rotated to `renderer.old.log` at
+4 MB). On Windows the packaged build's userData is
+`%APPDATA%\DeepSeek Harness`. When the UI misbehaves, check this file first —
+a crashed UI slot logs `slot entry crashed in '<slot key>': <stack>`.
+
 ## Notes
 
 - The server always runs from a deepseek-harness repo checkout. Resolution

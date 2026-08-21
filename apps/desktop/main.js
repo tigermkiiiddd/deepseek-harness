@@ -19,6 +19,58 @@ const path = require('node:path');
 const HOST = '127.0.0.1';
 const CONFIG_FILE = () => path.join(app.getPath('userData'), 'dsh-desktop-config.json');
 
+// Renderer diagnostics. In the packaged app the renderer has no reachable
+// console, and its failures are otherwise silent: a crashed slot boundary
+// only `console.error`s, and an OOM-killed renderer leaves nothing behind.
+// Mirror renderer warnings/errors, process-gone events, and a per-minute
+// memory sample into userData/logs/renderer.log so a rare, non-reproducible
+// failure still leaves evidence. Rotates to renderer.old.log at 4 MB.
+const LOG_DIR = () => path.join(app.getPath('userData'), 'logs');
+const LOG_FILE = () => path.join(LOG_DIR(), 'renderer.log');
+const LOG_MAX_BYTES = 4 * 1024 * 1024;
+
+function logRenderer(line) {
+  try {
+    fs.mkdirSync(LOG_DIR(), { recursive: true });
+    const file = LOG_FILE();
+    if (fs.existsSync(file) && fs.statSync(file).size > LOG_MAX_BYTES) {
+      fs.renameSync(file, path.join(LOG_DIR(), 'renderer.old.log'));
+    }
+    fs.appendFileSync(file, `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    // Swallows only filesystem errors from the writes above; diagnostics
+    // logging must never take down the shell it observes.
+  }
+}
+
+function wireRendererDiagnostics(win) {
+  const wc = win.webContents;
+  logRenderer(`[boot] electron=${process.versions.electron} chrome=${process.versions.chrome} node=${process.versions.node}`);
+  wc.on('console-message', (event) => {
+    if (event.level !== 'warning' && event.level !== 'error') return;
+    const loc = event.sourceId ? ` (${path.basename(event.sourceId)}:${event.lineNumber})` : '';
+    logRenderer(`[console:${event.level}]${loc} ${event.message}`);
+  });
+  wc.on('render-process-gone', (_event, details) => {
+    logRenderer(`[render-process-gone] reason=${details.reason} exitCode=${details.exitCode}`);
+  });
+  wc.on('unresponsive', () => logRenderer('[unresponsive] renderer stopped responding'));
+  wc.on('did-fail-load', (_event, code, desc, url) => {
+    logRenderer(`[did-fail-load] errorCode=${code} ${desc} ${url}`);
+  });
+  const memTimer = setInterval(() => {
+    if (win.isDestroyed()) return;
+    const pid = wc.getOSProcessId();
+    for (const metric of app.getAppMetrics()) {
+      if (metric.pid === pid && metric.memory) {
+        const mb = (kb) => Math.round(kb / 1024);
+        logRenderer(`[memory] workingSet=${mb(metric.memory.workingSetSize)}MB peak=${mb(metric.memory.peakWorkingSetSize ?? 0)}MB`);
+      }
+    }
+  }, 60_000);
+  win.on('closed', () => clearInterval(memTimer));
+}
+
 function isRepoDir(dir) {
   return !!dir && fs.existsSync(path.join(dir, 'apps/cli/src/bin.ts'));
 }
@@ -179,6 +231,7 @@ async function boot() {
     backgroundColor: '#0f1115',
     title: 'DeepSeek Harness',
   });
+  wireRendererDiagnostics(mainWindow);
   mainWindow.loadURL(LOADING_PAGE);
 
   try {
