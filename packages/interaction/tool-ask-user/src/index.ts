@@ -14,6 +14,8 @@ export const name = 'tool-ask-user'
 export const inject = ['tools', 'userQuestions']
 
 const description = 'Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding. '
+  + 'Ask only when the answer would change what you do next — do not ask for information already present in the conversation, '
+  + 'and first check whether the user\'s message itself is the content to operate on, such as text to translate or summarize. '
   + 'Send one or more questions, each with a stable id that will be echoed in the answer.'
 
 export function apply(ctx: Context): void {
