@@ -8,6 +8,10 @@ import { stubSettingsScope, type StubSettingsScope } from '@deepseek-ai/dsh-clie
 import { CardForm, numberField, textField } from '../src/client/card-form.ts'
 import { AgentLoopCardController, type AgentLoopSettings } from '../src/client/agent-loop-card-controller.ts'
 import { BashCardController, type BashSettings } from '../src/client/bash-card-controller.ts'
+import {
+  SettingsDescribeMirror, type SettingsMirrorSnapshot,
+} from '@deepseek-ai/dsh-client-ui-settings/src/client/settings-mirror.ts'
+import { ConfigurablePluginsTabController } from '../src/client/tab-store.ts'
 import { WebSearchCardController, type WebSearchSettings } from '../src/client/web-search-card-controller.ts'
 import { WebSearchExaCardController, type WebSearchExaSettings } from '../src/client/web-search-exa-card-controller.ts'
 
@@ -381,7 +385,7 @@ describe('AgentLoopCardController', () => {
 })
 
 describe('WebSearchCardController', () => {
-  it('reads the credential state for the reference the section names', async () => {
+  it('reads the credential state for the reference the tab names', async () => {
     const host = stubSettingsScope<WebSearchSettings>()
     const credentials = credentialsApi(true)
     const controller = new WebSearchCardController(host.scope, credentials.api)
@@ -461,7 +465,7 @@ describe('WebSearchCardController', () => {
     })
   })
 
-  it('addresses the reference the section declares rather than the default', async () => {
+  it('addresses the reference the tab declares rather than the default', async () => {
     const host = stubSettingsScope<WebSearchSettings>()
     const credentials = credentialsApi(false)
     const controller = new WebSearchCardController(host.scope, credentials.api)
@@ -540,92 +544,145 @@ describe('WebSearchCardController', () => {
   })
 })
 
-
-describe('WebSearchExaCardController', () => {
-  it('writes the staged key through the credentials domain, addressed by EXA_API_KEY', async () => {
-    const host = stubSettingsScope<WebSearchExaSettings>()
-    const credentials = credentialsApi(false, 'EXA_API_KEY')
-    const controller = new WebSearchExaCardController(host.scope, credentials.api)
-    host.publish({ status: 'ready', writable: true, value: {}, user: {} })
-    const face = controller.inject()
-
-    face.edit('apiKey', ' exa-secret ')
-    expect(face.hooks.webSearchExaCard.getSnapshot().dirty).toBe(true)
-    expect(credentials.set).not.toHaveBeenCalled()
-
-    credentials.describe.mockImplementation(() => Promise.resolve({
-      rpcId: 'c-1' as never,
-      result: { ok: true as const, value: { credentials: { EXA_API_KEY: { configured: true, writable: true } } } },
+describe('ConfigurablePluginsTabController', () => {
+  function settingsApi(namespaces: string[]) {
+    const describe = vi.fn(() => Promise.resolve({
+      rpcId: 's-1' as never,
+      result: {
+        ok: true as const,
+        value: {
+          writable: true,
+          hasDocument: true,
+          namespaces: namespaces.map(ns => ({
+            ns, schema: {}, value: {}, applies: 'live' as const, secrets: [], revision: 0,
+          })),
+        },
+      },
     }))
-    face.save()
-    await vi.waitFor(() => { expect(credentials.set).toHaveBeenCalled() })
+    return { mirror: new SettingsDescribeMirror({ settings: { describe } } as never), describe }
+  }
 
-    expect(credentials.set).toHaveBeenCalledWith({ ref: 'EXA_API_KEY', value: 'exa-secret' })
-    expect(host.set).not.toHaveBeenCalled()
-    await vi.waitFor(() => {
-      expect(face.hooks.webSearchExaCard.getSnapshot()).toMatchObject({ dirty: false, apiKeyConfigured: true })
-    })
+  /** Slot ledger stand-in: one stored entry per registered card key. */
+  function ledger(...keys: string[]) {
+    return keys.map(key => ({ component: null, options: { key } }))
+  }
+
+  it('dispatches the served namespaces a card claims, in card registration order', async () => {
+    const settings = settingsApi(['bash', 'ui-theme', 'agent-loop'])
+    const controller = new ConfigurablePluginsTabController(settings.mirror, () => ledger('agent-loop', 'bash'))
+
+    await settings.mirror.ensure()
+
+    // ui-theme is served but claimed by no card here — another surface owns
+    // it. The order is the cards', not the Host's: plugin activation can
+    // reorder the description between boots.
+    expect(controller.inject().hooks.configurablePlugins.getSnapshot().namespaces)
+      .toEqual(['agent-loop', 'bash'])
   })
 
-  it('saves the endpoint, the retrieval mode, and the result defaults together', async () => {
-    const host = stubSettingsScope<WebSearchExaSettings>()
-    acceptWrites(host)
-    const credentials = credentialsApi(true, 'EXA_API_KEY')
-    const controller = new WebSearchExaCardController(host.scope, credentials.api)
-    host.publish({ status: 'ready', writable: true, value: {}, base: {}, user: {} })
-    const face = controller.inject()
+  it('never dispatches a card whose namespace this deployment does not serve', async () => {
+    const settings = settingsApi(['bash'])
+    const controller = new ConfigurablePluginsTabController(settings.mirror, () => ledger('bash', 'web-search-deepseek'))
 
-    face.edit('baseURL', 'https://exa.other.test')
-    face.edit('searchType', 'neural')
-    face.edit('numResults', '8')
-    face.edit('highlightsPerResult', '2')
-    face.save()
-    await vi.waitFor(() => { expect(host.set).toHaveBeenCalledTimes(4) })
+    await settings.mirror.ensure()
 
-    expect(host.set.mock.calls).toEqual([
-      ['baseURL', 'https://exa.other.test'],
-      ['searchType', 'neural'],
-      ['numResults', 8],
-      ['highlightsPerResult', 2],
-    ])
-    expect(credentials.set).not.toHaveBeenCalled()
+    expect(controller.inject().hooks.configurablePlugins.getSnapshot().namespaces).toEqual(['bash'])
   })
 
-  it('addresses the reference the section declares rather than the default', async () => {
-    const host = stubSettingsScope<WebSearchExaSettings>()
-    const credentials = credentialsApi(false, 'EXA_API_KEY')
-    const controller = new WebSearchExaCardController(host.scope, credentials.api)
-    host.publish({ status: 'ready', writable: true, value: { apiKeyEnv: 'EXA_SEARCH_KEY' }, user: {} })
-    const face = controller.inject()
+  it('takes a card registered after the read without asking the Host again', async () => {
+    const settings = settingsApi(['bash'])
+    let entries = ledger()
+    const controller = new ConfigurablePluginsTabController(settings.mirror, () => entries)
+    await settings.mirror.ensure()
+    expect(controller.inject().hooks.configurablePlugins.getSnapshot().namespaces).toEqual([])
 
-    face.edit('apiKey', 'exa-secret')
-    face.save()
-    await vi.waitFor(() => { expect(credentials.set).toHaveBeenCalled() })
+    entries = ledger('bash')
+    controller.refresh()
 
-    expect(credentials.set).toHaveBeenCalledWith({ ref: 'EXA_SEARCH_KEY', value: 'exa-secret' })
+    expect(controller.inject().hooks.configurablePlugins.getSnapshot().namespaces).toEqual(['bash'])
+    expect(settings.describe).toHaveBeenCalledOnce()
   })
 
-  it('re-reads when the Host reports the watched reference changed', async () => {
-    const host = stubSettingsScope<WebSearchExaSettings>()
-    const credentials = credentialsApi(false, 'EXA_API_KEY')
-    const controller = new WebSearchExaCardController(host.scope, credentials.api)
-    host.publish({ status: 'ready', writable: true, value: {}, user: {} })
-    await vi.waitFor(() => { expect(credentials.describe).toHaveBeenCalled() })
-    credentials.describe.mockClear()
+  it('keeps the namespaces it knew when a refresh fails', async () => {
+    const settings = settingsApi(['bash'])
+    const controller = new ConfigurablePluginsTabController(settings.mirror, () => ledger('bash'))
+    await settings.mirror.ensure()
+    settings.describe.mockRejectedValueOnce(new Error('offline'))
 
-    // Another reference is not this card's business.
-    controller.refreshCredential('DEEPSEEK_API_KEY')
-    expect(credentials.describe).not.toHaveBeenCalled()
+    await settings.mirror.load()
 
-    // A key written on another surface reaches this card only through this signal.
-    credentials.describe.mockImplementation(() => Promise.resolve({
-      rpcId: 'c-1' as never,
-      result: { ok: true as const, value: { credentials: { EXA_API_KEY: { configured: true, writable: true } } } },
-    }))
-    controller.refreshCredential('EXA_API_KEY')
+    expect(controller.inject().hooks.configurablePlugins.getSnapshot().namespaces).toEqual(['bash'])
+  })
 
-    await vi.waitFor(() => {
-      expect(controller.inject().hooks.webSearchExaCard.getSnapshot().apiKeyConfigured).toBe(true)
-    })
+  it('stops following the mirror once disposed, and never claims it was answered', async () => {
+    const settings = settingsApi(['bash'])
+    const controller = new ConfigurablePluginsTabController(settings.mirror, () => ledger('bash'))
+
+    controller.dispose()
+    await settings.mirror.load()
+
+    expect(controller.inject().hooks.configurablePlugins.getSnapshot())
+      .toEqual({ loaded: false, namespaces: [] })
+  })
+
+  it('ignores a slot-ledger change that arrives after disposal', async () => {
+    const settings = settingsApi(['bash'])
+    let entries = ledger()
+    const controller = new ConfigurablePluginsTabController(settings.mirror, () => entries)
+    await settings.mirror.ensure()
+
+    controller.dispose()
+    entries = ledger('bash')
+    controller.refresh()
+
+    expect(controller.inject().hooks.configurablePlugins.getSnapshot().namespaces).toEqual([])
+  })
+
+  it('ignores a mirror notification already queued when disposal starts', () => {
+    let notify = (): void => {}
+    let snapshot: SettingsMirrorSnapshot = {
+      status: 'ready' as const,
+      view: { writable: true, hasDocument: true, namespaces: [] },
+      error: null,
+    }
+    const describeFace = {
+      getSnapshot: () => snapshot,
+      subscribe: (listener: () => void) => {
+        notify = listener
+        return () => {}
+      },
+      ensure: () => Promise.resolve(),
+      acceptView: vi.fn(),
+    } as never
+    const controller = new ConfigurablePluginsTabController(describeFace, () => ledger('bash'))
+    expect(controller.inject().hooks.configurablePlugins.getSnapshot())
+      .toEqual({ loaded: true, namespaces: [] })
+
+    controller.dispose()
+    snapshot = {
+      status: 'ready',
+      view: {
+        writable: true,
+        hasDocument: true,
+        namespaces: [{
+          ns: 'bash', schema: {}, value: {}, applies: 'live', secrets: [], revision: 1,
+        }],
+      },
+      error: null,
+    }
+    notify()
+
+    expect(controller.inject().hooks.configurablePlugins.getSnapshot())
+      .toEqual({ loaded: true, namespaces: [] })
+  })
+
+  it('reports the Host answered even when it serves nothing this tab shows', async () => {
+    const settings = settingsApi(['ui-theme'])
+    const controller = new ConfigurablePluginsTabController(settings.mirror, () => ledger('bash'))
+
+    await settings.mirror.ensure()
+
+    expect(controller.inject().hooks.configurablePlugins.getSnapshot())
+      .toEqual({ loaded: true, namespaces: [] })
   })
 })

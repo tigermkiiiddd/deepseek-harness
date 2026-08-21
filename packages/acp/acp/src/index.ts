@@ -2,11 +2,9 @@
  * Automation-only Agent Client Protocol server over JSON-RPC stdio.
  *
  * The bridge exposes fresh harness sessions to trusted programmatic clients. It
- * carries prompt text, committed assistant text, cancellation, and one-shot
- * permission decisions; presentation and human-interaction features stay with
- * the harness's UI modules. A client that negotiates
- * `InitializeRequest._meta.fullFidelity` additionally receives thought,
- * tool-call, plan, and usage updates (see `fidelity.ts`).
+ * carries prompt text/images, committed assistant text/images, cancellation,
+ * and one-shot permission decisions; presentation and human-interaction
+ * features stay with the harness's UI modules.
  *
  * @module @deepseek-ai/dsh-acp
  */
@@ -44,8 +42,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionId, type SessionEvent, type SessionHeader, type TurnEndReason } from '@deepseek-ai/dsh-session'
 // Side-effect type import: declaration-merges the approval waterfall answered below.
 import type {} from '@deepseek-ai/dsh-user-approval'
-import { acpPromptToText, promptHasUnsupportedContent, turnEndToStopReason } from './codec.ts'
-import { thoughtToChunk, todosToPlan, toolCallToUpdate, toolResultToUpdate, usageToUpdate } from './fidelity.ts'
+import { AcpContentError, admitAcpPrompt, assistantBlockToAcp, supportsAcpImagePrompts } from './content.ts'
+import { turnEndToStopReason } from './codec.ts'
 
 export const name = 'acp'
 /** The bridge creates and owns agents; every other concern is carried by the agent composition. */
@@ -94,20 +92,29 @@ interface SessionRecord {
   agent: Agent
   /** Exact owned-agent disposer; resolves after registry, loop, and session teardown. */
   dispose: () => Promise<void>
-  /**
-   * The route's advertised context window, tracked from `request/context`
-   * events only in full-fidelity mode; `usage_update` stays unsent without it
-   * because ACP requires the window size.
-   */
-  contextWindow?: number
-  /** In-flight prompt and its captured turn number for exact settlement. */
+  /** Ordered assistant-output delivery; every task contains its own failure. */
+  outputTail: Promise<void>
+  /** In-flight admission/turn/output lifecycle for exact settlement. */
   inflight: {
     resolve: (reason: StopReason) => void
     reject: (error: Error) => void
-    messageId: string
+    /** Set only after rich-content admission succeeds and the message is built. */
+    messageId: string | undefined
+    /** Whether this prompt has entered the Agent's durable inbox interval. */
+    messageQueued: boolean
     turn: number | undefined
     /** The correlated turn's ending, set at turn/end and settled at whole-agent idle. */
     endReason: TurnEndReason | undefined
+    /** Admission quiescence gate, including any attachment write already in progress. */
+    admissionDone: Promise<void>
+    finishAdmission: () => void
+    admissionController: AbortController
+    cancelRequested: boolean
+    settlementStarted: boolean
+    /** Conversion failure for committed output owned by this prompt's turn. */
+    outputError: Error | undefined
+    /** Interval-wide failure outside the correlated turn. */
+    agentError: Error | undefined
   } | undefined
 }
 
@@ -137,6 +144,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
    */
   let fullFidelity = false
   let conn: AgentSideConnection
+  let imagePromptEnabled = false
 
   /** Return the bridge-owned record for an agent, rejecting same-id impostors. */
   const ownedRecord = (agent: Agent): SessionRecord | undefined => {
@@ -154,19 +162,15 @@ export function apply(ctx: Context, config: AcpConfig): void {
     return record
   }
 
-  /** Send a protocol update without letting a disconnected client fail an agent turn. */
-  const notify = (notification: SessionNotification): void => {
-    /* v8 ignore next 3 -- only a transport write failure reaches this guard. */
-    void conn.sessionUpdate(notification).catch((error: unknown) => {
+  /** Send one ordered protocol update while containing transport-only failure. */
+  const notify = async (notification: SessionNotification): Promise<void> => {
+    try {
+      await conn.sessionUpdate(notification)
+    /* v8 ignore start -- the ACP SDK contains notification-handler failures; only a transport write failure reaches this guard. */
+    } catch (error: unknown) {
       logger.warn(`acp: session/update failed: ${String(error)}`)
-    })
-  }
-
-  const settlePrompt = (record: SessionRecord, reason: StopReason): void => {
-    const inflight = record.inflight
-    if (inflight === undefined) return
-    record.inflight = undefined
-    inflight.resolve(reason)
+    }
+    /* v8 ignore stop */
   }
 
   const rejectFromError = (
@@ -177,86 +181,91 @@ export function apply(ctx: Context, config: AcpConfig): void {
   }
 
   /**
-   * Translate one session event into its full-fidelity protocol updates. Runs
-   * only for negotiated connections; SessionEvent is merge-extensible, so
-   * events without an ACP analogue fall through without emitting.
+   * Settle one exact prompt only after admission, agent activity, and ordered
+   * assistant delivery have all reached quiescence.
    */
-  const emitFullFidelity = (record: SessionRecord, event: SessionEvent): void => {
-    const sessionId = record.agent.session.id
-    switch (event.type) {
-      case 'assistant/message':
-        for (const block of event.data.message.content) {
-          if (block.type === 'reasoning' && block.text.length > 0) {
-            notify({ sessionId, update: thoughtToChunk(block.text) })
-          }
-        }
-        if (event.data.usage !== undefined && record.contextWindow !== undefined) {
-          notify({ sessionId, update: usageToUpdate(event.data.usage, record.contextWindow) })
-        }
-        break
-      case 'tool/call':
-        notify({ sessionId, update: toolCallToUpdate(event.data) })
-        break
-      case 'tool/result':
-        notify({ sessionId, update: toolResultToUpdate(event.data) })
-        break
-      case 'todo/write':
-        notify({ sessionId, update: todosToPlan(event.data.todos) })
-        break
-      case 'request/context':
-        // exactOptionalPropertyTypes: an absent window retracts the route's
-        // advertised capacity rather than assigning undefined.
-        if (event.data.contextWindow === undefined) delete record.contextWindow
-        else record.contextWindow = event.data.contextWindow
-        break
-      default:
-        break
-    }
+  const settleAfterQuiescence = (
+    record: SessionRecord,
+    inflight: NonNullable<SessionRecord['inflight']>,
+  ): void => {
+    if (inflight.settlementStarted) return
+    inflight.settlementStarted = true
+    void (async () => {
+      await inflight.admissionDone
+      if (inflight.messageQueued) {
+        await record.agent.whenIdle()
+        // session/event enqueues synchronously before the agent becomes idle;
+        // reading the live tail here includes every committed output task.
+        await record.outputTail
+      }
+      /* v8 ignore next -- this prompt owns the slot until this exact settlement clears it. */
+      if (record.inflight !== inflight) return
+      record.inflight = undefined
+      if (inflight.cancelRequested) {
+        inflight.resolve('cancelled')
+        return
+      }
+      if (inflight.outputError !== undefined) {
+        inflight.reject(internalError(`assistant output delivery failed: ${inflight.outputError.message}`))
+        return
+      }
+      if (inflight.agentError !== undefined) {
+        inflight.reject(internalError(`turn failed: ${inflight.agentError.message}`))
+        return
+      }
+      const end = inflight.endReason
+      if (end === undefined) {
+        inflight.resolve('cancelled')
+      } else if (end.kind === 'error') {
+        rejectFromError(inflight, end)
+      } else {
+        // Token-limit and other non-terminal endings are not prompt-level stop
+        // reasons; ordinary quiescence reports end_turn.
+        inflight.resolve(end.kind === 'max-tokens' ? 'end_turn' : turnEndToStopReason(end))
+      }
+    })()
+    /* v8 ignore start -- admissionDone only resolves, and the queued path's idle/output gates contain their own failures. */
+      .catch((error: unknown) => {
+        if (record.inflight !== inflight) return
+        record.inflight = undefined
+        inflight.reject(internalError(`prompt settlement failed: ${errorChain(error)}`))
+      })
+    /* v8 ignore stop */
   }
 
-  // Emit only committed assistant text. Raw chunks, reasoning, tools, plans,
-  // titles, and retry markers are presentation or trace data and stay off the
-  // automation wire.
+  // Emit only committed assistant text/images. Raw chunks, reasoning, tools,
+  // plans, titles, and retry markers are presentation or trace data and stay
+  // off the automation wire. One per-session chain preserves block/message
+  // order across asynchronous attachment reads.
   ctx.on('session/event', (session, event: SessionEvent) => {
     const record = sessions.get(session.header.id)
     if (record === undefined || record.agent.session !== session) return
     try {
       if (event.type === 'assistant/message') {
-        for (const block of event.data.message.content) {
-          if (block.type === 'text' && block.text.length > 0) {
-            notify({
+        const inflight = record.inflight?.turn === event.data.turn ? record.inflight : undefined
+        const previous = record.outputTail
+        const delivery = previous.then(async () => {
+          for (const block of event.data.message.content) {
+            const content = await assistantBlockToAcp(ctx, block)
+            if (content === undefined) continue
+            await notify({
               sessionId: record.agent.session.id,
-              update: {
-                sessionUpdate: 'agent_message_chunk',
-                content: { type: 'text', text: block.text },
-              },
-            })
-          } else if (block.type === 'image') {
-            notify({
-              sessionId: record.agent.session.id,
-              update: {
-                sessionUpdate: 'agent_message_chunk',
-                content: {
-                  type: 'text',
-                  text: `[image attachment ${block.attachment.attachmentId}]`,
-                },
-              },
+              update: { sessionUpdate: 'agent_message_chunk', content },
             })
           }
-        }
+        })
+        record.outputTail = delivery.catch((error: unknown) => {
+          // assistantBlockToAcp owns conversion failures and always throws Error.
+          const failure = error as Error
+          if (inflight !== undefined) inflight.outputError ??= failure
+          logger.warn(`acp: assistant output conversion failed: ${errorChain(error)}`)
+        })
       }
       if (fullFidelity) emitFullFidelity(record, event)
     } finally {
       const inflight = record.inflight
       if (inflight !== undefined && event.type === 'turn/end' && inflight.turn === event.data.turn) {
-        if (event.data.reason.kind === 'error') {
-          // Model failures surface immediately as prompt errors; ordinary
-          // endings wait for whole-agent idle below.
-          record.inflight = undefined
-          rejectFromError(inflight, event.data.reason)
-        } else {
-          inflight.endReason = event.data.reason
-        }
+        inflight.endReason = event.data.reason
       }
     }
   })
@@ -270,9 +279,9 @@ export function apply(ctx: Context, config: AcpConfig): void {
   ctx.on('agent/error', ({ agent, turn, error }) => {
     const record = ownedRecord(agent)
     const inflight = record?.inflight
-    if (record === undefined || inflight === undefined || inflight.turn === turn) return
-    record.inflight = undefined
-    inflight.reject(internalError(`turn failed: ${errorChain(error)}`))
+    if (record === undefined || inflight === undefined || !inflight.messageQueued || inflight.turn === turn) return
+    inflight.agentError = new Error(errorChain(error))
+    settleAfterQuiescence(record, inflight)
   })
 
   // Permission requests are a machine policy channel for ACP clients such as
@@ -297,26 +306,18 @@ export function apply(ctx: Context, config: AcpConfig): void {
   const makeAgent = (connection: AgentSideConnection): AcpAgent => {
     conn = connection
     return {
-      initialize(params: InitializeRequest): Promise<InitializeResponse> {
-        // Full-fidelity mode is opt-in per connection: a client that sets
-        // `_meta.fullFidelity` additionally receives thought, tool-call, plan,
-        // and usage updates; the response itself is unchanged either way.
-        fullFidelity = params._meta?.fullFidelity === true
+      async initialize(_params: InitializeRequest): Promise<InitializeResponse> {
         // Single-version agent: the spec's "same version if supported, else
         // the latest supported" both resolve to this server's one version.
-        return Promise.resolve({
+        imagePromptEnabled = await supportsAcpImagePrompts(ctx, config.provider, config.model)
+        return {
           protocolVersion: PROTOCOL_VERSION,
           agentInfo: { name: 'deepseek-harness-acp', version: '0.0.1' },
           agentCapabilities: {
-            promptCapabilities: { image: false, audio: false, embeddedContext: false },
-            // The bridge can resume persisted sessions and list them, so a
-            // client can browse a member's conversation topics and choose to
-            // continue one or open a new one.
-            loadSession: true,
-            sessionCapabilities: { list: {} },
+            promptCapabilities: { image: imagePromptEnabled, audio: false, embeddedContext: false },
           },
           authMethods: [],
-        })
+        }
       },
 
       authenticate(_params: AuthenticateRequest): Promise<void> {
@@ -421,6 +422,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
         sessions.set(sessionId, {
           agent: handle.agent,
           dispose: () => handle.dispose(),
+          outputTail: Promise.resolve(),
           inflight: undefined,
         })
         return { sessionId }
@@ -432,66 +434,103 @@ export function apply(ctx: Context, config: AcpConfig): void {
         if (record.inflight !== undefined) {
           throw invalidParams('a prompt is already in flight for this session')
         }
-        if (promptHasUnsupportedContent(params.prompt)) {
-          throw invalidParams('only text and resource_link prompt content is supported')
+        const completion = Promise.withResolvers<StopReason>()
+        const admission = Promise.withResolvers<void>()
+        const admissionController = new AbortController()
+        const inflight: NonNullable<SessionRecord['inflight']> = {
+          resolve: completion.resolve,
+          reject: completion.reject,
+          messageId: undefined,
+          messageQueued: false,
+          turn: undefined,
+          endReason: undefined,
+          admissionDone: admission.promise,
+          finishAdmission: admission.resolve,
+          admissionController,
+          cancelRequested: false,
+          settlementStarted: false,
+          outputError: undefined,
+          agentError: undefined,
         }
-        const text = acpPromptToText(params.prompt)
-        if (text.trim().length === 0) throw invalidParams('empty prompt')
+        // Reserve the one-prompt slot before the first asynchronous route or
+        // attachment operation so concurrent prompts and cancellation observe
+        // admission as genuinely in flight.
+        record.inflight = inflight
 
-        // Not driving a retired agent is this bridge's contract: an
-        // agent-loop-only reload disposes the loop's agents while the bridge
-        // record survives, so validate the record against the live registry
-        // before sending — a disposed machine would accept the item silently.
-        if (ctx.agents.get(record.agent.id) !== record.agent) {
-          throw internalError('prompt was not queued: the agent was disposed outside the bridge')
-        }
-        const message = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
-        const stopReason = await new Promise<StopReason>((resolve, reject) => {
-          // Arm the slot before followup() so a listener-driven synchronous
-          // turn cannot slip past correlation; a synchronous followup()
-          // failure (invalid input) must free the slot again or the session
-          // would reject every later prompt as already in flight.
-          const inflight: NonNullable<SessionRecord['inflight']> = {
-            resolve, reject, messageId: message.id, turn: undefined, endReason: undefined,
+        let admissionFailed = false
+        let admissionFailure: unknown
+        try {
+          // Do not persist rich content for a retired destination. Re-check
+          // after admission too because an agent-loop reload may race storage.
+          if (ctx.agents.get(record.agent.id) !== record.agent) {
+            throw internalError('prompt was not queued: the agent was disposed outside the bridge')
           }
-          record.inflight = inflight
+          const content = await admitAcpPrompt(
+            ctx,
+            record.agent,
+            params.prompt,
+            imagePromptEnabled,
+            admissionController.signal,
+          )
+          // No await may separate this final abort check from followup: a
+          // cancellation that wins admission must never enqueue a late turn.
+          admissionController.signal.throwIfAborted()
+          if (ctx.agents.get(record.agent.id) !== record.agent) {
+            throw internalError('prompt was not queued: the agent was disposed outside the bridge')
+          }
+          const message = createUserMessage({ content, source: { kind: 'user' } })
+          inflight.messageId = message.id
+          inflight.messageQueued = true
           try {
             record.agent.followup(message)
-            // The machine's send() contains listener failures and accepts
-            // any typed input; this guards a future synchronous throw so the
-            // slot cannot wedge.
-            /* v8 ignore start -- future-proofing guard, see above */
           } catch (error: unknown) {
-            record.inflight = undefined
-            const detail = error instanceof Error ? error.message : String(error)
-            throw internalError(`prompt was not queued: ${detail}`)
+            // The typed same-process seam may fail synchronously before durable
+            // inbox receipt; restore the pre-operation boundary for mapping.
+            inflight.messageQueued = false
+            throw error
           }
-          /* v8 ignore stop */
-          // Settlement waits for whole-agent idle: a correlated turn/end arms
-          // `endReason`, while a turnless slot (admission discarded the
-          // prompt) stays cancelled. Other producers may run further turns
-          // before quiescence; the prompt settles only when the agent stops.
-          void record.agent.whenIdle().then(() => {
-            if (record.inflight !== inflight) return
-            record.inflight = undefined
-            const end = inflight.endReason
-            if (end === undefined) {
-              inflight.resolve('cancelled')
-            } else {
-              // Token-limit and other non-terminal endings are not prompt-level
-              // stop reasons (see README); only normal quiescence reports end_turn.
-              inflight.resolve(end.kind === 'max-tokens' ? 'end_turn' : turnEndToStopReason(end))
-            }
-          })
-        })
+        } catch (error: unknown) {
+          admissionFailed = true
+          admissionFailure = error
+        } finally {
+          inflight.finishAdmission()
+        }
+
+        if (inflight.cancelRequested) {
+          settleAfterQuiescence(record, inflight)
+          return { stopReason: await completion.promise }
+        }
+        if (admissionFailed) {
+          record.inflight = undefined
+          if (admissionFailure instanceof AcpContentError) {
+            throw admissionFailure.kind === 'invalid'
+              ? invalidParams(admissionFailure.message)
+              : internalError(admissionFailure.message)
+          }
+          if (admissionFailure instanceof RequestError) throw admissionFailure
+          // The admission codec and same-process agent seam throw Error values.
+          const detail = (admissionFailure as Error).message
+          throw internalError(`prompt was not queued: ${detail}`)
+        }
+
+        settleAfterQuiescence(record, inflight)
+        const stopReason = await completion.promise
         return { stopReason }
       },
 
       cancel(params: CancelNotification): Promise<void> {
         const record = sessions.get(SessionId(params.sessionId))
         if (record === undefined) return Promise.resolve()
-        record.agent.cancel({ kind: 'user' })
-        settlePrompt(record, 'cancelled')
+        const inflight = record.inflight
+        if (inflight !== undefined) {
+          inflight.cancelRequested = true
+          inflight.admissionController.abort(new Error('ACP prompt cancelled'))
+          settleAfterQuiescence(record, inflight)
+        }
+        // Admission is not Agent work. Preserve unrelated producers until this
+        // prompt has entered the durable inbox; without a prompt, cancellation
+        // continues to target autonomous work on the addressed Agent.
+        if (inflight === undefined || inflight.messageQueued) record.agent.cancel({ kind: 'user' })
         return Promise.resolve()
       },
     }
@@ -514,10 +553,24 @@ export function apply(ctx: Context, config: AcpConfig): void {
     // on persistence or scoped cleanup, and the top-level agents must not keep
     // running model and tool calls for its whole duration.
     for (const record of records) {
+      const inflight = record.inflight
+      if (inflight !== undefined) {
+        inflight.cancelRequested = true
+        inflight.admissionController.abort(new Error('ACP bridge disposed'))
+        settleAfterQuiescence(record, inflight)
+      }
       record.agent.cancel({ kind: 'user' })
-      settlePrompt(record, 'cancelled')
     }
     quiescing = (async () => {
+      // Preserve the same prompt boundary during connection teardown: a rich
+      // admission already writing must stop before its slot settles, and every
+      // committed output conversion must drain while attachment services remain
+      // available. session/event enqueues output synchronously before idle.
+      await Promise.all(records.map(async (record) => {
+        await record.inflight?.admissionDone
+        await record.agent.whenIdle()
+        await record.outputTail
+      }))
       // Continuable subagents outlive the turn that started them, and their
       // Activations own descendant teardown. Drain only these sessions' forests
       // child-first BEFORE disposing the top-level agents, so no descendant is

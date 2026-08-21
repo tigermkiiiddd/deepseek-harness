@@ -18,7 +18,7 @@ Plan mode 拥有一个 plan 专用产品包：位于 `packages/plan/plan-mode/` 
 
 配置严格为 `{ section: string }`。该包自行注册固定的 `plan:policy` 段、`/plan [message]`、精确匹配的 `/plan off` 主动退出形式，以及 `exit_plan_mode`。不带参数的 `/plan` 选择激活；其他非空参数则先选择激活，再通过 `agent.steer()` 发送去除首尾空白后的文本，使该文本在受影响的步骤中成为一条记录到日志的普通用户消息。`/plan off` 选择未激活，不产生模型输入，并可取消仍待在边界生效的进入选择。即使 plan mode 未激活，退出工具仍保持注册，以确保请求工具目录稳定。
 
-plan 的评审仍归人类所有，而进入通过 `enter_plan_mode` 与模型共享——见 [模型自主进入 plan mode](../feature/2026-08-16-model-initiated-plan-mode-entry.md)，它部分反转了本笔记最初记录的选择权归属表述。本笔记最初把 ACP 协议级的 `default`/`plan` 选择器保留为布尔服务之上的适配器；[ACP 作为仅面向自动化的协议](2026-07-23-acp-automation-only-protocol.md) 取代了那个协议投影，因此 ACP 组合现在既不挂载 plan mode，也不提供模式选择协议。
+面向人类的组合拥有 plan 选择与评审。本笔记最初把 ACP 协议级的 `default`/`plan` 选择器保留为布尔服务之上的适配器；[ACP 作为仅面向自动化的协议](2026-07-23-acp-automation-only-protocol.zh.md) 取代了那个协议投影，因此 ACP 组合现在既不挂载 plan mode，也不提供模式选择协议。
 
 沙箱模式与审批策略仍是彼此独立的强制约束轴。Plan mode 既不读取也不写入二者；此次简化也没有为这些概念引入共享基类型、注册表或预设抽象。
 
