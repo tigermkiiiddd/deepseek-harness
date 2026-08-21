@@ -22,5 +22,5 @@ None; this package neither assembles nor sends a provider request.
 
 ## Known Limitations and Deferred Work
 
-- **One-shot rendering by design** — the UI waits for the boot settle; a single entry failure keeps the loading page with a loud per-entry report, no partial availability (progressive rendering returns with its own project).
+- **One-shot rendering by design** — the UI waits for the boot settle; a single entry failure keeps the loading page with a loud per-entry report, no partial availability (progressive rendering returns with its own project). A render failure after settle (a withdrawn service tore the assembly out from under the UI — connection loss, hot reload) lands on the same fail-loud card through AppRoot's crash boundary, and each later fiber-state change re-attempts the real UI, so a recovered service graph restores it without a page reload.
 - **Narrow-window shell behavior lacks an assembled walkthrough** — ui-layout implements the concession chain, but this package has no shell-level narrow-viewport acceptance case.

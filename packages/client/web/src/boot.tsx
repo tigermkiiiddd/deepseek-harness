@@ -119,7 +119,9 @@ export class AppWebEntry {
         error={this.error}
         renderApp={() => {
           const shell = this.ctx.get('appShell')
-          // Unreachable after a clean settle (the app-shell entry is in every graph).
+          // Unreachable after a clean settle; a post-settle withdrawal lands
+          // here, and AppRoot's crash boundary turns the throw into the
+          // fail-loud card instead of an unmounted (blank) tree.
           if (shell === undefined) throw new Error('web boot: appShell service missing after settled')
           return shell.renderApp()
         }}
