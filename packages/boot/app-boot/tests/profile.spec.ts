@@ -143,6 +143,19 @@ describe('loadProfile', () => {
     expect(bare.layers).toEqual([])
   })
 
+  it('auto-initializes the acp shipped template', () => {
+    const anchor = stageInstallation({})
+    const home = tmp()
+    expect(PROFILE_TEMPLATES.acp).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-acp-app'])
+    try {
+      loadProfile('t', 'acp', anchor, home)
+    } catch {
+      // Resolution failure is the plain-Node outcome for this empty anchor.
+    }
+    expect(readProfileManifest('t', resolveProfileDir('acp', home)).dsh?.profile?.bundles)
+      .toEqual([...PROFILE_TEMPLATES.acp ?? []])
+  })
+
   it('auto-initializes only shipped templates and fails loud otherwise', () => {
     const anchor = stageInstallation({})
     const home = tmp()
