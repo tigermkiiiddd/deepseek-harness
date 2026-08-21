@@ -459,9 +459,15 @@ export function apply(ctx: Context, config: Config): void {
     ctx.systemPrompt.section({
       name: `tool:${toolName}`,
       order: SUBAGENT_SECTION_ORDER,
-      text: context => disposeTool === undefined || ctx.tools.get(toolName, context.scope) === undefined
-        ? ''
-        : `Use ${toolName} in the background by default. Start independent delegations together in one assistant message and continue useful work while they run. Set \`run_in_background: false\` only when your next action depends on that subagent's result. When a background run settles, the runtime sends you a notice containing its outcome and any final assistant message.`,
+      text: (context) => {
+        if (disposeTool === undefined || ctx.tools.get(toolName, context.scope) === undefined) return ''
+        // Naming ask_user_question is safe only while that tool is visible in
+        // the same scope; otherwise the guidance would point at a tool the
+        // model cannot call.
+        const askFirst = ctx.tools.get('ask_user_question', context.scope) === undefined ? ''
+          : ' For substantial tasks, ask the user with ask_user_question whether to delegate before starting: offer the delegation and its tradeoff (own context, background execution) against doing the work inline.'
+        return `Delegate with ${toolName} instead of doing everything inline: broad exploration (searches or reads spanning many files), independent subtasks that can advance in parallel, and any work whose intermediate steps would flood this conversation's context all belong in a subagent.${askFirst} Use ${toolName} in the background by default. Start independent delegations together in one assistant message and continue useful work while they run. Set \`run_in_background: false\` only when your next action depends on that subagent's result. When a background run settles, the runtime sends you a notice containing its outcome and any final assistant message.`
+      },
     })
   }
 }

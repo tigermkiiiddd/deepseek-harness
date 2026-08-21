@@ -1033,6 +1033,7 @@ describe('dsh-tool-subagent continuable background mode', () => {
     expect(properties.run_in_background?.description).toContain('Defaults to true')
     const assembly = await ctx.systemPrompt.assemble(assembleContextFor(parent))
     const guidance = assembly.sections.find(section => section.name === 'tool:subagent')
+    expect(guidance?.text).toContain('Delegate with subagent instead of doing everything inline')
     expect(guidance?.text).toContain('Use subagent in the background by default')
     expect(guidance?.text).toContain('runtime sends you a notice containing its outcome')
 
@@ -1064,6 +1065,29 @@ describe('dsh-tool-subagent continuable background mode', () => {
     expect(ctx.tools.get('subagent', parent)).toBeUndefined()
     const assembly = await ctx.systemPrompt.assemble(assembleContextFor(parent))
     expect(assembly.sections.find(section => section.name === 'tool:subagent')?.text).toBe('')
+  })
+
+  it('names ask_user_question in the guidance only while that tool is visible', async () => {
+    const { ctx, parent } = await continuableSetup()
+    const guidance = async () => (await ctx.systemPrompt.assemble(assembleContextFor(parent))).sections
+      .find(section => section.name === 'tool:subagent')?.text
+    // No ask_user_question in this composition: the guidance must not point at
+    // a tool the model cannot call.
+    expect(await guidance()).not.toContain('ask_user_question')
+
+    ctx.tools.register({
+      name: 'ask_user_question',
+      description: 'stub',
+      parameters: {},
+      output: {
+        schema: { type: 'string' },
+        render: (_args, value: string) => [{ type: 'text', text: value }],
+      },
+      async execute() {
+        return ''
+      },
+    })
+    expect(await guidance()).toContain('ask the user with ask_user_question whether to delegate')
   })
 
   it('waits for a continuable provider only when run_in_background is explicitly false', async () => {
