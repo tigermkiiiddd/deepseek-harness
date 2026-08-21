@@ -16,6 +16,7 @@ import type {
   AgentOptions,
   AgentSetup,
   CreateAgentOptions,
+  ReseedAgentOptions,
   ResumeAgentOptions,
   SessionStartSource,
 } from '@deepseek-ai/dsh-agent'
@@ -50,6 +51,8 @@ class FactoryOwnership {
   private readonly teardown = new AbortController()
   private readonly inactive = Promise.withResolvers<void>()
   private readonly liveAgents = new Set<() => Promise<void>>()
+  /** The same live teardowns keyed by exact session identity, for in-place rebuilds. */
+  private readonly liveAgentIds = new Map<SessionId, () => Promise<void>>()
   private startupTasks = new Set<Promise<void>>()
 
   constructor(private readonly fiber: Context['fiber']) {}
@@ -63,10 +66,20 @@ class FactoryOwnership {
     return this.accepting && !INACTIVE_STATES.has(this.fiber.state)
   }
 
-  /** Track one live agent's shared teardown until it has run. */
-  track(dispose: () => Promise<void>): () => void {
+  /** Track one live agent's shared teardown under its session identity until it has run. */
+  track(dispose: () => Promise<void>, id: SessionId): () => void {
     this.liveAgents.add(dispose)
-    return () => { this.liveAgents.delete(dispose) }
+    this.liveAgentIds.set(id, dispose)
+    return () => {
+      this.liveAgents.delete(dispose)
+      // A newer same-id lifecycle may already own the key; remove only THIS teardown's claim.
+      if (this.liveAgentIds.get(id) === dispose) this.liveAgentIds.delete(id)
+    }
+  }
+
+  /** Return the tracked teardown of the live agent with one exact identity, if this factory owns it. */
+  trackedDispose(id: SessionId): (() => Promise<void>) | undefined {
+    return this.liveAgentIds.get(id)
   }
 
   /** Join config startup work that begins before an agent exists. */
@@ -533,7 +546,7 @@ export class AgentLoop extends Service implements AgentFactory {
         }
       }
     })())
-    const untrack = this.ownership.track(dispose)
+    const untrack = this.ownership.track(dispose, id)
     let unfollowOwner: () => Promise<void> | void
     try {
       unfollowOwner = ownerCtx.effect(() => () => {
@@ -719,6 +732,63 @@ export class AgentLoop extends Service implements AgentFactory {
       } finally {
         preparation?.[Symbol.dispose]()
       }
+    })()
+    this.ownership.trackWrapper(published)
+    return published
+  }
+
+  /**
+   * Rebuild the live agent with one exact identity in place on a truncated
+   * prefix of its own log: capture the prefix and header BEFORE teardown,
+   * dispose the live handle, truncate the durable log, and re-create through
+   * the same unpublished setup transaction as {@link createAgent}.
+   * @param ownerCtx - caller context that structurally owns the rebuilt lifecycle.
+   * @param options - live identity, kept prefix length, loop options, and setup.
+   * @returns the published rebuilt handle.
+   */
+  async reseedAgent(ownerCtx: Context, options: ReseedAgentOptions): Promise<AgentHandle> {
+    const persistence = this.runtime.ctx.get('sessionPersistence')
+    if (persistence === undefined) {
+      throw new Error('cannot reseed: session persistence is not configured (load a dsh-session-persistence backend)')
+    }
+    const id = options.sessionId
+    const published = (async () => {
+      const agent = this.runtime.ctx.agents.get(id)
+      if (agent === undefined) throw new Error(`cannot reseed session "${id}": no live agent has that id`)
+      const dispose = this.ownership.trackedDispose(id)
+      if (dispose === undefined) {
+        throw new Error(`cannot reseed session "${id}": its live agent is not owned by this agent loop`)
+      }
+      const events = agent.session.events
+      if (!Number.isSafeInteger(options.keepSeqs) || options.keepSeqs < 0) {
+        throw new TypeError(`reseed keepSeqs must be a non-negative safe integer, got ${String(options.keepSeqs)}`)
+      }
+      if (options.keepSeqs > events.length) {
+        throw new RangeError(`reseed keepSeqs ${options.keepSeqs} exceeds the live log length ${events.length} for session "${id}"`)
+      }
+      // Capture the prefix, header, and options BEFORE teardown: disposal
+      // retires the live session's persistence ownership, after which this
+      // view is gone. Truncation leaves the durable header unchanged, so the
+      // rebuilt session's in-memory header carries the same fields; an
+      // explicit meta overrides the caller-owned subset (never createdAt).
+      const prefix = events.slice(0, options.keepSeqs)
+      const { version: _version, id: _id, ...carried } = agent.session.header
+      const meta = { ...carried, ...options.meta }
+      const agentOptions = options.agentOptions ?? agent.options
+      await dispose()
+      await persistence.truncate(id, options.keepSeqs)
+      ownerCtx.fiber.assertActive()
+      if (!this.ownership.isActive()) throw new Error('agent loop is not active')
+      const preparation = SessionPreparation.create(this.runtime.ctx.sessions.prepare(id, { seed: prefix, meta }))
+      return await this.setupAndPublish(
+        ownerCtx,
+        id,
+        preparation,
+        agentOptions,
+        options.setup,
+        undefined,
+        'resume',
+      )
     })()
     this.ownership.trackWrapper(published)
     return published

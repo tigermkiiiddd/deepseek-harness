@@ -14,6 +14,7 @@ import type {
   AgentFactory,
   AgentStatus,
   CreateAgentOptions,
+  ReseedAgentOptions,
   ResumeAgentOptions,
 } from '@deepseek-ai/dsh-agent'
 
@@ -360,7 +361,8 @@ describe('AgentRegistry factory seam', () => {
     const calls: {
       create: Array<{ ownerCtx: Context; options: CreateAgentOptions }>
       resume: Array<{ ownerCtx: Context; options: ResumeAgentOptions }>
-    } = { create: [], resume: [] }
+      reseed: Array<{ ownerCtx: Context; options: ReseedAgentOptions }>
+    } = { create: [], resume: [], reseed: [] }
     const factory: AgentFactory = {
       async createAgent(ownerCtx, options) {
         calls.create.push({ ownerCtx, options })
@@ -370,6 +372,10 @@ describe('AgentRegistry factory seam', () => {
         calls.resume.push({ ownerCtx, options })
         return { agent: stubAgent(options.resumeSessionId), dispose: () => Promise.resolve() }
       },
+      async reseedAgent(ownerCtx, options) {
+        calls.reseed.push({ ownerCtx, options })
+        return { agent: stubAgent(options.sessionId), dispose: () => Promise.resolve() }
+      },
     }
     return { factory, calls }
   }
@@ -378,6 +384,8 @@ describe('AgentRegistry factory seam', () => {
     const ctx = new Context()
     await ctx.plugin(AgentRegistry)
     await expect(ctx.agents.create({ sessionId: SessionId('s') })).rejects.toThrow(/no agent factory/)
+    await expect(ctx.agents.resume({ resumeSessionId: SessionId('s') })).rejects.toThrow(/no agent factory/)
+    await expect(ctx.agents.reseed({ sessionId: SessionId('s'), keepSeqs: 0 })).rejects.toThrow(/no agent factory/)
     const { factory, calls } = stubFactory()
     ctx.agents.setFactory(factory)
 
@@ -386,9 +394,12 @@ describe('AgentRegistry factory seam', () => {
       callerFiber = inner.fiber
       await inner.agents.create({ sessionId: SessionId('create-s') })
       await inner.agents.resume({ resumeSessionId: SessionId('resume-s') })
+      await inner.agents.reseed({ sessionId: SessionId('reseed-s'), keepSeqs: 2 })
     }, { inject: ['agents'] }))
     expect(calls.create[0]?.ownerCtx.fiber).toBe(callerFiber)
     expect(calls.resume[0]?.ownerCtx.fiber).toBe(callerFiber)
+    expect(calls.reseed[0]?.ownerCtx.fiber).toBe(callerFiber)
+    expect(calls.reseed[0]?.options).toEqual({ sessionId: SessionId('reseed-s'), keepSeqs: 2 })
   })
 
   it('rejects a second factory and clears the slot with its owner (HMR)', async () => {
@@ -426,13 +437,18 @@ describe('AgentRegistry factory seam', () => {
         this.calls().push('resume')
         return { agent: stubAgent(options.resumeSessionId), dispose: () => Promise.resolve() }
       }
+      async reseedAgent(_ownerCtx: Context, options: ReseedAgentOptions) {
+        this.calls().push('reseed')
+        return { agent: stubAgent(options.sessionId), dispose: () => Promise.resolve() }
+      }
     }
     await ctx.plugin(TracedFactory)
     const traced = (ctx as Context & { tracedFactory: TracedFactory }).tracedFactory
     ctx.agents.setFactory(traced)
     await ctx.agents.create({ sessionId: SessionId('create-s') })
     await ctx.agents.resume({ resumeSessionId: SessionId('resume-s') })
+    await ctx.agents.reseed({ sessionId: SessionId('reseed-s'), keepSeqs: 0 })
     const raw = (traced as unknown as { [symbols.original]?: TracedFactory })[symbols.original]
-    expect(states.get(raw!)).toEqual(['create', 'resume'])
+    expect(states.get(raw!)).toEqual(['create', 'resume', 'reseed'])
   })
 })

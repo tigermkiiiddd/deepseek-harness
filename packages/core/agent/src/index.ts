@@ -156,6 +156,40 @@ export interface ResumeAgentOptions {
 }
 
 /**
+ * Options for rebuilding a live agent in place on a truncated prefix of its
+ * own session log ({@link AgentRegistry.reseed}). The caller owns the cut
+ * computation: the factory captures the live log's first `keepSeqs` events
+ * BEFORE teardown, disposes the live handle (stops the loop, unregisters,
+ * unwinds), truncates the durable log to the same prefix through
+ * `ctx.sessionPersistence.truncate`, and re-creates the agent under the SAME
+ * session id with the captured prefix as its seed. Later conversation content
+ * is gone from the model's context without a new session identity.
+ */
+export interface ReseedAgentOptions {
+  /** Exact session id of the LIVE agent to rebuild in place. */
+  readonly sessionId: SessionId
+  /** Number of leading events the rebuilt session keeps (its seed = the live log's first keepSeqs events). */
+  readonly keepSeqs: number
+  /**
+   * Header fields carried into the rebuilt session (mirrors
+   * {@link CreateAgentOptions.meta} semantics). Truncation leaves the durable
+   * header unchanged, so every field defaults to the live session's current
+   * header value; a provided field overrides it. Overriding `cwd` away from
+   * the durable value is rejected by the persistence ownership boundary.
+   */
+  readonly meta?: CreateAgentOptions['meta']
+  /** Per-agent options (model, …); defaults to the live agent's current options, an explicit value replaces them. */
+  readonly agentOptions?: AgentOptions
+  /**
+   * Rebuild-time composition of the agent's fresh scoped world. Same trusted
+   * composition-only contract and optional synchronous publication commit as
+   * {@link CreateAgentOptions.setup}: the factory awaits it after minting
+   * `agentCtx` and BEFORE publishing the rebuilt session and agent.
+   */
+  readonly setup?: AgentSetup
+}
+
+/**
  * An owned agent plus its disposer, returned by {@link AgentRegistry.create} /
  * {@link AgentRegistry.resume}. The disposer is a CAPABILITY: among consumers,
  * only the holder can tear this agent down. The registered factory provider is
@@ -211,6 +245,27 @@ export interface AgentFactory {
    * @returns the owned handle after setup, both announcements, and loop start complete.
    */
   resume(ownerCtx: Context, options: ResumeAgentOptions): Promise<AgentHandle>
+  /**
+   * Rebuild the LIVE agent with `options.sessionId` in place on a truncated
+   * prefix of its own log. Async because it awaits the live handle's teardown
+   * (loop stop and drain, unregistration, scope unwind), the durable
+   * truncation through `ctx.sessionPersistence.truncate`, and the same
+   * unpublished setup transaction as {@link createAgent}; must be called after
+   * session persistence exists. The factory captures the live log's first
+   * `keepSeqs` events BEFORE teardown, so the cut survives disposal, and
+   * re-creates the agent under the SAME session id with that prefix as its
+   * seed; publication follows the setup-commit and ordered boundary of
+   * {@link createAgent}. Rejects when no live agent has the id, when
+   * `keepSeqs` is not an integer in `[0, live log length]`, or when the live
+   * agent is not owned by this factory. The registry passes a context carrying
+   * the `reseed()` caller's fiber and scope as `ownerCtx`, exactly as
+   * {@link createAgent} receives it.
+   * @param ownerCtx - caller-bound context that owns the rebuilt live handle.
+   * @param options - live identity, kept prefix length, and optional header/agent/setup overrides.
+   * @returns the rebuilt owned handle after teardown, truncation, setup, both
+   *   announcements, and loop start complete.
+   */
+  reseedAgent(ownerCtx: Context, options: ReseedAgentOptions): Promise<AgentHandle>
 }
 
 /** Thrown when create/resume is called before an agent factory is registered. */
@@ -427,6 +482,23 @@ export class AgentRegistry extends Service {
     const receiver = getTraceable(ownerCtx, target)
     // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply intentionally supplies the caller-traced receiver
     return Reflect.apply(target.resume, receiver, [ownerCtx, options])
+  }
+
+  /**
+   * Rebuild a live agent in place on a truncated prefix of its own session log
+   * through the registered factory. Rejects if no factory is registered; the
+   * factory rejects when no live agent has the id, the cut is invalid, or
+   * session persistence is not configured. The resolved {@link AgentHandle}
+   * owns the rebuilt agent; the previous handle is already disposed.
+   * @param options - live identity, kept prefix length, and optional header/agent/setup overrides.
+   * @returns the rebuilt handle after teardown, truncation, rollback-covered publication, and loop start complete.
+   */
+  async reseed(options: ReseedAgentOptions): Promise<AgentHandle> {
+    const ownerCtx = this.ctx
+    const { target } = this.requireFactory()
+    const receiver = getTraceable(ownerCtx, target)
+    // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply intentionally supplies the caller-traced receiver
+    return Reflect.apply(target.reseedAgent, receiver, [ownerCtx, options])
   }
 
   /**
