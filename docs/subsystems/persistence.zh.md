@@ -360,6 +360,22 @@ abstract inspect(id: SessionId, signal?: AbortSignal): Promise<SessionInspection
 abstract readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[] }>
 
 /**
+ * Rewrite one stored log to exactly its first `keepSeqs` events, physically
+ * dropping every event with `seq >= keepSeqs` — the durability primitive
+ * behind an in-place rerun. The caller must dispose any live owner of the
+ * session first: implementations reject while the session is live, when no
+ * stored session with `id` exists, and when `keepSeqs` is not an integer in
+ * `[0, stored length]`. The session header is unchanged; afterwards a
+ * {@link load}/{@link prepare} observes exactly the kept prefix and an
+ * {@link append} continues at seq `keepSeqs`.
+ * @param _id - the persisted session to truncate (unused by the default).
+ * @param _keepSeqs - number of leading events to keep (unused by the default).
+ * @returns nothing; the default rejects because truncation is unsupported.
+ * @throws when this backend does not support log truncation.
+ */
+truncate(_id: SessionId, _keepSeqs: number): Promise<void>
+
+/**
  * Lightweight listing from metadata, without a full-log parse.
  * @param signal - optional cancellation for backend listing work.
  * @returns one header per materialized session.

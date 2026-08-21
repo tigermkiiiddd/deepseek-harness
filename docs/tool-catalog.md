@@ -17,13 +17,13 @@ This table connects model-visible tool names to the plugin package and service s
 | --- | --- | --- | --- | --- | --- |
 | `@deepseek-ai/dsh-tool-ask-user` | `ask_user_question` | `ctx.tools`, `ctx.userQuestions` | `tool/call`, `tool/result after a UI/provider answers the question` | - | ask_user_question pauses the tool call until the active UI provider returns a human answer. |
 | `@deepseek-ai/dsh-tools` | `run_code` | `ctx.tools`, `ctx.codeRuntime (execution time)`, `ctx.systemPrompt` | `tool/call`, `one tool/code-dispatch-start + tool/code-dispatch pair per bridged sub-call`, `tool/result` | - | Owned by the tool registry as a reserved transport outside filterable capability layers under `mode: code` / `mode: both` (see the Code Mode Agent Note). Under `code` it is the registry's only wire contribution; the other visible capabilities are declared in a generated SDK section in the loaded runtime's language, and a program calls them through bindings scheduled under the native concurrency contract (submission-ordered starts and policy; concurrency-safe bodies overlap up to `maxParallelSubCalls`) that re-enter the complete guarded tool pipeline and link each nested execution to this outer result. |
-| `@deepseek-ai/dsh-plan-mode` | `exit_plan_mode` | `ctx.tools`, `ctx.systemPrompt`, `ctx.userQuestions (execution time, opportunistic)` | `tool/call`, `plan/mode inactive on an approved review`, `tool/result` | - | exit_plan_mode stays in the model-facing schema while planning is inactive so transitions add no tool-catalog churn on top of the plan-policy change. Its execute path rejects calls outside plan mode; in plan mode it presents the plan over the user-questions seam (approve / keep planning with feedback), and approval logs plan mode inactive at the step boundary. |
+| `@deepseek-ai/dsh-plan-mode` | `enter_plan_mode`, `exit_plan_mode` | `ctx.tools`, `ctx.systemPrompt`, `ctx.userQuestions (execution time, opportunistic)` | `tool/call`, `plan/mode inactive on an approved review`, `tool/result` | - | exit_plan_mode stays in the model-facing schema while planning is inactive so transitions add no tool-catalog churn on top of the plan-policy change. Its execute path rejects calls outside plan mode; in plan mode it presents the plan over the user-questions seam (approve / keep planning with feedback), and approval logs plan mode inactive at the step boundary. |
 | `@deepseek-ai/dsh-tool-bash` | `bash` | `ctx.tools`, `ctx.shell`, `ctx.systemPrompt`, `ctx.shellEnv`, `ctx.jobs at call time for run_in_background` | `tool/call`, `tool/result` | - | The bash tool is the model-facing consumer of the bash executor seam. A `run_in_background` run registers with the generic `ctx.jobs` runtime and is collected/stopped through the `job_*` tools from `@deepseek-ai/dsh-tool-jobs`; the `enableRunInBackground` config (default true) removes the parameter entirely when disabled. |
 | `@deepseek-ai/dsh-tool-pwsh` | `pwsh` | `ctx.tools`, `ctx.shell`, `ctx.systemPrompt`, `ctx.shellEnv`, `ctx.jobs at call time for run_in_background` | `tool/call`, `tool/result` | - | The pwsh tool is the PowerShell-dialect consumer of the bash executor seam for Windows compositions (a PowerShell executor such as `@deepseek-ai/dsh-pwsh-local` backs `ctx.shell`); it mirrors the bash tool call-for-call minus sandbox controls — `run_in_background` runs register with the generic `ctx.jobs` runtime and are collected/stopped through the `job_*` tools, and the managed `DSH_*` environment comes from `@deepseek-ai/dsh-shell-env`. Each call runs in a fresh process (no persistent PTY session), with native `C:\...` paths and `$env:NAME` variables. |
 | `@deepseek-ai/dsh-tool-cordis` | `cordis_define`, `cordis_inspect_list`, `cordis_inspect_query`, `cordis_inspect_self`, `cordis_run`, `cordis_stop`, `cordis_undefine` | `ctx.tools`, `ctx.dynamicCordisRunner` | `tool/call`, `tool/result`, `process-local dynamic package lifecycle` | - | Not in any shipped tree (a deliberate opt-in — dynamic package code reaches the real runtime, see .agents/notes/implemented/feature/2026-07-08-self-referential-cordis-toolset.md). The toolset injects `ctx.dynamicCordisRunner` from `@deepseek-ai/dsh-cordis-host-runner`, which owns the definition registry and the vm sandbox; a composition missing it never activates the tools. A running package may register ADDITIONAL model-visible tools until it is stopped, undefined, or DSH restarts; a full changed request header logs those tool-set changes. |
 | `@deepseek-ai/dsh-tool-bash-persistent` | `bash` | `ctx.tools`, `ctx.terminals`, `an owning Agent at execution time` | `tool/call`, `PTY shell state`, `tool/result` | - | One owner-isolated persistent bash tool; deployment composition supplies the PTY backend and may override the model-facing environment description. |
 | `@deepseek-ai/dsh-tool-str-replace-editor` | `str_replace_editor` | `ctx.tools`, `ctx.fs` | `tool/call`, `fs/observed after view presence/absence, edit absence, or successful mutation`, `tool/result` | - | Standalone view/create/unique literal replace/line insert tool over the filesystem seam; it composes with any shell or terminal API. |
-| `@deepseek-ai/dsh-tool-fs` | `edit`, `read`, `read_image`, `write` | `ctx.tools`, `ctx.fs`, `ctx.systemPrompt`, `ctx.attachments (read_image registration)`, `ctx.llm + an image-capable route (read_image execution)` | `tool/call`, `fs/write-intent or fs/edit-intent for mutations`, `fs/observed after read presence/absence or successful file operation`, `durable attachment (read_image)`, `tool/result` | - | The read-before-write/edit policy is added by `@deepseek-ai/dsh-fs-observation-policy` (an `fs/*` event-gate plugin, no schema change); a deployment that loads these tools is expected to also load it. `read_image` is not registered without `ctx.attachments`; its schema is route-independent, and execution refuses unless the exact routed model declares image input. |
+| `@deepseek-ai/dsh-tool-fs` | `edit`, `read`, `read_image`, `set_cwd`, `write` | `ctx.tools`, `ctx.fs`, `ctx.systemPrompt`, `ctx.attachments (read_image registration)`, `ctx.llm + an image-capable route (read_image execution)` | `tool/call`, `fs/write-intent or fs/edit-intent for mutations`, `fs/observed after read presence/absence or successful file operation`, `durable attachment (read_image)`, `tool/result` | - | The read-before-write/edit policy is added by `@deepseek-ai/dsh-fs-observation-policy` (an `fs/*` event-gate plugin, no schema change); a deployment that loads these tools is expected to also load it. `read_image` is not registered without `ctx.attachments`; its schema is route-independent, and execution refuses unless the exact routed model declares image input. |
 | `@deepseek-ai/dsh-tool-fs-search` | `glob`, `grep` | `ctx.tools`, `ctx.subprocess`, `ctx.systemPrompt` | `tool/call`, `tool/result` | - | glob and grep are unconditional discovery tools that spawn the packaged ripgrep binary (`@vscode/ripgrep`) through ctx.subprocess as ordinary foreground calls (never background jobs) — no host `rg` install and no shell layer. The catalog uses `sampleOverCapGlobResults: true`; deployments must choose that behavior explicitly. Capped results save the complete formatted list through the optional ctx.spillStore backend; returned locators are follow-up-readable/searchable when the backend exposes local paths in co-located deployments. |
 | `@deepseek-ai/dsh-tool-terminal` | `terminal_close`, `terminal_list`, `terminal_open`, `terminal_read`, `terminal_send`, `terminal_signal` | `ctx.tools`, `ctx.terminals`, `ctx.systemPrompt`, `ctx.jobs at call time for run_in_background` | `tool/call`, `tool/result` | - | The six terminal tools are opt-in and complement one-shot shell/filesystem tools. `terminal_send(run_in_background: true)` registers with `ctx.jobs`; TUI, named key sequences, BEL, resize, auto-start, and cross-agent sharing are absent from the schema. |
 | `@deepseek-ai/dsh-tool-goal` | `create_goal`, `get_goal`, `update_goal` | `ctx.tools`, `ctx.agents`, `ctx.goals`, `ctx.systemPrompt`, `a calling Agent in an authorized open turn` | `tool/call`, `goal/change for mutations`, `tool/result` | - | create, edit, pause, and resume require direct-human root authority; complete and blocked also accept the exact current goal round. The default blocked lower bound is three admitted rounds. |
@@ -37,6 +37,7 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-tool-subagent-control` | `interrupt_agent`, `list_agents`, `send_message` | `ctx.tools`, `ctx.subagents`, `ctx.agents and ctx.sessionProjections (list_agents only)` | `tool/call`, `tool/result`, `child session events through ctx.subagents` | - | The globally named control tools over continuable background subagents: provider-bound `tool-subagent` instances register distinct delegation tools, while this package registers `send_message` and `interrupt_agent` once, plus `list_agents` from its separately loaded `/list-agents` plugin (whose catalog rows use the sessionProjections and live Agent registries). |
 | `@deepseek-ai/dsh-tool-subagent-report` | `report` | `ctx.subagents`, `ctx.systemPrompt`, `a live continuable in-process child Agent` | `tool/call`, `tool/result`, `a user-role message in the direct parent session` | - | Registered per continuable in-process child rather than globally, so this schema is visible only inside such a child and survives its global `toolFilter`. The same contribution installs the child-scoped `tool:report` prompt section, which this catalog does not render. The parent-facing `send_message` tool is installed independently. |
 | `@deepseek-ai/dsh-tool-jobs` | `job_kill`, `job_list`, `job_output` | `ctx.tools`, `ctx.jobs`, `ctx.systemPrompt` | `tool/call`, `tool/result`, `user/message via agent.inject() for background completion notices` | - | The kind-agnostic background-job controller: background bash commands, PTY sends, and subagents are read, listed, and killed through the same three tools. Loading the plugin attaches the controller that arms producers' `ctx.jobs.start()`. |
+| `@deepseek-ai/dsh-tool-team` | `member_add`, `member_chat`, `member_remove`, `member_restart`, `member_sessions`, `member_start`, `member_stop` | `ctx.tools`, `ctx.team` | `tool/call`, `tool/result` | - | The permanent team capability: enumerate members and their topics, chat with a member, mutate the durable roster, and drive the member lifecycle (start / stop / restart). The web-app bundle mounts the row in the host plane, so every session sees these tools without any preset. |
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`, `owning Agent session` | `tool/call`, `todo/write`, `tool/result` | - | todo_write is session-owned state; UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task. |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`, `ctx.workflowEngine`, `ctx.systemPrompt`, `a calling Agent (exec.agent parents the script children)` | `tool/call`, `tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`, `web_search` | `ctx.tools`, `ctx.web`, `ctx.systemPrompt` | `tool/call`, `tool/result` | - | web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps. |
@@ -47,7 +48,7 @@ This table connects model-visible tool names to the plugin package and service s
 
 ### `ask_user_question`
 
-Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding. Send one or more questions, each with a stable id that will be echoed in the answer.
+Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding. Ask only when the answer would change what you do next — do not ask for information already present in the conversation, and first check whether the user's message itself is the content to operate on, such as text to translate or summarize. Send one or more questions, each with a stable id that will be echoed in the answer.
 
 ```json
 {
@@ -151,9 +152,22 @@ Owned by the tool registry as a reserved transport outside filterable capability
 
 ## `@deepseek-ai/dsh-plan-mode`
 
+### `enter_plan_mode`
+
+Enter plan mode for complex or multi-step work: explore and design first, then present the plan through exit_plan_mode for user approval before making any changes. Already in plan mode, this call is a no-op. Plan mode is unavailable to delegated subagents.
+
+```json
+{
+  "type": "object",
+  "properties": {}
+}
+```
+
+Source: [`packages/plan/plan-mode/src/index.ts`](../packages/plan/plan-mode/src/index.ts)
+
 ### `exit_plan_mode`
 
-Use only in plan mode. Present your plan for the user's review and, on approval, leave plan mode. Send the COMPLETE plan as markdown, starting with a # heading that names it. The user may approve (carry out the plan from your next step) or keep planning — their feedback comes back in the tool result; revise and present again.
+Use only in plan mode. Present your plan for the user's review and, on approval, leave plan mode. Send the COMPLETE plan as markdown, starting with a # heading that names it. The user may approve (carry out the plan from your next step) or keep planning — their feedback comes back in the tool result; revise and present again. An approved plan is recorded to docs/plans/ in your working directory as a durable work trace. Not in plan mode? Enter it with enter_plan_mode.
 
 ```json
 {
@@ -680,6 +694,27 @@ Read a PNG/JPEG/WebP/GIF file and return the image itself. Requires the current 
   },
   "required": [
     "file_path"
+  ]
+}
+```
+
+Source: [`packages/fs/tool-fs/src/index.ts`](../packages/fs/tool-fs/src/index.ts)
+
+### `set_cwd`
+
+Set the working directory a free session resolves relative paths against. Absolute path required. Rejects fixed (immutable-cwd) sessions. Under workspace-write file policy this directory is also the writable boundary: moving the cwd moves what the session may modify.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "cwd": {
+      "type": "string",
+      "description": "The absolute directory to switch to."
+    }
+  },
+  "required": [
+    "cwd"
   ]
 }
 ```
@@ -1698,6 +1733,216 @@ Read a background job. Stream jobs return only output since the previous read; f
 Source: [`packages/jobs/tool-jobs/src/index.ts`](../packages/jobs/tool-jobs/src/index.ts)
 
 The kind-agnostic background-job controller: background bash commands, PTY sends, and subagents are read, listed, and killed through the same three tools. Loading the plugin attaches the controller that arms producers' `ctx.jobs.start()`.
+
+<a id="deepseek-aidsh-tool-team"></a>
+
+## `@deepseek-ai/dsh-tool-team`
+
+### `member_add`
+
+Add a new team member at runtime: spawn its ACP agent process, persist it in the team roster, and join it to the team. The member is re-spawned automatically after a host restart (unless autostart is false). Use member_remove to tear it down and forget it.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "Stable member id, unique within the team."
+    },
+    "title": {
+      "type": "string",
+      "description": "Display name shown in the team view."
+    },
+    "description": {
+      "type": "string",
+      "description": "One-line role or persona description."
+    },
+    "kind": {
+      "type": "string",
+      "description": "Member kind: \"dsh\" relaunches the current harness installation as an ACP server; command and args must be omitted.",
+      "enum": [
+        "dsh"
+      ]
+    },
+    "command": {
+      "type": "string",
+      "description": "Executable that runs an ACP agent (any ACP server). Required unless kind is \"dsh\"."
+    },
+    "args": {
+      "type": "array",
+      "description": "Arguments passed to the member command.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "cwd": {
+      "type": "string",
+      "description": "Working directory for the member process and its sessions; omit to use the harness launch directory."
+    },
+    "env": {
+      "type": "object",
+      "description": "Extra environment variables layered over the full parent environment (credentials included); every value must be a string.",
+      "additionalProperties": true
+    },
+    "permission": {
+      "type": "string",
+      "description": "Auto-answer the member's permission prompts with this policy when no GUI subscriber answers them.",
+      "enum": [
+        "allow",
+        "reject"
+      ]
+    },
+    "autostart": {
+      "type": "boolean",
+      "description": "Start the member now and on every host restart (default true)."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+Source: [`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_chat`
+
+Chat with a team member on one of its topics. Pass an existing topic id from member_sessions to continue that conversation, or set new_topic to start a fresh topic on the member. Returns the member's full reply.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to talk to."
+    },
+    "text": {
+      "type": "string",
+      "description": "Your message to the member."
+    },
+    "topic": {
+      "type": "string",
+      "description": "The member's topic id to continue (from member_sessions)."
+    },
+    "new_topic": {
+      "type": "boolean",
+      "description": "Start a new topic on the member instead of continuing one."
+    }
+  },
+  "required": [
+    "member_id",
+    "text"
+  ]
+}
+```
+
+Source: [`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_remove`
+
+Remove a team member: tear down its process, drop it from the roster, and delete its persisted roster record. The member's own sessions stay with the member; adding the same id later spawns a fresh process. A member that is also declared in the deployment config reappears at the next restart.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to remove."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+Source: [`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_restart`
+
+Restart a team member: stop its process, then start it again. Use after a member is offline or misbehaving.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to restart."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+Source: [`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_sessions`
+
+List the team members and each member's own conversation topics. Use the returned topic ids with member_chat to continue a topic or start a new one.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "Optional member id; omit to list every member."
+    }
+  }
+}
+```
+
+Source: [`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_start`
+
+Start a team member: spawn its ACP agent process and complete the protocol handshake. Idempotent — starting a running member settles immediately. Members autostart by default; use this to bring a stopped or failed member back up.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to start."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+Source: [`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_stop`
+
+Stop a team member: tear down its process and return it to offline. The member's own sessions stay with the member and remain listable after a later start.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to stop."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+Source: [`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+The permanent team capability: enumerate members and their topics, chat with a member, mutate the durable roster, and drive the member lifecycle (start / stop / restart). The web-app bundle mounts the row in the host plane, so every session sees these tools without any preset.
 
 <a id="deepseek-aidsh-tool-todo"></a>
 

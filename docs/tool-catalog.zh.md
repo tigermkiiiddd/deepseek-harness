@@ -19,13 +19,13 @@
 | --- | --- | --- | --- | --- | --- |
 | `@deepseek-ai/dsh-tool-ask-user` | `ask_user_question` | `ctx.tools`、`ctx.userQuestions` | `tool/call`、`tool/result after a UI/provider answers the question` | - | ask_user_question 会暂停工具调用，直到当前 UI 提供方返回人类答案。 |
 | `@deepseek-ai/dsh-tools` | `run_code` | `ctx.tools`、`ctx.codeRuntime (execution time)`、`ctx.systemPrompt` | `tool/call`、`one tool/code-dispatch-start + tool/code-dispatch pair per bridged sub-call`、`tool/result` | - | 在 `mode: code`／`mode: both` 下，它由工具注册表所有，作为可过滤能力层之外的保留传输机制（参见 Code Mode Agent Note）。在 `code` 下，它是注册表对协议格式（wire format）的唯一贡献；其他可见能力在使用已加载运行时语言生成的 SDK 章节中声明。程序通过 binding 调用这些能力，调用按照原生并发约定调度：启动顺序和策略遵循提交顺序，并发安全的函数体最多重叠执行 `maxParallelSubCalls` 个。调用会重新进入完整且受守卫保护的工具流水线，并将每个嵌套执行关联到此外层结果。 |
-| `@deepseek-ai/dsh-plan-mode` | `exit_plan_mode` | `ctx.tools`、`ctx.systemPrompt`、`ctx.userQuestions (execution time, opportunistic)` | `tool/call`、`plan/mode inactive on an approved review`、`tool/result` | - | 规划未激活时，exit_plan_mode 仍保留在面向模型的 schema 中，这样状态转换不会在规划策略变更之外额外造成工具目录变动。其执行路径会拒绝规划模式之外的调用；在规划模式下，它通过用户交互 seam 提交计划（批准／根据反馈继续规划），批准后会在步骤边界记录规划模式已停用。 |
+| `@deepseek-ai/dsh-plan-mode` | `enter_plan_mode`、`exit_plan_mode` | `ctx.tools`、`ctx.systemPrompt`、`ctx.userQuestions (execution time, opportunistic)` | `tool/call`、`plan/mode inactive on an approved review`、`tool/result` | - | 规划未激活时，exit_plan_mode 仍保留在面向模型的 schema 中，这样状态转换不会在规划策略变更之外额外造成工具目录变动。其执行路径会拒绝规划模式之外的调用；在规划模式下，它通过用户交互 seam 提交计划（批准／根据反馈继续规划），批准后会在步骤边界记录规划模式已停用。 |
 | `@deepseek-ai/dsh-tool-bash` | `bash` | `ctx.tools`、`ctx.shell`、`ctx.systemPrompt`、`ctx.shellEnv`、`ctx.jobs at call time for run_in_background` | `tool/call`、`tool/result` | - | bash 工具是 bash 执行器 seam 面向模型的消费方。使用 `run_in_background` 的运行会注册到通用 `ctx.jobs` 运行时，并通过 `job_*` 工具（来自 `@deepseek-ai/dsh-tool-jobs`）收集／停止；禁用 `enableRunInBackground` 配置（默认为 true）后，该参数会被完全移除。 |
 | `@deepseek-ai/dsh-tool-pwsh` | `pwsh` | `ctx.tools`、`ctx.shell`、`ctx.systemPrompt`、`ctx.shellEnv`、`ctx.jobs at call time for run_in_background` | `tool/call`、`tool/result` | - | pwsh 工具是 Windows 组合中 bash 执行器 seam 的 PowerShell 方言消费方（由 `@deepseek-ai/dsh-pwsh-local` 等 PowerShell 执行器为 `ctx.shell` 提供后端）；除沙箱接口外，它逐项对应 bash 工具调用。使用 `run_in_background` 的运行会注册到通用 `ctx.jobs` 运行时，并通过 `job_*` 工具收集／停止；托管的 `DSH_*` 环境来自 `@deepseek-ai/dsh-shell-env`。每次调用都在新进程中运行，不使用持久 PTY 会话。路径采用原生 `C:\...` 形式，变量采用 `$env:NAME`。 |
 | `@deepseek-ai/dsh-tool-cordis` | `cordis_define`、`cordis_inspect_list`、`cordis_inspect_query`、`cordis_inspect_self`、`cordis_run`、`cordis_stop`、`cordis_undefine` | `ctx.tools`、`ctx.dynamicCordisRunner` | `tool/call`、`tool/result`、`process-local dynamic package lifecycle` | - | 不在任何随产品发布的树中，需要显式选择启用；动态 Package 代码可以访问真实运行时，见 .agents/notes/implemented/feature/2026-07-08-self-referential-cordis-toolset.md。该工具集注入 `@deepseek-ai/dsh-cordis-host-runner` 提供的 `ctx.dynamicCordisRunner`，后者拥有定义注册表和 vm 沙箱；组合缺少它时这些工具不会激活。运行中的 Package 在停止、undefine 或 DSH 重启前可以注册**额外的**模型可见工具；发生这类工具集变化时，系统会记录完整且有变动的请求头。 |
 | `@deepseek-ai/dsh-tool-bash-persistent` | `bash` | `ctx.tools`、`ctx.terminals`、`an owning Agent at execution time` | `tool/call`、`PTY shell state`、`tool/result` | - | 一个按所有者隔离的持久 bash 工具；部署组合提供 PTY 后端，并可覆盖面向模型的环境描述。 |
 | `@deepseek-ai/dsh-tool-str-replace-editor` | `str_replace_editor` | `ctx.tools`、`ctx.fs` | `tool/call`、`fs/observed after view presence/absence, edit absence, or successful mutation`、`tool/result` | - | 基于文件系统 seam 的独立查看／创建／唯一字面量替换／按行插入工具；可与任何 shell 或终端接口组合。 |
-| `@deepseek-ai/dsh-tool-fs` | `edit`、`read`、`read_image`、`write` | `ctx.tools`、`ctx.fs`、`ctx.systemPrompt`、`ctx.attachments (read_image registration)`、`ctx.llm + an image-capable route (read_image execution)` | `tool/call`、`fs/write-intent or fs/edit-intent for mutations`、`fs/observed after read presence/absence or successful file operation`、`durable attachment (read_image)`、`tool/result` | - | 先读后写／编辑策略由 `@deepseek-ai/dsh-fs-observation-policy` 添加；它是一个 `fs/*` 事件门禁插件，不会改变 schema。加载这些工具的部署按预期也应加载该插件。没有 `ctx.attachments` 时 `read_image` 不会注册；其 schema 与路由无关，执行时除非确切路由的模型声明图像输入，否则拒绝。 |
+| `@deepseek-ai/dsh-tool-fs` | `edit`、`read`、`read_image`、`set_cwd`、`write` | `ctx.tools`、`ctx.fs`、`ctx.systemPrompt`、`ctx.attachments (read_image registration)`、`ctx.llm + an image-capable route (read_image execution)` | `tool/call`、`fs/write-intent or fs/edit-intent for mutations`、`fs/observed after read presence/absence or successful file operation`、`durable attachment (read_image)`、`tool/result` | - | 先读后写／编辑策略由 `@deepseek-ai/dsh-fs-observation-policy` 添加；它是一个 `fs/*` 事件门禁插件，不会改变 schema。加载这些工具的部署按预期也应加载该插件。没有 `ctx.attachments` 时 `read_image` 不会注册；其 schema 与路由无关，执行时除非确切路由的模型声明图像输入，否则拒绝。 |
 | `@deepseek-ai/dsh-tool-fs-search` | `glob`、`grep` | `ctx.tools`、`ctx.subprocess`、`ctx.systemPrompt` | `tool/call`、`tool/result` | - | glob 和 grep 是无条件可用的发现工具，通过 ctx.subprocess spawn 随包提供的 ripgrep 二进制文件（`@vscode/ripgrep`），并作为普通前台调用运行，绝不作为后台任务；无需在宿主机安装 `rg`，也不经过 shell 层。本目录使用 `sampleOverCapGlobResults: true`；部署必须显式选择该行为。结果超过上限时，会通过可选的 ctx.spillStore 后端保存完整的格式化列表；在共置部署中，如果后端公开本地路径，返回的定位信息可供后续读取／搜索。 |
 | `@deepseek-ai/dsh-tool-terminal` | `terminal_close`、`terminal_list`、`terminal_open`、`terminal_read`、`terminal_send`、`terminal_signal` | `ctx.tools`、`ctx.terminals`、`ctx.systemPrompt`、`ctx.jobs at call time for run_in_background` | `tool/call`、`tool/result` | - | 这 6 个终端工具需要选择启用，用于补充一次性 bash／文件系统工具。`terminal_send(run_in_background: true)` 会注册到 `ctx.jobs`；schema 不包含 TUI、具名按键序列、BEL、调整尺寸、自动启动和跨 agent 共享。 |
 | `@deepseek-ai/dsh-tool-goal` | `create_goal`、`get_goal`、`update_goal` | `ctx.tools`、`ctx.agents`、`ctx.goals`、`ctx.systemPrompt`、`a calling Agent in an authorized open turn` | `tool/call`、`goal/change for mutations`、`tool/result` | - | create、edit、pause 和 resume 要求直接来自人类的根权限；complete 和 blocked 也接受确切的当前 Goal Round。blocked 的默认下限是 3 个获准的 Round。 |
@@ -39,6 +39,7 @@
 | `@deepseek-ai/dsh-tool-subagent-control` | `interrupt_agent`、`list_agents`、`send_message` | `ctx.tools`、`ctx.subagents`、`ctx.agents and ctx.sessionProjections (list_agents only)` | `tool/call`、`tool/result`、`child session events through ctx.subagents` | - | 这些是控制可继续后台 subagent 的全局命名工具：绑定提供方的 `tool-subagent` 实例注册不同的委派工具；本包注册一次 `send_message` 和 `interrupt_agent`，另由 `list_agents` 通过单独加载的 `/list-agents` 插件提供，其目录行使用 sessionProjections 和实时 Agent 注册表。 |
 | `@deepseek-ai/dsh-tool-subagent-report` | `report` | `ctx.subagents`、`ctx.systemPrompt`、`a live continuable in-process child Agent` | `tool/call`、`tool/result`、`a user-role message in the direct parent session` | - | 按可继续的进程内子级注册，而非全局注册，因此该 schema 仅在这种子级内部可见，并且不受其全局 `toolFilter` 影响。同一份贡献还会安装子级作用域的 `tool:report` 系统提示词 section，本目录不渲染该 section。面向父级的 `send_message` 工具单独安装。 |
 | `@deepseek-ai/dsh-tool-jobs` | `job_kill`、`job_list`、`job_output` | `ctx.tools`、`ctx.jobs`、`ctx.systemPrompt` | `tool/call`、`tool/result`、`user/message via agent.inject() for background completion notices` | - | 与任务种类无关的后台任务控制器：后台 bash 命令、PTY 发送和 subagent 都通过相同的 3 个工具读取、列出和终止。加载该插件会挂接控制器，从而启用生产方的 `ctx.jobs.start()`。 |
+| `@deepseek-ai/dsh-tool-team` | `member_add`、`member_chat`、`member_remove`、`member_restart`、`member_sessions`、`member_start`、`member_stop` | `ctx.tools`、`ctx.team` | `tool/call`、`tool/result` | - | 常驻团队能力：枚举成员及其话题、与成员对话、变更持久名册并驱动成员生命周期（start / stop / restart）。web-app bundle 在 host 面挂载该行，因此每个会话无需任何 preset 即可看到这些工具。 |
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`、`owning Agent session` | `tool/call`、`todo/write`、`tool/result` | - | todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为检查清单。`allowParallelInProgress` 是没有默认值的必填项，因此本目录明确选择 `true`，对应描述允许同时存在多个 `in_progress` 项。选择 `false` 的部署会获得同一工具，但描述会要求只能有 1 个活动任务。 |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`、`ctx.workflowEngine`、`ctx.systemPrompt`、`a calling Agent (exec.agent parents the script children)` | `tool/call`、`tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`、`web_search` | `ctx.tools`、`ctx.web`、`ctx.systemPrompt` | `tool/call`、`tool/result` | - | web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可见 schema 在更换后端时保持稳定。 |
@@ -153,9 +154,22 @@ ask_user_question 会暂停工具调用，直到当前 UI 提供方返回人类�
 
 ## `@deepseek-ai/dsh-plan-mode`
 
+### `enter_plan_mode`
+
+在复杂或多步骤任务时进入规划模式：先探索与设计，然后通过 exit_plan_mode 提交计划供用户批准，之后再做任何修改。已处于规划模式时，此调用为空操作。被委派的子代理无法使用规划模式。
+
+```json
+{
+  "type": "object",
+  "properties": {}
+}
+```
+
+来源：[`packages/plan/plan-mode/src/index.ts`](../packages/plan/plan-mode/src/index.ts)
+
 ### `exit_plan_mode`
 
-仅在规划模式下使用。提交计划供用户评审，并在获批后退出规划模式。发送**完整的** Markdown 计划，以一个为计划命名的 # 标题开头。用户可以批准（从你的下一步骤起执行计划），也可以要求继续规划；其反馈会通过工具结果返回，请修改后再次提交。
+仅在规划模式下使用。提交计划供用户评审，并在获批后退出规划模式。发送**完整的** Markdown 计划，以一个为计划命名的 # 标题开头。用户可以批准（从你的下一步骤起执行计划），也可以要求继续规划；其反馈会通过工具结果返回，请修改后再次提交。经批准的计划会作为持久的工作留痕记录到你工作目录下的 docs/plans/。不在规划模式中？用 enter_plan_mode 进入。
 
 ```json
 {
@@ -684,6 +698,27 @@ pwsh 工具是 Windows 组合中 bash 执行器 seam 的 PowerShell 方言消费
   },
   "required": [
     "file_path"
+  ]
+}
+```
+
+来源：[`packages/fs/tool-fs/src/index.ts`](../packages/fs/tool-fs/src/index.ts)
+
+### `set_cwd`
+
+设置自由会话解析相对路径所依据的工作目录。需要绝对路径。拒绝固定（不可变 cwd）会话。在 workspace-write 文件策略下，该目录也是可写边界：移动 cwd 会移动会话可以修改的范围。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "cwd": {
+      "type": "string",
+      "description": "The absolute directory to switch to."
+    }
+  },
+  "required": [
+    "cwd"
   ]
 }
 ```
@@ -1702,6 +1737,216 @@ lsp 工具将提供方选择和语言服务器子进程置于 ctx.lsp 之后，�
 来源：[`packages/jobs/tool-jobs/src/index.ts`](../packages/jobs/tool-jobs/src/index.ts)
 
 与任务种类无关的后台任务控制器：后台 bash 命令、PTY 发送和 subagent 都通过相同的 3 个工具读取、列出和终止。加载该插件会挂接控制器，从而启用生产方的 `ctx.jobs.start()`。
+
+<a id="deepseek-aidsh-tool-team"></a>
+
+## `@deepseek-ai/dsh-tool-team`
+
+### `member_add`
+
+在运行时添加新团队成员：派生其 ACP agent 进程、将其持久化到团队名册并加入团队。宿主重启后成员会自动重新派生（除非 autostart 为 false）。使用 member_remove 拆除并遗忘它。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "Stable member id, unique within the team."
+    },
+    "title": {
+      "type": "string",
+      "description": "Display name shown in the team view."
+    },
+    "description": {
+      "type": "string",
+      "description": "One-line role or persona description."
+    },
+    "kind": {
+      "type": "string",
+      "description": "Member kind: \"dsh\" relaunches the current harness installation as an ACP server; command and args must be omitted.",
+      "enum": [
+        "dsh"
+      ]
+    },
+    "command": {
+      "type": "string",
+      "description": "Executable that runs an ACP agent (any ACP server). Required unless kind is \"dsh\"."
+    },
+    "args": {
+      "type": "array",
+      "description": "Arguments passed to the member command.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "cwd": {
+      "type": "string",
+      "description": "Working directory for the member process and its sessions; omit to use the harness launch directory."
+    },
+    "env": {
+      "type": "object",
+      "description": "Extra environment variables layered over the full parent environment (credentials included); every value must be a string.",
+      "additionalProperties": true
+    },
+    "permission": {
+      "type": "string",
+      "description": "Auto-answer the member's permission prompts with this policy when no GUI subscriber answers them.",
+      "enum": [
+        "allow",
+        "reject"
+      ]
+    },
+    "autostart": {
+      "type": "boolean",
+      "description": "Start the member now and on every host restart (default true)."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+来源：[`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_chat`
+
+在成员的一个话题上与该成员对话。传入 member_sessions 返回的现有话题 id 可继续该对话，或设置 new_topic 在该成员上新建话题。返回成员的完整回复。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to talk to."
+    },
+    "text": {
+      "type": "string",
+      "description": "Your message to the member."
+    },
+    "topic": {
+      "type": "string",
+      "description": "The member's topic id to continue (from member_sessions)."
+    },
+    "new_topic": {
+      "type": "boolean",
+      "description": "Start a new topic on the member instead of continuing one."
+    }
+  },
+  "required": [
+    "member_id",
+    "text"
+  ]
+}
+```
+
+来源：[`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_remove`
+
+移除团队成员：拆除其进程、将其从名册中删除并删除其持久化名册记录。成员的会话留在成员自身；之后添加相同 id 会派生全新进程。部署配置中同时声明的成员会在下次重启时重新出现。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to remove."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+来源：[`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_restart`
+
+重启团队成员：先停止其进程，再重新启动。用于成员离线或行为异常之后。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to restart."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+来源：[`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_sessions`
+
+列出团队成员及每个成员自己的对话话题。将返回的话题 id 与 member_chat 配合使用，可继续话题或新建话题。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "Optional member id; omit to list every member."
+    }
+  }
+}
+```
+
+来源：[`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_start`
+
+启动团队成员：派生其 ACP agent 进程并完成协议握手。幂等——启动正在运行的成员会立即结算。成员默认 autostart；用此工具把已停止或失败的成员重新拉起。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to start."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+来源：[`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_stop`
+
+停止团队成员：拆除其进程并回到 idle。成员的会话留在成员自身，之后再次启动仍可列出。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to stop."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+来源：[`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+常驻团队能力：枚举成员及其话题、与成员对话、变更持久名册并驱动成员生命周期（start / stop / restart）。web-app bundle 在 host 面挂载该行，因此每个会话无需任何 preset 即可看到这些工具。
 
 <a id="deepseek-aidsh-tool-todo"></a>
 

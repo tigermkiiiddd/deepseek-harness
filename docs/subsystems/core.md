@@ -373,11 +373,22 @@ async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<Agent
  * @returns the published handle.
  */
 async resume(ownerCtx: Context, options: ResumeAgentOptions): Promise<AgentHandle>
+
+/**
+ * Rebuild the live agent with one exact identity in place on a truncated
+ * prefix of its own log: capture the prefix and header BEFORE teardown,
+ * dispose the live handle, truncate the durable log, and re-create through
+ * the same unpublished setup transaction as {@link createAgent}.
+ * @param ownerCtx - caller context that structurally owns the rebuilt lifecycle.
+ * @param options - live identity, kept prefix length, loop options, and setup.
+ * @returns the published rebuilt handle.
+ */
+async reseedAgent(ownerCtx: Context, options: ReseedAgentOptions): Promise<AgentHandle>
 ```
 
 Types: [SessionHeader](persistence.md)
 
-Source: [`packages/core/agent-loop/src/index.ts:296`](../../packages/core/agent-loop/src/index.ts)
+Source: [`packages/core/agent-loop/src/index.ts:317`](../../packages/core/agent-loop/src/index.ts)
 
 <a id="ctxagentpresets--agentpresets"></a>
 
@@ -659,6 +670,17 @@ async create(options: CreateAgentOptions): Promise<AgentHandle>
 async resume(options: ResumeAgentOptions): Promise<AgentHandle>
 
 /**
+ * Rebuild a live agent in place on a truncated prefix of its own session log
+ * through the registered factory. Rejects if no factory is registered; the
+ * factory rejects when no live agent has the id, the cut is invalid, or
+ * session persistence is not configured. The resolved {@link AgentHandle}
+ * owns the rebuilt agent; the previous handle is already disposed.
+ * @param options - live identity, kept prefix length, and optional header/agent/setup overrides.
+ * @returns the rebuilt handle after teardown, truncation, rollback-covered publication, and loop start complete.
+ */
+async reseed(options: ReseedAgentOptions): Promise<AgentHandle>
+
+/**
  * Register a live agent. Throws if an agent with the same id is already
  * registered. Emits `agent/created` on registration and `agent/disposed`
  * when the calling fiber is disposed — both with the agent's scope carrier
@@ -736,7 +758,7 @@ list(): Agent[]
 roots(): Agent[]
 ```
 
-Source: [`packages/core/agent/src/index.ts:256`](../../packages/core/agent/src/index.ts)
+Source: [`packages/core/agent/src/index.ts:311`](../../packages/core/agent/src/index.ts)
 
 <a id="agent-events"></a>
 
@@ -1059,7 +1081,7 @@ A declarative agent entry failed before it could publish a live agent. Consumers
 'agent-loop/config-start-failed'(payload: { sessionId: SessionId; error: unknown }): void
 ```
 
-Source: [`packages/core/agent-loop/src/index.ts:183`](../../packages/core/agent-loop/src/index.ts)
+Source: [`packages/core/agent-loop/src/index.ts:204`](../../packages/core/agent-loop/src/index.ts)
 
 <a id="agent-preset-events"></a>
 
