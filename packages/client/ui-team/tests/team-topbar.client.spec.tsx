@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createSnapshotStore, type ISessions, type SessionId, type SessionListState, type SessionSummary, type WorkspaceListState } from '@deepseek-ai/dsh-client-runtime/client'
-import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-web-react'
+import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-test-runtime'
 import { TeamTopbar } from '../src/client/TeamTopbar.tsx'
 import type { TeamTopbarProps } from '../src/client/TeamTopbar.tsx'
 import type { TeamAddMemberRequest } from '@deepseek-ai/dsh-client-connection/client'
@@ -15,8 +15,8 @@ import { TeamController } from '../src/client/team-store.ts'
 afterEach(cleanup)
 
 const MEMBERS = [
-  { id: 'writer', title: 'Writer', description: undefined as string | undefined, status: 'idle', capabilities: undefined, autostart: true, lastError: undefined },
-  { id: 'reviewer', title: 'Reviewer', description: undefined, status: 'running' as const, capabilities: undefined, autostart: true, lastError: undefined },
+  { id: 'writer', title: 'Writer', description: undefined as string | undefined, kind: undefined as 'dsh' | undefined, status: 'idle', capabilities: undefined, autostart: true, lastError: undefined },
+  { id: 'reviewer', title: 'Reviewer', description: undefined, kind: undefined as 'dsh' | undefined, status: 'running' as const, capabilities: undefined, autostart: true, lastError: undefined },
 ]
 
 function stubFacade(overrides: Partial<TeamFacade> = {}): TeamFacade {
@@ -28,7 +28,7 @@ function stubFacade(overrides: Partial<TeamFacade> = {}): TeamFacade {
     sessions: vi.fn(async () => [{ sessionId: 'topic-1', cwd: '' }]),
     newSession: vi.fn(async () => 'topic-1'),
     addMember: vi.fn(async (config: TeamAddMemberRequest) => ({
-      id: config.id, title: config.title ?? config.id, description: undefined, status: 'idle' as const,
+      id: config.id, title: config.title ?? config.id, description: undefined, kind: undefined as 'dsh' | undefined, status: 'idle' as const,
       capabilities: undefined, autostart: true, lastError: undefined,
     })),
     removeMember: vi.fn(async () => undefined),
@@ -186,10 +186,10 @@ describe('TeamTopbar', () => {
   it('paints distinct status classes for idle, running, failed, and offline members', async () => {
     const team = stubFacade({
       list: vi.fn(async () => [
-        { id: 'i', title: 'I', description: undefined, status: 'idle' as const, capabilities: undefined, autostart: true, lastError: undefined },
-        { id: 'r', title: 'R', description: undefined, status: 'running' as const, capabilities: undefined, autostart: true, lastError: undefined },
-        { id: 'f', title: 'F', description: undefined, status: 'failed' as const, capabilities: undefined, autostart: true, lastError: undefined },
-        { id: 'o', title: 'O', description: undefined, status: 'offline' as const, capabilities: undefined, autostart: true, lastError: undefined },
+        { id: 'i', title: 'I', description: undefined, kind: undefined as 'dsh' | undefined, status: 'idle' as const, capabilities: undefined, autostart: true, lastError: undefined },
+        { id: 'r', title: 'R', description: undefined, kind: undefined as 'dsh' | undefined, status: 'running' as const, capabilities: undefined, autostart: true, lastError: undefined },
+        { id: 'f', title: 'F', description: undefined, kind: undefined as 'dsh' | undefined, status: 'failed' as const, capabilities: undefined, autostart: true, lastError: undefined },
+        { id: 'o', title: 'O', description: undefined, kind: undefined as 'dsh' | undefined, status: 'offline' as const, capabilities: undefined, autostart: true, lastError: undefined },
       ]),
     })
     mount(team)

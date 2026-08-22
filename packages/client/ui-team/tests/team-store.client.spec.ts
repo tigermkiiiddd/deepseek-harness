@@ -9,6 +9,7 @@ const member = (overrides: Partial<TeamMemberView> = {}): TeamMemberView => ({
   id: 'architect',
   title: '架构师',
   description: undefined,
+  kind: undefined,
   status: 'running',
   capabilities: undefined,
   autostart: true,
@@ -127,7 +128,7 @@ describe('TeamController', () => {
     let resolveSessions: ((value: { sessionId: string; cwd: string }[]) => void) | undefined
     const sessions = sessionsDouble()
     const api = facade({
-      sessions: vi.fn(() => new Promise((resolve) => { resolveSessions = resolve })),
+      sessions: vi.fn((): Promise<{ sessionId: string; cwd: string }[]> => new Promise((resolve) => { resolveSessions = resolve })),
     })
     const controller = new TeamController(api, sessions)
     controller.openMember('architect')

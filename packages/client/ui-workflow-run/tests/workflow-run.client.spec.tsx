@@ -282,6 +282,7 @@ function panelProps(data: WorkflowRunChatData, sessions = listState(), openSessi
   return {
     node: node(data),
     sessionId: PARENT_ID,
+    rerunUserMessage: vi.fn(),
     useSessions: selector => selector(sessions),
     useSession: (() => undefined) as WorkflowRunPanelProps['useSession'],
     useProjection: () => undefined,

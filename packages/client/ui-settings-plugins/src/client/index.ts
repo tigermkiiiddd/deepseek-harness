@@ -168,8 +168,8 @@ export function apply(ctx: ClientContext): void {
     }, WebSearchCard)
     yield ctx.slots.register({
       name: 'settings.plugin.item',
-      id: 'web-search-exa',
-      order: 30,
+      key: 'web-search-exa',
+      priority: 30,
       locale: NS,
       inject: () => webSearchExa.inject(),
     }, WebSearchExaCard)

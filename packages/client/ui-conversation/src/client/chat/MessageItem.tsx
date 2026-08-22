@@ -215,7 +215,7 @@ function projectUserText(text: string, sessionLabels: readonly string[]): ReactN
 
 /** Right-aligned bubble shared by user and steering rows. */
 function UserStyleBubble({
-  content, renderMessageImages, actions, pending = false, referenceLabels = [], t,
+  content, renderMessageImages, actions, editor, pending = false, referenceLabels = [], t,
 }: {
   content: readonly unknown[]
   renderMessageImages: ChatNodeOwnerProps['renderMessageImages']
@@ -282,7 +282,7 @@ export function PendingSteeringBubble({ content, renderMessageImages, t }: {
 
 /** User and admitted-steering keyed Chat renderer. */
 export const UserMessageNodeView = memo(function UserMessageNodeView({
-  node, renderMessageImages, t,
+  node, renderMessageImages, rerunUserMessage, t,
 }: ChatNodeViewProps<'user' | 'steering'>) {
   const data = node.data
   // Non-null = re-edit mode: the string seeds the in-place editor draft.

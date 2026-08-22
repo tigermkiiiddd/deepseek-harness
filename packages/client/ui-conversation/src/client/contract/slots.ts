@@ -421,6 +421,8 @@ export interface ChatNodeOwnerProps {
   openFile: (path: string) => void
   inspectCall: (callId: CallId) => void
   forkAt: (seq: number) => void
+  /** Re-run one settled user message verbatim, or with edited text (see {@link ChatViewInjected.rerunUserMessage}). */
+  rerunUserMessage: (seq: number, text: string) => void
   /** Render a historical image group through the attachment slot. */
   renderMessageImages: RenderMessageImages
   fileMentions: (owner: TurnTailOwnerProps) => MarkdownFileMentions | undefined

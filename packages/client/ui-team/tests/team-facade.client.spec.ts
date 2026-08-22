@@ -18,7 +18,7 @@ function fail(message: string): Promise<RpcResponse<never>> {
 }
 
 const memberView = (id: string, title: string, status: string) => ({
-  id, title, description: undefined as string | undefined, status,
+  id, title, description: undefined as string | undefined, kind: undefined as 'dsh' | undefined, status,
   capabilities: undefined, autostart: true, lastError: undefined,
 })
 
