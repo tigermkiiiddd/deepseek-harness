@@ -14,7 +14,7 @@ import {
 } from '@agentclientprotocol/sdk'
 import AttachmentStore, { AttachmentError, AttachmentId } from '@deepseek-ai/dsh-attachment'
 import type { ImageAttachmentLimits, ImageAttachmentRef, SaveImageAttachment, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
-import { type GenerateOptions, LlmAdapter, type LlmResolvedModelInfo, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import { type GenerateOptions, LlmAdapter, CallId, type LlmResolvedModelInfo, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
@@ -28,6 +28,7 @@ class MockAdapter extends LlmAdapter {
   constructor(
     private readonly script: (StreamChunk[] | 'hang')[],
     private readonly imageCapable: boolean,
+    private readonly contextWindow: number | undefined,
   ) {
     super()
   }
@@ -35,15 +36,6 @@ class MockAdapter extends LlmAdapter {
   override providerInfo(provider: string) {
     if (provider !== 'mock') throw new Error(`MockAdapter: unknown provider ${provider}`)
     return { id: 'mock', name: 'Mock' }
-  }
-
-  override resolveModel(provider: string, model: string) {
-    return Promise.resolve({
-      provider,
-      id: model,
-      name: model,
-      ...this.contextWindow === undefined ? {} : { context: { contextWindow: this.contextWindow } },
-    })
   }
 
   override listModels(provider: string) {
@@ -60,6 +52,7 @@ class MockAdapter extends LlmAdapter {
       provider,
       id: model,
       name: model,
+      ...(this.contextWindow === undefined ? {} : { context: { contextWindow: this.contextWindow } }),
       inputModalities: this.imageCapable ? ['text', 'image'] : ['text'],
     })
   }
@@ -217,8 +210,14 @@ export async function makeBridgeHarness(options: {
   persona?: string
   imageCapable?: boolean
   attachments?: boolean
+  contextWindow?: number
+  persistence?: PersistenceFixture
 } = {}): Promise<BridgeHarness> {
-  const adapter = new MockAdapter(options.script ?? [], options.imageCapable === true)
+  const adapter = new MockAdapter(
+    options.script ?? [],
+    options.imageCapable === true,
+    options.contextWindow,
+  )
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: options.persona ?? '' } })
   if (options.attachments !== false) await ctx.plugin(MemoryAttachmentStore)

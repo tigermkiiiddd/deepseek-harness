@@ -67,11 +67,12 @@ import {
   type AuthenticateRequest,
   type InitializeRequest,
   type InitializeResponse,
+  type ListSessionsRequest,
+  type ListSessionsResponse,
   type NewSessionRequest,
   type NewSessionResponse,
   type PromptRequest,
   type PromptResponse,
-  type SessionInfo,
   type StopReason,
 } from '@agentclientprotocol/sdk'
 
@@ -120,7 +121,7 @@ function makeAgent(conn: AgentSideConnection): Agent {
         authMethods: [],
       })
     },
-    async listSessions(params?: { cwd?: string }): Promise<{ sessions: SessionInfo[] }> {
+    async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
       // The mock's persisted topic set: the fixed session id plus any extras.
       // Like a real agent, topics belong to one workspace: a cwd filter that
       // names another workspace returns nothing.

@@ -997,7 +997,9 @@ describe('exit_plan_mode', () => {
       expect(readFileSync(path.join(root, 'docs', 'plans', files[0]!), 'utf8')).toBe(plan)
       const value = result.value as { approved: true; path?: string }
       expect(value.path).toContain(files[0]!)
-      expect(result.content[0]?.text).toBe(`Plan approved and recorded to ${value.path} — plan mode exited; carry out the plan starting with your next step.`)
+      const first = result.content[0]
+      if (first?.type !== 'text') throw new Error('expected text content block')
+      expect(first.text).toBe(`Plan approved and recorded to ${value.path} — plan mode exited; carry out the plan starting with your next step.`)
     })
 
     it('keeps a CJK heading readable in the recorded filename', async () => {

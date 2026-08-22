@@ -43,6 +43,7 @@ import { SessionId, type SessionEvent, type SessionHeader, type TurnEndReason } 
 // Side-effect type import: declaration-merges the approval waterfall answered below.
 import type {} from '@deepseek-ai/dsh-user-approval'
 import { AcpContentError, admitAcpPrompt, assistantBlockToAcp, supportsAcpImagePrompts } from './content.ts'
+import { thoughtToChunk, toolCallToUpdate, toolResultToUpdate, todosToPlan, usageToUpdate } from './fidelity.ts'
 import { turnEndToStopReason } from './codec.ts'
 
 export const name = 'acp'
@@ -142,7 +143,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
    * thought, tool-call, plan, and usage updates; every other client gets the
    * unchanged committed-text automation stream.
    */
-  let fullFidelity = false
+  const fullFidelity = false
   let conn: AgentSideConnection
   let imagePromptEnabled = false
 
@@ -171,6 +172,42 @@ export function apply(ctx: Context, config: AcpConfig): void {
       logger.warn(`acp: session/update failed: ${String(error)}`)
     }
     /* v8 ignore stop */
+  }
+
+  /**
+   * Route one harness event to the full-fidelity wire for a connection that
+   * negotiated rich updates. Emits per-event thought, usage, tool, and plan
+   * chunks; the committed assistant stream still flows through the automation
+   * path so wire order matches log order. Reasoning precedes usage so the
+   * client sees a step's thought before its token accounting.
+   * @param record - the session whose wire the updates target.
+   * @param event - the harness session event to project.
+   */
+  const emitFullFidelity = (record: SessionRecord, event: SessionEvent): void => {
+    const sessionId = record.agent.session.id
+    switch (event.type) {
+      case 'assistant/message': {
+        for (const block of event.data.message.content) {
+          if (block.type === 'reasoning') notify({ sessionId, update: thoughtToChunk(block.text) })
+        }
+        const contextWindow = record.agent.session.requestContext()?.contextWindow
+        if (event.data.usage !== undefined && contextWindow !== undefined) {
+          notify({ sessionId, update: usageToUpdate(event.data.usage, contextWindow) })
+        }
+        break
+      }
+      case 'tool/call':
+        notify({ sessionId, update: toolCallToUpdate(event.data) })
+        break
+      case 'tool/result':
+        notify({ sessionId, update: toolResultToUpdate(event.data) })
+        break
+      case 'todo/write':
+        notify({ sessionId, update: todosToPlan(event.data.todos) })
+        break
+      default:
+        break
+    }
   }
 
   const rejectFromError = (
@@ -375,6 +412,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
         const record: SessionRecord = {
           agent: handle.agent,
           dispose: () => handle.dispose(),
+          outputTail: Promise.resolve(),
           inflight: undefined,
         }
         sessions.set(sessionId, record)
