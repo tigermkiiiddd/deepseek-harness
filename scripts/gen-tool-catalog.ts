@@ -64,8 +64,6 @@ import type TeamService from '@deepseek-ai/dsh-experimental-agent-team'
 import * as ToolTeam from '@deepseek-ai/dsh-experimental-tool-agent-team'
 import * as ToolTodo from '@deepseek-ai/dsh-tool-todo'
 import * as ToolSubagent from '@deepseek-ai/dsh-tool-subagent'
-import * as ToolTeam from '@deepseek-ai/dsh-tool-team'
-import type { TeamService } from '@deepseek-ai/dsh-team'
 import * as ToolWeb from '@deepseek-ai/dsh-tool-web'
 import VmWorkflowEngine from '@deepseek-ai/dsh-workflow-worker-thread'
 import * as ToolRalph from '@deepseek-ai/dsh-tool-ralph'
@@ -115,35 +113,6 @@ function registerCatalogSubagentProvider(ctx: Context, name: string): void {
     prepareContinuable: () => Promise.reject(new Error('tool-catalog provider cannot prepare a child')),
   }
   ctx.subagents.registerProvider(provider)
-}
-
-/**
- * Schema-harvest stub for the team service: tool-team registers its tools in
- * apply and only reads the service at execution time, so a no-op face is
- * enough for the catalog. Never runs member processes.
- */
-const catalogTeamStub: TeamService = {
-  list: () => [],
-  start: () => Promise.resolve(),
-  stop: () => Promise.resolve(),
-  restart: () => Promise.resolve(),
-  listSessions: () => Promise.resolve([]),
-  loadSession: () => Promise.resolve(),
-  readHistory: () => Promise.resolve([]),
-  readHistoryEvents: () => Promise.resolve([]),
-  isTurnInFlight: () => false,
-  newSession: () => Promise.resolve('harvest-session'),
-  prompt: () => Promise.resolve({ promptId: 'harvest-prompt' }),
-  cancel: () => Promise.resolve(),
-  permission: () => Promise.resolve(),
-  chat: () => Promise.resolve({ text: '', stopReason: 'end_turn' }),
-  addMember: () => Promise.resolve({
-    id: '', title: '', description: undefined, kind: undefined,
-    status: 'idle', capabilities: undefined, autostart: true, lastError: undefined,
-  }),
-  removeMember: () => Promise.resolve(),
-  onPermissionRequest: () => () => {},
-  disposeAll: () => Promise.resolve(),
 }
 
 /** Minted child-scope keys for packages whose tools are never global. */
