@@ -13,6 +13,8 @@ Model-facing team tools over the [`team` service](../team/README.md): enumerate 
 - `member_start` — start a stopped or failed member (spawn + handshake). Idempotent.
 - `member_stop` — stop a member and return it to `idle`; its own sessions stay with the member.
 - `member_restart` — stop then start a member, e.g. after it went `offline`.
+- `member_model` — query or set a member's session **model** configuration. `action: "get"` returns the current model and its selectable value ids; `action: "set"` switches the model to one of those value ids. Requires a `session_id` from `member_sessions` (create one with `member_chat` `new_topic` first). The member must advertise session config options, otherwise the call reports it.
+- `member_provider` — list or set a member's ACP **provider** configuration. `action: "list"` returns the advertised providers; `action: "set"` configures one (`id`, `api_type`, `base_url`, optional `headers`). Requires the member to advertise the `providers` capability, otherwise the call reports it.
 
 ## Model Experience
 
@@ -29,6 +31,20 @@ Each call adds the sent message and the returned reply. Listing adds zero tokens
 #### KV Cache effect
 
 Append-only after the reusable request prefix; member turns are independent requests.
+
+### Model and provider configuration
+
+#### What the model sees
+
+The current model, its selectable value ids, and the advertised providers. `member_model get` returns the live config; `member_model set` and `member_provider set` are writes that the agent validates on its own side.
+
+#### Token effect
+
+`get` and `list` return the full config set each call; `set` returns a one-line confirmation.
+
+#### KV Cache effect
+
+Append-only; each call is an independent request.
 
 ## Known Limitations and Deferred Work
 

@@ -312,6 +312,71 @@ describe('member sessions (owned by the member process)', () => {
     await expect(harness.service.loadSession('architect', 'missing-topic')).rejects.toThrow(/unknown session/)
   })
 
+  describe('session config options', () => {
+    it('reads the cached model selector when the member advertises config options', async () => {
+      const harness = await setup({ members: [mockMember({ env: { MOCK_SESSION_ID: 'topic-model', MOCK_CONFIG_OPTIONS: '1' } })] })
+      await harness.service.start('architect')
+      const sessionId = await harness.service.newSession('architect')
+      const snapshot = await harness.service.getConfig('architect', sessionId)
+      expect(snapshot.model).toBeDefined()
+      expect(snapshot.model?.currentValue).toBe('mock-model-1')
+      expect(snapshot.model?.options.map(option => option.value)).toEqual(['mock-model-1', 'mock-model-2'])
+    })
+
+    it('sets the model and returns the updated snapshot', async () => {
+      const harness = await setup({ members: [mockMember({ env: { MOCK_SESSION_ID: 'topic-model', MOCK_CONFIG_OPTIONS: '1' } })] })
+      await harness.service.start('architect')
+      const sessionId = await harness.service.newSession('architect')
+      const snapshot = await harness.service.setConfig('architect', sessionId, 'model', 'mock-model-2')
+      expect(snapshot.model?.currentValue).toBe('mock-model-2')
+    })
+
+    it('rejects config reads when the member does not advertise config options', async () => {
+      const harness = await setup({ members: [mockMember({ env: { MOCK_SESSION_ID: 'topic-model' } })] })
+      await harness.service.start('architect')
+      const sessionId = await harness.service.newSession('architect')
+      await expect(harness.service.getConfig('architect', sessionId)).rejects.toThrow(/no session config/)
+    })
+  })
+
+  describe('provider configuration', () => {
+    it('lists providers when the member advertises the capability', async () => {
+      const harness = await setup({ members: [mockMember({ env: { MOCK_PROVIDERS: '1' } })] })
+      await harness.service.start('architect')
+      const providers = await harness.service.listProviders('architect')
+      expect(providers.map(provider => provider.id)).toContain('mock-provider')
+      expect(providers[0].current).toEqual({ apiType: 'openai', baseUrl: 'https://mock.example/v1' })
+    })
+
+    it('rejects provider listing when the capability is not advertised', async () => {
+      const harness = await setup({ members: [mockMember()] })
+      await harness.service.start('architect')
+      await expect(harness.service.listProviders('architect')).rejects.toThrow(/does not support provider configuration/)
+    })
+
+    it('sets a provider when the capability is advertised', async () => {
+      const harness = await setup({ members: [mockMember({ env: { MOCK_PROVIDERS: '1' } })] })
+      await harness.service.start('architect')
+      await expect(harness.service.setProvider('architect', {
+        id: 'mock-provider',
+        apiType: 'openai',
+        baseUrl: 'https://example.com/v1',
+        headers: undefined,
+      })).resolves.toBeUndefined()
+    })
+
+    it('rejects provider set when the capability is not advertised', async () => {
+      const harness = await setup({ members: [mockMember()] })
+      await harness.service.start('architect')
+      await expect(harness.service.setProvider('architect', {
+        id: 'mock-provider',
+        apiType: 'openai',
+        baseUrl: 'https://example.com/v1',
+        headers: { Authorization: 'Bearer x' },
+      })).rejects.toThrow(/does not support provider configuration/)
+    })
+  })
+
   it('reads a topic\'s replayed history from the member', async () => {
     const harness = await setup({ members: [mockMember({ env: { MOCK_SESSION_ID: 'topic-design', MOCK_HISTORY: '1' } })] })
     await harness.service.start('architect')

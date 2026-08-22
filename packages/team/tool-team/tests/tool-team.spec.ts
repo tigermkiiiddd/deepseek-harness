@@ -102,6 +102,80 @@ describe('member_chat', () => {
   })
 })
 
+describe('member_model', () => {
+  it('reads the current model and its options when the member advertises config options', async () => {
+    const ctx = await setup({ mockEnv: { MOCK_CONFIG_OPTIONS: '1', MOCK_SESSION_ID: 'topic-model' } })
+    await (ctx.get('team') as team.TeamService).start('architect')
+    const sessionId = await (ctx.get('team') as team.TeamService).newSession('architect')
+    const result = await execute(ctx, 'member_model', { member_id: 'architect', session_id: sessionId, action: 'get' })
+    const output = text(result)
+    expect(output).toContain('current model')
+    expect(output).toContain('mock-model-1')
+    expect(output).toContain('Mock Model 2')
+  })
+
+  it('sets the model to a value id', async () => {
+    const ctx = await setup({ mockEnv: { MOCK_CONFIG_OPTIONS: '1', MOCK_SESSION_ID: 'topic-model' } })
+    await (ctx.get('team') as team.TeamService).start('architect')
+    const sessionId = await (ctx.get('team') as team.TeamService).newSession('architect')
+    const result = await execute(ctx, 'member_model', { member_id: 'architect', session_id: sessionId, action: 'set', value: 'mock-model-2' })
+    expect(text(result)).toContain('Set model to mock-model-2 (Mock Model 2)')
+  })
+
+  it('reports no config when the member does not advertise config options', async () => {
+    const ctx = await setup({ mockEnv: { MOCK_SESSION_ID: 'topic-model' } })
+    await (ctx.get('team') as team.TeamService).start('architect')
+    const sessionId = await (ctx.get('team') as team.TeamService).newSession('architect')
+    const result = await execute(ctx, 'member_model', { member_id: 'architect', session_id: sessionId, action: 'get' })
+    expect(text(result)).toMatch(/no session config/)
+  })
+
+  it('requires value for set', async () => {
+    const ctx = await setup({ mockEnv: { MOCK_CONFIG_OPTIONS: '1' } })
+    await (ctx.get('team') as team.TeamService).start('architect')
+    const result = await execute(ctx, 'member_model', { member_id: 'architect', session_id: 'topic-x', action: 'set' })
+    expect(text(result)).toMatch(/pass value/)
+  })
+})
+
+describe('member_provider', () => {
+  it('lists providers when the member advertises the capability', async () => {
+    const ctx = await setup({ mockEnv: { MOCK_PROVIDERS: '1' } })
+    await (ctx.get('team') as team.TeamService).start('architect')
+    const result = await execute(ctx, 'member_provider', { member_id: 'architect', action: 'list' })
+    const output = text(result)
+    expect(output).toContain('mock-provider')
+    expect(output).toContain('https://mock.example/v1')
+  })
+
+  it('reports providers as unsupported when not advertised', async () => {
+    const ctx = await setup()
+    await (ctx.get('team') as team.TeamService).start('architect')
+    const result = await execute(ctx, 'member_provider', { member_id: 'architect', action: 'list' })
+    expect(text(result)).toMatch(/does not support provider configuration/)
+  })
+
+  it('sets a provider', async () => {
+    const ctx = await setup({ mockEnv: { MOCK_PROVIDERS: '1' } })
+    await (ctx.get('team') as team.TeamService).start('architect')
+    const result = await execute(ctx, 'member_provider', {
+      member_id: 'architect',
+      action: 'set',
+      id: 'mock-provider',
+      api_type: 'openai',
+      base_url: 'https://example.com/v1',
+    })
+    expect(text(result)).toMatch(/Set provider mock-provider/)
+  })
+
+  it('requires id, api_type, and base_url for set', async () => {
+    const ctx = await setup({ mockEnv: { MOCK_PROVIDERS: '1' } })
+    await (ctx.get('team') as team.TeamService).start('architect')
+    const result = await execute(ctx, 'member_provider', { member_id: 'architect', action: 'set', id: 'mock-provider' })
+    expect(text(result)).toMatch(/pass id, api_type, and base_url/)
+  })
+})
+
 describe('member_add', () => {
   it('adds a runtime member and reports its connection status', async () => {
     const ctx = await setup()

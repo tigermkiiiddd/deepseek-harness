@@ -17,7 +17,11 @@ DSH ACP 虚拟团队的成员连接。**成员**是持久 ACP agent 进程，**�
 | `readHistory(id, sessionId)` | 加载一个话题并收集回放的会话历史（成员自己的记录）。成员离线时从持久缓存读取。 |
 | `readHistoryEvents(id, sessionId)` | 加载一个话题并返回全保真转译后的 harness 事件序列（`turn/start`、`user/message`、`assistant/message`、`assistant/chunk`、`tool/call`、`tool/result` 等），用于在主会话 UI 中渲染。成员离线时从持久缓存读取。 |
 | `isTurnInFlight(id, sessionId)` | 成员是否对某个话题仍有进行中的提示轮次。 |
-| `newSession(id)` | 在成员上开新话题（经 ACP `session/new`）。 |
+| `newSession(id)` | 在成员上开新话题（经 ACP `session/new`）。当成员声明会话配置项时，返回话题的配置会被缓存。 |
+| `getConfig(id, sessionId)` | 解析后的会话配置集加模型快捷方式，由创建/加载/更新话题时缓存的项派生。成员对该话题没有缓存项时抛出。 |
+| `setConfig(id, sessionId, configId, value)` | 设置一个会话配置项（如 `"model"`）并返回更新后的快照。值由 agent 校验。 |
+| `listProviders(id)` | 成员声明的 provider，受 `providers` 能力门控。成员在 `initialize` 未声明 `providers` 时抛出。 |
+| `setProvider(id, config)` | 配置一个 provider（成员侧）。agent 在其自身侧保存路由配置；harness 绝不持久化秘密。成员未声明 `providers` 时抛出。 |
 | `prompt(id, sessionId, text)` | 受理一轮并立即返回 prompt id；块以 `team/member-update` 事件流式到达，结算以 `team/turn-end` 到达。 |
 | `cancel(id, sessionId)` | 取消一个会话的在途轮次。 |
 | `permission(id, requestId, outcome)` | 应答一个已上浮的 `session/request_permission` 提示。 |
@@ -79,6 +83,12 @@ DSH ACP 虚拟团队的成员连接。**成员**是持久 ACP agent 进程，**�
 
 不缓存秘密：缓存的更新是成员已经向 harness 展示的会话内容。
 
+### 会话配置项
+
+当成员声明会话配置项时，harness 会缓存其从 `session/new` 与 `session/load` 收到的项，以及任何 `session/config_option_update` 通知，按会话 id 索引。`getConfig` 按需从该缓存派解后的快照（配置项加模型快捷方式）；`setConfig` 经 `session/set_config_option` 写入并刷新缓存。模型快捷方式挑选 UX 类别或 id 为 `"model"` 的项。ACP 没有配置项的能力标志——唯一信号是会话带回的项，因此不声明任何项的成员不会产生缓存，`getConfig` 会抛出。
+
+provider 配置（`providers/list`、`providers/set`）受 `initialize` 中声明的 `providers` 能力门控；缺失时 harness 报告「不支持」。
+
 ## 事件
 
 | 事件 | 载荷 |
@@ -106,7 +116,7 @@ DSH ACP 虚拟团队的成员连接。**成员**是持久 ACP agent 进程，**�
 
 #### 模型看到什么
 
-经 `dsh-tool-team`（`member_sessions` / `member_chat` / `member_*`），调用 agent 看到成员名册、每个成员的话题 id 与成员落定的回复。成员自己的系统提示、工具与历史留在成员进程内；只有用户文本越过，只有落定的助手文本返回。
+经 `dsh-tool-team`（`member_sessions` / `member_chat` / `member_*`），调用 agent 看到成员名册、每个成员的话题 id、成员落定的回复，以及——当成员声明时——会话模型配置与声明的 provider。成员自己的系统提示、工具与历史留在成员进程内；只有用户文本越过，只有落定的助手文本返回。
 
 #### Token 影响
 

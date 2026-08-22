@@ -16,6 +16,41 @@ import type { TeamService } from '@deepseek-ai/dsh-team'
 export const name = 'tool-team'
 export const inject = ['team', 'tools']
 
+/** The model option id the harness targets when setting a member's model. */
+const MODEL_CONFIG_ID = 'model'
+
+/**
+ * Render a value id with its label when the option set names it, so the model
+ * sees `mock-model-1 (Mock Model 1)` rather than a bare id.
+ * @param value - the value id to render.
+ * @param options - the selectable options to look the label up in.
+ * @returns the value id, or the id with its label in parentheses.
+ */
+function optionLabel(
+  value: string,
+  options: readonly { readonly value: string; readonly name: string }[],
+): string {
+  const match = options.find(option => option.value === value)
+  return match === undefined ? value : `${value} (${match.name})`
+}
+
+/**
+ * Validate a headers object: every value must be a string, so no non-string
+ * payload reaches the ACP wire.
+ * @param headers - the raw headers map from tool arguments.
+ * @param tool - the tool name, for the error message.
+ * @returns the headers as a string map, or `undefined` when none were given.
+ */
+function headerRecord(headers: Record<string, unknown>, tool: string): Record<string, string> | undefined {
+  if (headers === undefined || Object.keys(headers).length === 0) return undefined
+  for (const [key, value] of Object.entries(headers)) {
+    if (typeof value !== 'string') {
+      throw new Error(`${tool}: header "${key}" must be a string`)
+    }
+  }
+  return headers as Record<string, string>
+}
+
 /**
  * Mount the member tools.
  * @param ctx - Cordis context carrying the team service and tool registry.
@@ -46,7 +81,8 @@ export function apply(ctx: Context): void {
       const lines: string[] = []
       for (const member of members) {
         const capability = member.capabilities?.loadSession === true ? 'loadSession' : 'no loadSession'
-        lines.push(`## ${member.title} (${member.id}) — ${member.status} — ${capability}${member.description === undefined ? '' : ` — ${member.description}`}`)
+        const model = member.model === undefined ? '' : ` — model: ${member.model}`
+        lines.push(`## ${member.title} (${member.id}) — ${member.status}${model} — ${capability}${member.description === undefined ? '' : ` — ${member.description}`}`)
         if (member.status === 'offline' || member.status === 'failed') {
           lines.push(`  (${member.status === 'failed' && member.lastError !== undefined ? `failed: ${member.lastError}` : 'not running — use member_start to start it'})`)
           continue
@@ -296,6 +332,158 @@ export function apply(ctx: Context): void {
       await team.restart(args.member_id)
       const member = team.list().find(candidate => candidate.id === args.member_id)
       return `Member ${args.member_id} restarted; connection status: ${member?.status ?? 'unknown'}.`
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'member_model',
+    description: 'Query or set a team member\'s session model configuration. Use action "get" to read the current model and its selectable options, or "set" to switch the model to one of those value ids. Requires a session id from member_sessions; create one with member_chat new_topic first. The member must advertise session config options, otherwise the call reports it.',
+    parameters: {
+      member_id: {
+        type: 'string',
+        required: true,
+        description: 'The member whose model config is read or set.',
+      },
+      session_id: {
+        type: 'string',
+        required: true,
+        description: 'The member session (topic) id from member_sessions.',
+      },
+      action: {
+        type: 'string',
+        enum: ['get', 'set'],
+        description: '"get" reads the current model and its options (default); "set" switches the model to value.',
+      },
+      value: {
+        type: 'string',
+        description: 'The model value id to set (action "set"); pick one from a prior "get".',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render(_args, value) {
+        return [{ type: 'text', text: value }]
+      },
+    },
+    async execute(args: { member_id: string; session_id: string; action?: 'get' | 'set'; value?: string }) {
+      const where = `Member ${args.member_id} session ${args.session_id}`
+      if (args.action === 'set') {
+        if (args.value === undefined) {
+          throw new Error('member_model set: pass value, the model value id from a prior "get".')
+        }
+        try {
+          const snapshot = await team.setConfig(args.member_id, args.session_id, MODEL_CONFIG_ID, args.value)
+          const model = snapshot.model
+          const label = model === undefined
+            ? args.value
+            : optionLabel(args.value, model.options)
+          return `Set model to ${label} on ${where}.`
+        } catch (error: unknown) {
+          return `${where}: ${error instanceof Error ? error.message : String(error)}`
+        }
+      }
+      try {
+        const snapshot = await team.getConfig(args.member_id, args.session_id)
+        const lines: string[] = []
+        const model = snapshot.model
+        if (model !== undefined) {
+          lines.push(`current model: ${optionLabel(model.currentValue, model.options)}`)
+          for (const option of model.options) {
+            lines.push(`  - ${option.value} (${option.name})`)
+          }
+        } else {
+          for (const option of snapshot.options) {
+            lines.push(`  - ${option.id}${option.category === undefined ? '' : ` [${option.category}]`}`)
+          }
+        }
+        return `${where}\n${lines.join('\n')}`
+      } catch (error: unknown) {
+        return `${where}: ${error instanceof Error ? error.message : String(error)}`
+      }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'member_provider',
+    description: 'List or set a team member\'s ACP provider configuration. Use action "list" to read the advertised providers, or "set" to configure one (id, api_type, base_url, optional headers). Requires the member to advertise the providers capability, otherwise the call reports it.',
+    parameters: {
+      member_id: {
+        type: 'string',
+        required: true,
+        description: 'The member whose providers are listed or set.',
+      },
+      action: {
+        type: 'string',
+        enum: ['list', 'set'],
+        default: 'list',
+        description: '"list" reads the advertised providers (default); "set" configures one.',
+      },
+      id: {
+        type: 'string',
+        description: 'Provider id (action "set").',
+      },
+      api_type: {
+        type: 'string',
+        description: 'Protocol: anthropic/openai/azure/vertex/bedrock (action "set").',
+      },
+      base_url: {
+        type: 'string',
+        description: 'Base URL for the provider (action "set").',
+      },
+      headers: {
+        type: 'object',
+        additionalProperties: true,
+        description: 'Headers map for the provider (action "set"); every value must be a string.',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render(_args, value) {
+        return [{ type: 'text', text: value }]
+      },
+    },
+    async execute(args: {
+      member_id: string
+      action?: 'list' | 'set'
+      id?: string
+      api_type?: string
+      base_url?: string
+      headers?: Record<string, unknown>
+    }) {
+      if (args.action === 'set') {
+        if (args.id === undefined || args.api_type === undefined || args.base_url === undefined) {
+          throw new Error('member_provider set: pass id, api_type, and base_url.')
+        }
+        const headers = args.headers === undefined
+          ? undefined
+          : headerRecord(args.headers, 'member_provider')
+        try {
+          await team.setProvider(args.member_id, {
+            id: args.id,
+            apiType: args.api_type,
+            baseUrl: args.base_url,
+            headers,
+          })
+          return `Set provider ${args.id} (api_type=${args.api_type}, base_url=${args.base_url}) on member ${args.member_id}.`
+        } catch (error: unknown) {
+          return `Member ${args.member_id}: ${error instanceof Error ? error.message : String(error)}`
+        }
+      }
+      try {
+        const providers = await team.listProviders(args.member_id)
+        if (providers.length === 0) {
+          return `Member ${args.member_id}: no providers.`
+        }
+        const lines = providers.map((provider) => {
+          const current = provider.current === undefined
+            ? '(disabled)'
+            : `${provider.current.apiType} ${provider.current.baseUrl}`
+          return `  - ${provider.id} required=${provider.required} ${current}`
+        })
+        return `Member ${args.member_id} providers:\n${lines.join('\n')}`
+      } catch (error: unknown) {
+        return `Member ${args.member_id}: ${error instanceof Error ? error.message : String(error)}`
+      }
     },
   }))
 }

@@ -17,7 +17,11 @@ Team-member connections for the DSH ACP virtual team. A **member** is a persiste
 | `readHistory(id, sessionId)` | Load a topic and collect its replayed conversation history (the member's own record). Works offline from the durable cache when the member is not running. |
 | `readHistoryEvents(id, sessionId)` | Load a topic and return the full-fidelity translated harness event sequence (`turn/start`, `user/message`, `assistant/message`, `assistant/chunk`, `tool/call`, `tool/result`, …) for rendering in the main conversation UI. Works offline from the durable cache when the member is not running. |
 | `isTurnInFlight(id, sessionId)` | Whether the member currently has a prompt turn in flight for the topic. |
-| `newSession(id)` | Open a new topic on the member (via ACP `session/new`). |
+| `newSession(id)` | Open a new topic on the member (via ACP `session/new`). When the member advertises session config options, the returned topic's config is cached. |
+| `getConfig(id, sessionId)` | The resolved session configuration set plus the model shortcut, derived from the options cached when the topic was created, loaded, or updated. Throws when the member has no cached options for the topic. |
+| `setConfig(id, sessionId, configId, value)` | Set one session configuration option (e.g. `"model"`) and return the updated snapshot. The value is validated by the agent. |
+| `listProviders(id)` | The providers the member advertises, gated on the `providers` capability. Throws when the member did not advertise `providers` in `initialize`. |
+| `setProvider(id, config)` | Configure one provider (member-scoped). The agent stores the routing config on its own side; the harness never persists secrets. Throws when the member did not advertise `providers`. |
 | `prompt(id, sessionId, text)` | Accept one turn and return immediately with a prompt id; chunks stream as `team/member-update` events, settlement as `team/turn-end`. |
 | `cancel(id, sessionId)` | Cancel the in-flight turn of one session. |
 | `permission(id, requestId, outcome)` | Answer one surfaced `session/request_permission` prompt. |
@@ -79,6 +83,12 @@ The same `team` storage domain also holds a per-member offline cache (`cache` ta
 
 No secrets are cached: updates are conversation content the member already showed the harness.
 
+### Session config options
+
+When the member advertises session configuration options, the harness caches the options it receives from `session/new` and `session/load`, plus any `session/config_option_update` notifications, keyed by session id. `getConfig` derives the resolved snapshot (options plus the model shortcut) from this cache on demand; `setConfig` writes through `session/set_config_option` and refreshes the cache. The model shortcut picks the option whose UX category or id is `"model"`. There is no ACP capability flag for config options — the only signal is the options returned with the session, so a member that advertises none yields no cache and `getConfig` throws.
+
+Provider configuration (`providers/list`, `providers/set`) is gated on the `providers` capability advertised in `initialize`; the harness reports "not supported" when it is absent.
+
 ## Events
 
 | Event | Payload |
@@ -106,7 +116,7 @@ Members spawn through the [`dsh-subprocess`](../../subprocess/subprocess/README.
 
 #### What the model sees
 
-Through `dsh-tool-team` (`member_sessions` / `member_chat` / `member_*`), the calling agent sees the member roster, each member's topic ids, and the member's committed replies. The member's own system prompt, tools, and history stay in the member process; only user text crosses, and only committed assistant text returns.
+Through `dsh-tool-team` (`member_sessions` / `member_chat` / `member_*`), the calling agent sees the member roster, each member's topic ids, the member's committed replies, and — when the member advertises them — the session model config and advertised providers. The member's own system prompt, tools, and history stay in the member process; only user text crosses, and only committed assistant text returns.
 
 #### Token effect
 

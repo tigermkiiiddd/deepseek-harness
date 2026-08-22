@@ -29,8 +29,11 @@ import type {
   MemberConfig,
   MemberConfigInput,
   MemberHistoryEntry,
+  MemberProviderConfigInput,
+  MemberProviderInfo,
   MemberSession,
   MemberSnapshot,
+  SessionConfigSnapshot,
   TeamPermissionHandler,
   TeamPermissionOutcome,
 } from './types.ts'
@@ -121,6 +124,41 @@ export interface TeamService {
    * @returns the new topic id.
    */
   newSession(memberId: string): Promise<string>
+  /**
+   * The member's resolved session configuration set plus the model shortcut.
+   * The snapshot is derived from options cached when the topic was created,
+   * loaded, or updated — create or load the topic first.
+   * @param memberId - the member that owns the topic.
+   * @param sessionId - the topic whose config is read.
+   * @returns the resolved options and the current model, if any.
+   * @throws when the member has no cached options for the topic.
+   */
+  getConfig(memberId: string, sessionId: string): Promise<SessionConfigSnapshot>
+  /**
+   * Set one session configuration option (e.g. `"model"`) and return the
+   * updated snapshot. The value is validated by the agent.
+   * @param memberId - the member that owns the topic.
+   * @param sessionId - the topic whose option is set.
+   * @param configId - the option id, e.g. `"model"`.
+   * @param value - the new value id.
+   * @returns the updated snapshot.
+   */
+  setConfig(memberId: string, sessionId: string, configId: string, value: string): Promise<SessionConfigSnapshot>
+  /**
+   * The providers the member advertises, gated on the `providers` capability.
+   * @param memberId - the member whose providers are listed.
+   * @returns the provider list.
+   * @throws when the member did not advertise `providers` in `initialize`.
+   */
+  listProviders(memberId: string): Promise<MemberProviderInfo[]>
+  /**
+   * Configure one provider (member-scoped). The agent stores the routing
+   * config on its own side; the harness never persists secrets.
+   * @param memberId - the member whose provider is configured.
+   * @param config - the provider id, protocol, base URL, and optional headers.
+   * @throws when the member did not advertise `providers` in `initialize`.
+   */
+  setProvider(memberId: string, config: MemberProviderConfigInput): Promise<void>
   /**
    * Accept one prompt turn and return immediately; chunks stream as
    * `team/member-update` events and settlement as `team/turn-end`.
@@ -352,6 +390,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     },
     isTurnInFlight: (memberId, sessionId) => requireMember(connections, memberId).isTurnInFlight(sessionId),
     newSession: async memberId => requireMember(connections, memberId).newSession(),
+    getConfig: async (memberId, sessionId) => requireMember(connections, memberId).getConfig(sessionId),
+    setConfig: async (memberId, sessionId, configId, value) =>
+      requireMember(connections, memberId).setSessionConfig(sessionId, configId, value),
+    listProviders: async memberId => requireMember(connections, memberId).listProviders(),
+    setProvider: async (memberId, config) => requireMember(connections, memberId).setProvider(config),
     prompt: async (memberId, sessionId, text) => requireMember(connections, memberId).prompt(sessionId, text),
     cancel: async (memberId, sessionId) => { await requireMember(connections, memberId).cancel(sessionId) },
     permission: (memberId, requestId, outcome): Promise<void> => {

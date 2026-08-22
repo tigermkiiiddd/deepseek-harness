@@ -96,6 +96,73 @@ export interface MemberSnapshot {
   readonly autostart: boolean
   /** The last connection failure's message, for views. */
   readonly lastError: string | undefined
+  /**
+   * The last model id this member selected, when it has advertised a model
+   * configuration option and we have seen its config. A convenience for views;
+   * the authoritative per-session config is {@link TeamService.getConfig}.
+   */
+  readonly model: string | undefined
+}
+
+/**
+ * One selectable value inside a session configuration option. The harness
+ * never displays the raw value id alone — it pairs with {@link name}.
+ */
+export interface SessionConfigValueInfo {
+  /** The value id the agent uses to select this option. */
+  readonly value: string
+  /** Human-readable label. */
+  readonly name: string
+  /** Optional description. */
+  readonly description: string | undefined
+}
+
+/**
+ * One resolved session configuration option — the subset the harness exposes.
+ * `category` is the agent's UX hint (e.g. `"model"` / `"mode"`); it is never
+ * required for correctness.
+ */
+export interface SessionConfigOptionInfo {
+  readonly id: string
+  readonly name: string
+  readonly category: string | undefined
+  readonly type: 'select' | 'boolean'
+  /** The current value: a value id for `select`, a boolean for `boolean`. */
+  readonly currentValue: string | boolean
+  /** Selectable values when `type === 'select'`; empty for `boolean`. */
+  readonly options: readonly SessionConfigValueInfo[]
+}
+
+/**
+ * A resolved session configuration set plus the model shortcut. `model` is the
+ * current model selection, when the member advertises a model option.
+ */
+export interface SessionConfigSnapshot {
+  readonly options: readonly SessionConfigOptionInfo[]
+  readonly model: {
+    readonly currentValue: string
+    readonly options: readonly SessionConfigValueInfo[]
+  } | undefined
+}
+
+/** A configurable provider as the member reports it via `providers/list`. */
+export interface MemberProviderInfo {
+  readonly id: string
+  readonly required: boolean
+  readonly supported: readonly string[]
+  /** The provider's current routing config, when enabled. */
+  readonly current: { readonly apiType: string; readonly baseUrl: string } | undefined
+}
+
+/**
+ * Input to configure one provider (member-scoped). `headers` are optional and
+ * never carry secrets into the harness — the agent stores them on its own side.
+ */
+export interface MemberProviderConfigInput {
+  readonly id: string
+  readonly apiType: string
+  readonly baseUrl: string
+  readonly headers: Record<string, string> | undefined
 }
 
 /** One conversation topic the member itself owns. */

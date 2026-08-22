@@ -24,8 +24,13 @@ import {
   PROTOCOL_VERSION,
   RequestError,
   type AgentCapabilities,
+  type ProviderInfo,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
+  type SessionConfigOption,
+  type SessionConfigSelectGroup,
+  type SessionConfigSelectOption,
+  type SessionConfigSelectOptions,
   type SessionNotification,
   type SessionUpdate,
   type StopReason,
@@ -38,10 +43,15 @@ import { resolveMemberSpec } from './resolve.ts'
 import type {
   ChatResult,
   MemberConfig,
+  MemberProviderConfigInput,
+  MemberProviderInfo,
   MemberHistoryEntry,
   MemberSession,
   MemberSnapshot,
   MemberStatus,
+  SessionConfigOptionInfo,
+  SessionConfigSnapshot,
+  SessionConfigValueInfo,
   TeamPermissionOutcome,
   TeamPermissionRequest,
 } from './types.ts'
@@ -141,6 +151,87 @@ async function disposeMemberProcess(child: SubprocessHandle, eofGraceMs: number)
 }
 
 /**
+ * Group discriminant: a grouped session-config option entry carries `options`;
+ * a flat one carries `value`/`name` directly.
+ */
+function isSelectGroup(
+  entry: SessionConfigSelectOption | SessionConfigSelectGroup,
+): entry is SessionConfigSelectGroup {
+  return 'options' in entry
+}
+
+/**
+ * Flatten an agent-provided option list — flat (`SessionConfigSelectOption[]`)
+ * or grouped (`SessionConfigSelectGroup[]`) — into selectable values.
+ */
+function flattenSelectOptions(raw: SessionConfigSelectOptions): SessionConfigValueInfo[] {
+  const values: SessionConfigValueInfo[] = []
+  for (const entry of raw) {
+    if (isSelectGroup(entry)) {
+      for (const option of entry.options) {
+        values.push({ value: option.value, name: option.name, description: option.description ?? undefined })
+      }
+    } else {
+      values.push({ value: entry.value, name: entry.name, description: entry.description ?? undefined })
+    }
+  }
+  return values
+}
+
+/**
+ * Project one ACP `SessionConfigOption` to the harness-facing shape. The
+ * harness never exposes the raw wire object — callers read `options`,
+ * `currentValue`, and `category` only.
+ */
+function optionToInfo(option: SessionConfigOption): SessionConfigOptionInfo {
+  return {
+    id: option.id,
+    name: option.name,
+    category: option.category ?? undefined,
+    type: option.type,
+    currentValue: option.currentValue,
+    options: option.type === 'select' ? flattenSelectOptions(option.options) : [],
+  }
+}
+
+/**
+ * The current model selection: the option whose UX hint is `"model"` (or whose
+ * id is `"model"`), when it is a select. Returns `undefined` when the member
+ * advertises no model option, so callers treat absence as "not supported".
+ */
+function currentModel(
+  options: readonly SessionConfigOptionInfo[],
+): { currentValue: string; options: readonly SessionConfigValueInfo[] } | undefined {
+  const option = options.find(candidate => candidate.category === 'model' || candidate.id === 'model')
+  if (option === undefined || option.type !== 'select') return undefined
+  // A select option's current value is a value id (string); the union carries
+  // `boolean` only for non-select options, already excluded above.
+  return { currentValue: option.currentValue as string, options: option.options }
+}
+
+/** Resolve the full session configuration set to a snapshot. */
+export function sessionConfigToSnapshot(options: readonly SessionConfigOption[]): SessionConfigSnapshot {
+  const resolved = options.map(optionToInfo)
+  return { options: resolved, model: currentModel(resolved) }
+}
+
+/**
+ * Project one ACP `ProviderInfo` to the harness-facing shape. `current` is
+ * dropped when the provider is disabled (null/omitted), so callers see only
+ * enabled routing.
+ */
+function providerToInfo(provider: ProviderInfo): MemberProviderInfo {
+  return {
+    id: provider.id,
+    required: provider.required,
+    supported: provider.supported,
+    current: provider.current === null || provider.current === undefined
+      ? undefined
+      : { apiType: provider.current.apiType, baseUrl: provider.current.baseUrl },
+  }
+}
+
+/**
  * One member process plus its live ACP connection, keyed by member id. The
  * lifecycle is explicit: `start` / `stop` / `restart` are the only ways the
  * process comes and goes; session operations on a non-running member fail
@@ -179,6 +270,14 @@ export class MemberConnection {
   private readonly historyEvents = new Map<string, TranslatedSessionEvent[]>()
   /** Permission requests awaiting an external answer, keyed by request id. */
   private readonly pendingPermissions = new Map<string, PendingPermission>()
+  /**
+   * Cached raw session configuration per session, captured from
+   * `config_option_update` notifications and the `newSession`/`loadSession`
+   * responses. The snapshot is derived on read, not stored.
+   */
+  private readonly configBySession = new Map<string, readonly SessionConfigOption[]>()
+  /** The last model id seen, for the member snapshot convenience. */
+  private model: string | undefined
   private teardownPromise: Promise<void> | undefined
 
   constructor(
@@ -206,6 +305,7 @@ export class MemberConnection {
       capabilities: this.capabilities,
       autostart: this.config.autostart ?? true,
       lastError: this.lastError,
+      model: this.model,
     }
   }
 
@@ -276,7 +376,8 @@ export class MemberConnection {
    */
   async loadSession(sessionId: string): Promise<void> {
     const conn = this.requireRunning()
-    await conn.loadSession({ sessionId, cwd: this.cwd, mcpServers: [] })
+    const session = await conn.loadSession({ sessionId, cwd: this.cwd, mcpServers: [] })
+    this.storeConfig(sessionId, session.configOptions)
   }
 
   /**
@@ -366,7 +467,92 @@ export class MemberConnection {
   async newSession(): Promise<string> {
     const conn = this.requireRunning()
     const session = await conn.newSession({ cwd: this.cwd, mcpServers: [] })
+    this.storeConfig(session.sessionId, session.configOptions)
     return session.sessionId
+  }
+
+  /**
+   * Cache one session's raw configuration options. Empty or absent sets are a
+   * no-op: the member simply has not advertised config options yet.
+   * @param sessionId - the member's session (topic) id.
+   * @param configOptions - the raw ACP options, or `null`/`undefined`.
+   */
+  private storeConfig(
+    sessionId: string,
+    configOptions: readonly SessionConfigOption[] | null | undefined,
+  ): void {
+    if (configOptions === null || configOptions === undefined || configOptions.length === 0) return
+    this.configBySession.set(sessionId, configOptions)
+    const model = currentModel(configOptions.map(optionToInfo))
+    if (model !== undefined) this.model = model.currentValue
+  }
+
+  /**
+   * The resolved session configuration set plus the model shortcut, derived
+   * from the cached options. Throws when the member has no cached options —
+   * create or load the session first.
+   * @param sessionId - the member's session (topic) id.
+   * @returns the snapshot of options and the current model, if any.
+   */
+  getConfig(sessionId: string): SessionConfigSnapshot {
+    const options = this.configBySession.get(sessionId)
+    if (options === undefined) {
+      throw new Error(
+        `team: member "${this.config.id}" has no session config for session "${sessionId}" — create or load it first`,
+      )
+    }
+    return sessionConfigToSnapshot(options)
+  }
+
+  /**
+   * Set one session configuration option and return the updated snapshot.
+   * The value is validated by the agent; a rejected value throws.
+   * @param sessionId - the member's session (topic) id.
+   * @param configId - the option id, e.g. `"model"`.
+   * @param value - the new value id.
+   * @returns the updated snapshot.
+   */
+  async setSessionConfig(sessionId: string, configId: string, value: string): Promise<SessionConfigSnapshot> {
+    const conn = this.requireRunning()
+    const response = await conn.setSessionConfigOption({ configId, sessionId, value })
+    this.storeConfig(sessionId, response.configOptions)
+    return sessionConfigToSnapshot(response.configOptions)
+  }
+
+  /**
+   * The providers the member advertises, gated on the `providers` capability.
+   * @returns the provider list.
+   * @throws when the member did not advertise `providers` in `initialize`.
+   */
+  async listProviders(): Promise<MemberProviderInfo[]> {
+    const conn = this.requireRunning()
+    if (this.capabilities?.providers === undefined || this.capabilities.providers === null) {
+      throw new Error(`team: member "${this.config.id}" does not support provider configuration`)
+    }
+    const response = await conn.unstable_listProviders({})
+    return response.providers.map(providerToInfo)
+  }
+
+  /**
+   * Configure one provider (member-scoped). The agent stores the routing
+   * config on its own side; the harness never persists secrets.
+   * @param config - the provider id, protocol, base URL, and optional headers.
+   * @throws when the member did not advertise `providers` in `initialize`.
+   */
+  async setProvider(config: MemberProviderConfigInput): Promise<void> {
+    const conn = this.requireRunning()
+    if (this.capabilities?.providers === undefined || this.capabilities.providers === null) {
+      throw new Error(`team: member "${this.config.id}" does not support provider configuration`)
+    }
+    // `exactOptionalPropertyTypes` forbids passing `undefined` for an optional
+    // field, so only attach `headers` when the caller supplied them.
+    const request: { id: string; apiType: string; baseUrl: string; headers?: Record<string, string> } = {
+      id: config.id,
+      apiType: config.apiType,
+      baseUrl: config.baseUrl,
+    }
+    if (config.headers !== undefined) request.headers = config.headers
+    await conn.unstable_setProvider(request)
   }
 
   /**
@@ -565,6 +751,12 @@ export class MemberConnection {
 
   private receiveUpdate(notification: SessionNotification): void {
     const { sessionId, update } = notification
+    // Session config options arrive both as a `config_option_update`
+    // notification and in the `newSession`/`loadSession` responses. Cache the
+    // raw set so `getConfig` can derive a snapshot on demand.
+    if (update.sessionUpdate === 'config_option_update') {
+      this.storeConfig(sessionId, update.configOptions)
+    }
     const translator = this.historyTranslators.get(sessionId)
     if (translator !== undefined) {
       // Replay collection: fold every update through the full-fidelity

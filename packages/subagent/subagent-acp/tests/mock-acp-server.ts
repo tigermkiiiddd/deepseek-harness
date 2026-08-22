@@ -67,12 +67,19 @@ import {
   type AuthenticateRequest,
   type InitializeRequest,
   type InitializeResponse,
+  type ListProvidersRequest,
+  type ListProvidersResponse,
   type ListSessionsRequest,
   type ListSessionsResponse,
   type NewSessionRequest,
   type NewSessionResponse,
   type PromptRequest,
   type PromptResponse,
+  type SetProviderRequest,
+  type SetProviderResponse,
+  type SetSessionConfigOptionRequest,
+  type SetSessionConfigOptionResponse,
+  type SessionConfigOption,
   type StopReason,
 } from '@agentclientprotocol/sdk'
 
@@ -101,6 +108,28 @@ const FLUSH_ON_EOF = process.env.MOCK_FLUSH_ON_EOF
 const NEWSESSION_GATE = process.env.MOCK_NEWSESSION_READY !== undefined && process.env.MOCK_NEWSESSION_GO !== undefined
   ? { ready: process.env.MOCK_NEWSESSION_READY, go: process.env.MOCK_NEWSESSION_GO }
   : undefined
+// When MOCK_PROVIDERS is `1`, advertise the `providers` capability and answer
+// the unstable providers/list + providers/set methods. When MOCK_CONFIG_OPTIONS
+// is `1`, return session config options (a model selector) from newSession and
+// loadSession, and answer session/set_config_option.
+const WANT_PROVIDERS = process.env.MOCK_PROVIDERS === '1'
+const WANT_CONFIG = process.env.MOCK_CONFIG_OPTIONS === '1'
+const MODEL = process.env.MOCK_MODEL ?? 'mock-model-1'
+
+/** The canned model selector the mock advertises when config options are on. */
+function buildConfigOptions(currentModel: string): SessionConfigOption[] {
+  return [{
+    id: 'model',
+    name: 'Model',
+    category: 'model',
+    type: 'select',
+    currentValue: currentModel,
+    options: [
+      { value: 'mock-model-1', name: 'Mock Model 1', description: 'Fast mock model' },
+      { value: 'mock-model-2', name: 'Mock Model 2', description: 'Powerful mock model' },
+    ],
+  }]
+}
 
 function makeAgent(conn: AgentSideConnection): Agent {
   // Pending cancel resolver for the HANG path: a `session/cancel` resolves the
@@ -117,6 +146,9 @@ function makeAgent(conn: AgentSideConnection): Agent {
           loadSession: true,
           sessionCapabilities: { list: {} },
           promptCapabilities: { image: false, audio: false, embeddedContext: false },
+          // Advertise provider configuration only when MOCK_PROVIDERS is set, so
+          // the client gates list/set on the capability.
+          ...WANT_PROVIDERS ? { providers: {} } : {},
         },
         authMethods: [],
       })
@@ -184,7 +216,7 @@ function makeAgent(conn: AgentSideConnection): Agent {
           },
         })
       }
-      return {}
+      return { ...WANT_CONFIG ? { configOptions: buildConfigOptions(MODEL) } : {} }
     },
     async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
       sessionCwd = params.cwd
@@ -196,7 +228,10 @@ function makeAgent(conn: AgentSideConnection): Agent {
         while (!existsSync(NEWSESSION_GATE.go)) await new Promise(r => setTimeout(r, 10))
       }
       if (process.env.MOCK_MISSING_SESSION_ID === '1') return {} as NewSessionResponse
-      return { sessionId: process.env.MOCK_SESSION_ID ?? randomUUID() }
+      return {
+        sessionId: process.env.MOCK_SESSION_ID ?? randomUUID(),
+        ...WANT_CONFIG ? { configOptions: buildConfigOptions(MODEL) } : {},
+      }
     },
     authenticate(_params: AuthenticateRequest): Promise<void> {
       // No auth methods advertised; nothing to do.
@@ -283,6 +318,39 @@ function makeAgent(conn: AgentSideConnection): Agent {
       }
       resolveCancel?.('cancelled')
       return Promise.resolve()
+    },
+    // Session config: answer set_session_config_option when the mock advertises
+    // config options, returning the updated model selector.
+    async setSessionConfigOption(
+      params: SetSessionConfigOptionRequest,
+    ): Promise<SetSessionConfigOptionResponse> {
+      if (!WANT_CONFIG) {
+        throw new RequestError(-32601, 'Method not found: session/set_config_option', undefined)
+      }
+      // A select option's value is a bare string; a boolean option carries
+      // `{ type: 'boolean', value: boolean }`. The mock only models the model
+      // selector, so read the string value id when present.
+      const newValue = typeof params.value === 'string' ? params.value : (params.value as { value: unknown }).value
+      const updated = buildConfigOptions(MODEL).map(option =>
+        option.type === 'select' && option.id === params.configId
+          ? { ...option, currentValue: newValue as string }
+          : option,
+      )
+      return { configOptions: updated }
+    },
+    // Unstable provider methods, gated on the capability the client checks.
+    async unstable_listProviders(_params: ListProvidersRequest): Promise<ListProvidersResponse> {
+      return {
+        providers: [{
+          id: 'mock-provider',
+          required: false,
+          supported: ['openai'],
+          current: { apiType: 'openai', baseUrl: 'https://mock.example/v1' },
+        }],
+      }
+    },
+    async unstable_setProvider(_params: SetProviderRequest): Promise<SetProviderResponse> {
+      return {}
     },
   }
 }
