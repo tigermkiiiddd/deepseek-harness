@@ -306,7 +306,7 @@ describe('AcpUpdateTranslator deduplicates echoed user messages', () => {
     ])
     const userMessages = events.filter(e => e.type === 'user/message')
     expect(userMessages).toHaveLength(1)
-    expect((userMessages[0] as { data: { content: [{ text: string }] } }).data.content[0].text).toBe('hello world')
+    expect((userMessages[0] as unknown as { data: { content: [{ text: string }] } }).data.content[0].text).toBe('hello world')
   })
 
   it('keeps an echoed user message when the text differs from the minted turn', () => {

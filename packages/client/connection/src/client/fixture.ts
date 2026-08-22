@@ -3141,8 +3141,8 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
     },
     team: {
       list: request => ok(request, [
-        { id: 'fx-writer', title: 'Writer', description: 'fixture member', status: 'idle', capabilities: undefined, autostart: true, lastError: undefined },
-        { id: 'fx-reviewer', title: 'Reviewer', description: undefined, status: 'idle', capabilities: undefined, autostart: true, lastError: undefined },
+        { id: 'fx-writer', title: 'Writer', description: 'fixture member', kind: undefined, status: 'idle', capabilities: undefined, autostart: true, lastError: undefined },
+        { id: 'fx-reviewer', title: 'Reviewer', description: undefined, kind: undefined, status: 'idle', capabilities: undefined, autostart: true, lastError: undefined },
       ]),
       start: request => ok(request, {}),
       stop: request => ok(request, {}),
@@ -3166,6 +3166,7 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
         id: request.payload.id,
         title: request.payload.title ?? request.payload.id,
         description: request.payload.description,
+        kind: undefined,
         status: 'connecting',
         capabilities: undefined,
         autostart: true,

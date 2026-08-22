@@ -238,6 +238,19 @@ export class SqliteStore implements PersistenceBackend<number> {
     }
   }
 
+  async truncateStored(meta: SessionHeader, keepSeqs: number): Promise<void> {
+    await this.open()
+    this.db.exec(sql('begin-immediate'))
+    try {
+      validateSchemaForMutation(this.databaseConstructor, this.db, this.databasePath)
+      this.db.prepare(sql('delete-events-from')).run(meta.id, keepSeqs)
+      this.incrementRevision(meta.id)
+      this.db.exec(sql('commit'))
+    } catch (error: unknown) {
+      this.rollback(error, 'truncate')
+    }
+  }
+
   async list(signal?: AbortSignal): Promise<SessionHeader[]> {
     await this.observe(signal)
     const rows = this.sessionRows()

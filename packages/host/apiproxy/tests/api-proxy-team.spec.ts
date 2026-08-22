@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 import type { Fiber } from '@deepseek-ai/cordis'
 import { Context } from '@deepseek-ai/cordis'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
-import SessionStore from '@deepseek-ai/dsh-session'
+import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import * as Team from '@deepseek-ai/dsh-team'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import type { HostFrame, MuxFrame } from '../src/api/index.ts'
@@ -185,7 +185,7 @@ describe('member session bridge', () => {
     const api = createApiProxy(ctx, DEFAULTS)
     await api.team.start(request({ memberId: 'architect' }))
     const { sessionId: topicId } = expectOk(await api.team.newSession(request({ memberId: 'architect' })))
-    const page = expectOk(await api.sessions.history(request({ sessionId: `member:architect:${topicId}` })))
+    const page = expectOk(await api.sessions.history(request({ sessionId: SessionId(`member:architect:${topicId}`) })))
     const types = page.events.map(entry => entry.event.type)
     expect(types).toContain('tool/call')
     expect(types).toContain('tool/result')
@@ -200,7 +200,7 @@ describe('member session bridge', () => {
     const api = createApiProxy(ctx, DEFAULTS)
     await api.team.start(request({ memberId: 'architect' }))
     const { sessionId: topicId } = expectOk(await api.team.newSession(request({ memberId: 'architect' })))
-    const sessionId = `member:architect:${topicId}`
+    const sessionId = SessionId(`member:architect:${topicId}`)
     // Open the mux before prompting so the baseline and live events are captured.
     const framesPromise = collectMux(api, ['session/event'], 7, async () => {
       expectOk(await api.sessions.prompt(request({
@@ -233,7 +233,7 @@ describe('member session bridge', () => {
     const api = createApiProxy(ctx, DEFAULTS)
     await api.team.start(request({ memberId: 'architect' }))
     const { sessionId: topicId } = expectOk(await api.team.newSession(request({ memberId: 'architect' })))
-    const sessionId = `member:architect:${topicId}`
+    const sessionId = SessionId(`member:architect:${topicId}`)
     const abort = new AbortController()
     const stream = api.events.mux(request({}), abort.signal)
     const frames: { rpcId: string; payload: MuxFrame }[] = []
@@ -251,11 +251,12 @@ describe('member session bridge', () => {
     })))
     // Wait until the requested frame arrives, then answer it.
     while (frames.length === 0) await new Promise(resolve => setTimeout(resolve, 10))
-    const requested = frames[0].payload as Extract<MuxFrame, { type: 'approval/requested' }>
+    const requested = frames[0]!.payload as Extract<MuxFrame, { type: 'approval/requested' }>
     expect(requested.sessionId).toBe(sessionId)
     expect(requested.toolName).toBe('mock side effect')
     const receipt = await api.respond({
-      rpcId: frames[0].rpcId,
+      type: 'client-response',
+      rpcId: RpcId(frames[0]!.rpcId),
       result: {
         ok: true,
         value: { sessionId, approvalId: requested.approvalId, outcome: 'allowed-once' },
@@ -266,7 +267,7 @@ describe('member session bridge', () => {
     abort.abort()
     await consume
     expect(frames).toHaveLength(2)
-    expect(frames[1].payload).toEqual(expect.objectContaining({
+    expect(frames[1]!.payload).toEqual(expect.objectContaining({
       type: 'approval/resolved',
       sessionId,
       approvalId: requested.approvalId,
@@ -277,7 +278,7 @@ describe('member session bridge', () => {
   it('rejects fork and rerun for member session ids loud', async () => {
     const ctx = await harness()
     const api = createApiProxy(ctx, DEFAULTS)
-    const sessionId = 'member:architect:some-topic'
+    const sessionId = SessionId('member:architect:some-topic')
     const fork = expectErr(await api.sessions.fork(request({ sessionId })))
     expect(fork.code).toBe('internal')
     expect(fork.message).toContain('not supported for member sessions')
@@ -319,7 +320,7 @@ describe('member session bridge', () => {
     const api = createApiProxy(ctx, DEFAULTS)
     await api.team.start(request({ memberId: 'architect' }))
     const { sessionId: topicId } = expectOk(await api.team.newSession(request({ memberId: 'architect' })))
-    const sessionId = `member:architect:${topicId}`
+    const sessionId = SessionId(`member:architect:${topicId}`)
     // Populate the durable cache by reading history while the member is online.
     const onlinePage = expectOk(await api.sessions.history(request({ sessionId })))
     expect(onlinePage.events.length).toBeGreaterThan(0)

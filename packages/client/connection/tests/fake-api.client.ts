@@ -246,6 +246,7 @@ export class FakeApiClient implements IApiClient {
       id: payload.id,
       title: payload.title ?? payload.id,
       description: payload.description,
+      kind: undefined,
       status: 'connecting',
       capabilities: undefined,
       autostart: true,

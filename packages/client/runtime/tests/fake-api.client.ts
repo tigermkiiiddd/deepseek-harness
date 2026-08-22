@@ -284,7 +284,7 @@ export class FakeApiClient implements IApiClient {
     discoverModels: payload => this.record('llm.discoverModels', payload, Promise.resolve(ok({ models: [] }))),
   }
 
-  onTeamList: (payload: unknown) => Promise<RpcResponse<{ id: string; title: string; description: string | undefined; status: string }[]>> =
+  onTeamList: (payload: unknown) => Promise<RpcResponse<{ id: string; title: string; description: string | undefined; kind: 'dsh' | undefined; status: string; capabilities: unknown; autostart: boolean; lastError: string | undefined }[]>> =
     () => Promise.resolve(ok([]))
   onTeamSessions: (payload: unknown) => Promise<RpcResponse<{ sessionId: string; cwd: string }[]>> =
     () => Promise.resolve(ok([]))
@@ -299,8 +299,8 @@ export class FakeApiClient implements IApiClient {
     () => Promise.resolve(ok({ promptId: 'fk-team-prompt' }))
   onTeamCancel: (payload: unknown) => Promise<RpcResponse<Record<string, never>>> = () => Promise.resolve(ok({}))
   onTeamPermission: (payload: unknown) => Promise<RpcResponse<Record<string, never>>> = () => Promise.resolve(ok({}))
-  onTeamAddMember: (payload: unknown) => Promise<RpcResponse<{ id: string; title: string; description: string | undefined; status: string; capabilities: unknown; autostart: boolean; lastError: string | undefined }>> =
-    () => Promise.resolve(ok({ id: 'fk-member', title: 'fk-member', description: undefined, status: 'connecting', capabilities: undefined, autostart: true, lastError: undefined }))
+  onTeamAddMember: (payload: unknown) => Promise<RpcResponse<{ id: string; title: string; description: string | undefined; kind: 'dsh' | undefined; status: string; capabilities: unknown; autostart: boolean; lastError: string | undefined }>> =
+    () => Promise.resolve(ok({ id: 'fk-member', title: 'fk-member', description: undefined, kind: undefined, status: 'connecting', capabilities: undefined, autostart: true, lastError: undefined }))
   onTeamRemoveMember: (payload: unknown) => Promise<RpcResponse<Record<string, never>>> =
     () => Promise.resolve(ok({}))
 
