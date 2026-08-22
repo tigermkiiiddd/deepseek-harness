@@ -29,7 +29,7 @@ export interface AcpConfig {
 
 Depends on: `Stream` (`@agentclientprotocol/sdk`)
 
-Source: [`packages/acp/acp/src/index.ts:71`](../packages/acp/acp/src/index.ts)
+Source: [`packages/acp/acp/src/index.ts:77`](../packages/acp/acp/src/index.ts)
 
 <a id="deepseek-aidsh-acp-demo"></a>
 
@@ -814,12 +814,6 @@ export interface Config {
    * @default 6
    */
   sessionExportCompressionLevel?: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
-  /**
-   * Maximum physical size of a cold Session artifact eligible for blankness
-   * verification. Zero disables probes.
-   * @default 1024
-   */
-  coldBlankProbeMaxBytes?: number
 }
 ```
 
@@ -2436,10 +2430,17 @@ export interface MemberConfig {
   readonly title?: string
   /** One-line role/persona description shown in team views. */
   readonly description?: string
-  /** Executable spawned for the member process (any ACP server, e.g. `dsh-acp-demo`). */
-  readonly command: string
+  /**
+   * Member kind. When `'dsh'` the harness relaunches the current installation
+   * (`dsh --profile acp`) with a per-member harness home; `command` and `args`
+   * must be absent. When omitted, `command` is required and the member runs
+   * any ACP server.
+   */
+  readonly kind?: 'dsh'
+  /** Executable spawned for the member process (any ACP server, e.g. `dsh-acp-demo`). Required unless `kind: 'dsh'`. */
+  readonly command?: string
   /** Arguments passed to {@link MemberConfig.command}. */
-  readonly args: string[]
+  readonly args?: string[]
   /**
    * Working directory for the member process and its ACP sessions. When
    * omitted, the member runs in the harness process's launch directory; no
@@ -2459,7 +2460,7 @@ export interface MemberConfig {
 }
 ```
 
-Source: [`packages/team/team/src/index.ts:35`](../packages/team/team/src/index.ts)
+Source: [`packages/team/team/src/index.ts:42`](../packages/team/team/src/index.ts)
 
 <a id="deepseek-aidsh-terminal-bash"></a>
 
@@ -3375,6 +3376,7 @@ Abstract service classes — a deployment loads a concrete implementation packag
 
 Imported as libraries by other packages; a `cordis.yml` cannot load them.
 
+- `@deepseek-ai/dsh-acp-app` ([`packages/bundle/acp-app/src/index.ts`](../packages/bundle/acp-app/src/index.ts))
 - `@deepseek-ai/dsh-acp-snapshot` ([`packages/test-support/acp-snapshot/src/index.ts`](../packages/test-support/acp-snapshot/src/index.ts))
 - `@deepseek-ai/dsh-agent-loop-testkit` ([`packages/test-support/agent-loop-testkit/src/index.ts`](../packages/test-support/agent-loop-testkit/src/index.ts))
 - `@deepseek-ai/dsh-anonymous-user-id` ([`packages/identity/anonymous-user-id/src/index.ts`](../packages/identity/anonymous-user-id/src/index.ts))

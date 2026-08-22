@@ -4,10 +4,7 @@
  * isolation, and prompt failure mapping.
  */
 
-import { mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore from '@deepseek-ai/dsh-session'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
@@ -15,8 +12,14 @@ import { TypertLookupFailure } from '@deepseek-ai/dsh-typert-protocol'
 import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
 import { createUserMessage, MessageId } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import Storage from '@deepseek-ai/dsh-storage'
+import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import SessionTitleService from '@deepseek-ai/dsh-session-title'
+import SessionProjectionCache from '@deepseek-ai/dsh-session-projection-cache'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
+import { MemoryMediaPool, MemoryStorageBackend } from '../../../storage/storage-domain/tests/helpers/memory-backend.ts'
 import {
   PersistenceCoordinator,
   SessionPersistenceRevision,
@@ -38,116 +41,143 @@ function header(id: string, createdAt: number, extra: Partial<SessionHeader> = {
   return { version: 0, id: sid(id), createdAt, cwd: '/proj', ...extra }
 }
 
+/** Title service policy for the cold-listing harness (deterministic fallback; no LLM route). */
+const TITLE_CONFIG = { fallbackMaxWords: 8, fallbackMaxBytes: 64, maxTitleBytes: 256 }
+
+/** One stored-log event builder set (the replay-plane shapes the units fold). */
+const endSeed = (seq: number, time: number): SessionEvent => ({ type: 'session/end-seed', seq, time, data: {} })
+const turnStart = (seq: number, time: number): SessionEvent => ({ type: 'turn/start', seq, time, data: { turn: 1 } })
+const userMessage = (seq: number, text: string, time: number): SessionEvent => ({
+  type: 'user/message', seq, time,
+  data: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
+  surfaceOp: 'append',
+})
+const titleEvent = (seq: number, title: string, time: number): SessionEvent => ({
+  type: 'session/title', seq, time, data: { title, messageSeqs: [1], source: { kind: 'fallback' } },
+})
+
+interface ColdHarnessOptions {
+  /** Stored logs per session id; an absent id serves an empty log. */
+  logs?: Map<string, SessionEvent[]>
+  /** Listed ids whose artifact is missing (the persistence seam rejects them). */
+  missing?: readonly string[]
+  /** Durable checkpoint rows seeded per session id (the stored-record shape). */
+  seededRows?: Map<string, Record<string, { ver: number; seq: number; val: unknown }>>
+  /** Replace the default fake readFrom (e.g. with a gated one for attach races). */
+  readFrom?: (id: SessionId, fromSeq: number) => Promise<{ meta: SessionHeader; events: SessionEvent[] }>
+}
+
+const contexts: Context[] = []
+
+afterEach(async () => {
+  await Promise.all(contexts.splice(0).map(ctx => ctx.fiber.dispose()))
+})
+
+/**
+ * REAL-composition cold harness: real projection registry + title unit + real
+ * persisted projection cache over a memory backend, with a fake persistence
+ * seam serving the stored logs — the same read ladder the web deployment runs.
+ */
+async function coldHarness(metas: SessionHeader[], options: ColdHarnessOptions = {}) {
+  const pool = new MemoryMediaPool()
+  // Seed durable rows BEFORE the cache service opens the domain: the table
+  // snapshot is taken at open, so direct medium writes after it are invisible.
+  if (options.seededRows !== undefined && options.seededRows.size > 0) {
+    const records = new Map<string, unknown>()
+    for (const [id, rows] of options.seededRows) {
+      const meta = metas.find(candidate => candidate.id === sid(id))
+      if (meta === undefined) throw new Error(`seeded row for unlisted session "${id}"`)
+      records.set(id, {
+        identity: { createdAt: meta.createdAt, ...(meta.cwd === undefined ? {} : { cwd: meta.cwd }) },
+        rows,
+      })
+    }
+    pool.media.set('session_projcache', { tables: new Map([['sessions', records]]), global: null })
+  }
+  const ctx = new Context()
+  contexts.push(ctx)
+  await ctx.plugin(Storage)
+  ctx.storage.backend.register('memory', new MemoryStorageBackend(pool))
+  const facility = new DomainFacility(ctx, { backend: 'memory', routes: {} })
+  ctx.storage.mount('domain', facility)
+  ctx.provide('storageDomain', facility)
+  await ctx.plugin(SessionStore)
+  await ctx.plugin(UserQuestionService)
+  await ctx.plugin(SessionProjectionRegistry)
+  await ctx.plugin(SessionTitleService, TITLE_CONFIG)
+  const readIds: SessionId[] = []
+  const defaultReadFrom = async (id: SessionId, fromSeq: number) => {
+    readIds.push(id)
+    if (options.missing?.includes(String(id))) throw new Error(`session "${id}" not found`)
+    const meta = metas.find(candidate => candidate.id === id)
+    if (meta === undefined) throw new Error(`unexpected cold read: ${id}`)
+    return { meta, events: (options.logs?.get(String(id)) ?? []).filter(event => event.seq >= fromSeq) }
+  }
+  ctx.provide('sessionPersistence', { list: () => Promise.resolve(metas), readFrom: options.readFrom ?? defaultReadFrom } as never)
+  await ctx.plugin(SessionProjectionCache, { writeEveryEvents: 100, writeIntervalMs: 60_000 })
+  return { ctx, pool, readIds }
+}
+
 describe('sessions.list cold merge', () => {
-  it('verifies only small possibly-blank artifacts and treats every unavailable probe as visible', async () => {
-    const ctx = new Context()
-    await ctx.plugin(SessionStore)
-    await ctx.plugin(UserQuestionService)
-    const root = mkdtempSync(join(tmpdir(), 'dsh-cold-'))
-    const smallPath = join(root, 'small.log')
-    const largePath = join(root, 'large.log')
-    writeFileSync(smallPath, 'x'.repeat(1024))
-    writeFileSync(largePath, 'x'.repeat(1025))
+  it('heals cold rows from the stored log and trusts settled fresh rows', async () => {
     const metas = [
-      header('small-blank', 100),
-      header('small-conversation', 200),
-      header('large-unknown', 300),
-      header('cached-nonblank', 400),
-      header('locationless', 500, { parentSession: sid('session-parent'), origin: 'subagent' }),
-      header('vanished', 600),
+      header('stale-blank', 100),
+      header('stale-blank-content', 200),
+      header('no-row', 300),
+      header('fresh-nonblank', 400),
       header('read-failure', 700),
     ]
-    const readFrom = vi.fn(async (id: SessionId) => {
-      if (id === sid('small-blank')) {
-        return {
-          meta: metas[0]!,
-          events: [{ type: 'session/end-seed', seq: 0, time: 700, data: {} }] as SessionEvent[],
-        }
-      }
-      if (id === sid('small-conversation')) {
-        return {
-          meta: metas[1]!,
-          events: [
-            { type: 'turn/start', seq: 0, time: 800, data: { turn: 1 } },
-            {
-              type: 'user/message', seq: 1, time: 1200,
-              data: createUserMessage({ content: [{ type: 'text', text: 'worked' }], source: { kind: 'user' } }),
-              surfaceOp: 'append',
-            },
-          ] as SessionEvent[],
-        }
-      }
-      if (id === sid('read-failure')) throw new Error('simulated read failure')
-      throw new Error(`unexpected cold read: ${id}`)
+    const { ctx, pool, readIds } = await coldHarness(metas, {
+      logs: new Map([
+        ['stale-blank', [endSeed(0, 700)]],
+        ['stale-blank-content', [turnStart(0, 800), userMessage(1, 'worked', 1200)]],
+        ['no-row', [turnStart(0, 800), userMessage(1, 'review this', 900), titleEvent(2, 'Review cold session', 950)]],
+      ]),
+      missing: ['read-failure'],
+      seededRows: new Map([
+        // A blank:true hint is only ever durable at a watermark before the
+        // turn (seq -1 = empty log); the tail must then prove the content.
+        ['stale-blank', { sessionListMetadata: { ver: 1, seq: 0, val: { blank: true, lastPromptAt: null } } }],
+        ['stale-blank-content', { sessionListMetadata: { ver: 1, seq: -1, val: { blank: true, lastPromptAt: null } } }],
+        ['fresh-nonblank', {
+          title: { ver: 1, seq: 2, val: 'Fresh title' },
+          sessionListMetadata: { ver: 1, seq: 2, val: { blank: false, lastPromptAt: 1000 } },
+        }],
+      ]),
     })
-    ctx.provide('sessionPersistence', {
-      list: () => Promise.resolve(metas),
-      locate: (meta: SessionHeader) => {
-        if (meta.id === sid('large-unknown')) return { kind: 'jsonl', path: largePath }
-        if (meta.id === sid('locationless')) return undefined
-        if (meta.id === sid('vanished')) return { kind: 'jsonl', path: join(root, 'vanished.log') }
-        return { kind: 'jsonl', path: smallPath }
-      },
-      readFrom,
-    } as never)
-    ctx.provide('sessionProjectionCache', {
-      cachedSnapshot: (meta: SessionHeader) => {
-        if (meta.id === sid('small-blank')) {
-          return { asOfSeq: 0, values: { sessionListMetadata: { blank: true, lastPromptAt: null } } }
-        }
-        if (meta.id === sid('small-conversation')) {
-          return { asOfSeq: 0, values: { sessionListMetadata: { blank: true, lastPromptAt: 900 } } }
-        }
-        if (meta.id === sid('cached-nonblank')) {
-          return { asOfSeq: 1, values: { sessionListMetadata: { blank: false, lastPromptAt: 1000 } } }
-        }
-        return undefined
-      },
-    } as never)
     const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
 
     const response = await api.sessions.list(request({}))
-    expect(response.result.ok).toBe(true)
     if (!response.result.ok) throw new Error('unreachable')
     const byId = Object.fromEntries(response.result.value.items.map(item => [item.sessionId, item]))
-    expect(byId['small-blank']).toMatchObject({ blank: true, updatedAt: 100, running: false })
-    // A stale true hint cannot hide the turn found in the bounded read.
-    expect(byId['small-conversation']).toMatchObject({ blank: false, updatedAt: 1200 })
-    expect(byId['large-unknown']).toMatchObject({ blank: false, updatedAt: 300 })
-    // false is monotonic, so this row skips stat/read and keeps cached recency.
-    expect(byId['cached-nonblank']).toMatchObject({ blank: false, updatedAt: 1000 })
-    expect(byId['locationless']).toMatchObject({
-      blank: false,
-      updatedAt: 500,
-      parentSessionId: 'session-parent',
-      origin: 'subagent',
-    })
-    expect(byId['vanished']).toMatchObject({ blank: false, updatedAt: 600 })
+    // A stale blank:true hint is verified against the stored log, not trusted.
+    expect(byId['stale-blank']).toMatchObject({ blank: true, updatedAt: 100 })
+    expect(byId['stale-blank-content']).toMatchObject({ blank: false, updatedAt: 1200 })
+    // No cache row at all (born elsewhere): the heal read folds the title from
+    // the log — the ungrouped free-session case that used to serve a bare id.
+    expect(byId['no-row']).toMatchObject({ blank: false, updatedAt: 900 })
+    expect(byId['no-row']?.projections?.values.title).toBe('Review cold session')
+    // A settled row (non-blank + title) takes the zero-I/O rung.
+    expect(byId['fresh-nonblank']).toMatchObject({ blank: false, updatedAt: 1000 })
+    expect(byId['fresh-nonblank']?.projections?.values.title).toBe('Fresh title')
+    // An unavailable heal read degrades to visible with no block.
     expect(byId['read-failure']).toMatchObject({ blank: false, updatedAt: 700 })
-    expect(readFrom).toHaveBeenCalledTimes(3)
-    expect(readFrom.mock.calls.map(([id]) => id)).toEqual(expect.arrayContaining([
-      sid('small-blank'),
-      sid('small-conversation'),
-      sid('read-failure'),
-    ]))
+    expect(byId['read-failure']).not.toHaveProperty('projections')
+    expect(readIds).toEqual([
+      sid('stale-blank'), sid('stale-blank-content'), sid('no-row'), sid('read-failure'),
+    ])
+    // The heal read writes back, so the next list for 'no-row' is zero-I/O.
+    expect(pool.media.get('session_projcache')?.tables.get('sessions')?.get('no-row')).toBeDefined()
   })
 
-  it('can disable bounded blank probes without hiding cold Sessions', async () => {
+  it('serves cold rows as visible without a projection cache seam', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)
     await ctx.plugin(UserQuestionService)
-    const meta = header('probe-disabled', 100)
+    const meta = header('no-cache', 100)
     const readFrom = vi.fn()
-    ctx.provide('sessionPersistence', {
-      list: () => Promise.resolve([meta]),
-      locate: () => ({ kind: 'jsonl', path: '/not-read' }),
-      readFrom,
-    } as never)
-    const api = createApiProxy(ctx, {
-      defaultModelSelection: () => ({ provider: 'p', model: 'm' }),
-      cwd: '/tmp',
-      coldBlankProbeMaxBytes: 0,
-    })
+    ctx.provide('sessionPersistence', { list: () => Promise.resolve([meta]), readFrom } as never)
+    const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
 
     const response = await api.sessions.list(request({}))
     if (!response.result.ok) throw new Error('unreachable')
@@ -179,42 +209,25 @@ describe('sessions.list cold merge', () => {
     expect(response.result.value.items[0]).not.toHaveProperty('cwd')
   })
 
-  it('replaces a probed cold row with the live Session that attached during the read', async () => {
-    const ctx = new Context()
-    await ctx.plugin(SessionStore)
-    await ctx.plugin(UserQuestionService)
-    await ctx.plugin(AgentRegistry)
-    const meta = header('attached-during-probe', 100)
-    const root = mkdtempSync(join(tmpdir(), 'dsh-cold-race-'))
-    const path = join(root, 'small.log')
-    writeFileSync(path, 'x')
+  it('replaces a healing cold row with the live Session that attached during the read', async () => {
+    const meta = header('attached-during-read', 100)
     const started = Promise.withResolvers<undefined>()
     const release = Promise.withResolvers<undefined>()
-    ctx.provide('sessionPersistence', {
-      list: () => Promise.resolve([meta]),
-      locate: () => ({ kind: 'jsonl', path }),
-      readFrom: async () => {
+    const stored = [turnStart(0, 200), userMessage(1, 'live', 300)]
+    const { ctx } = await coldHarness([meta], {
+      readFrom: async (_id, fromSeq) => {
         started.resolve(undefined)
         await release.promise
-        return {
-          meta,
-          events: [{ type: 'session/end-seed', seq: 0, time: 110, data: {} }] as SessionEvent[],
-        }
+        return { meta, events: stored.filter(event => event.seq >= fromSeq) }
       },
-    } as never)
+    })
+    await ctx.plugin(AgentRegistry)
     const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
 
     const listing = api.sessions.list(request({}))
     await started.promise
     const session = ctx.sessions.create(meta.id, {
-      seed: [
-        { type: 'turn/start', seq: 0, time: 200, data: { turn: 1 } },
-        {
-          type: 'user/message', seq: 1, time: 300,
-          data: createUserMessage({ content: [{ type: 'text', text: 'live' }], source: { kind: 'user' } }),
-          surfaceOp: 'append',
-        },
-      ],
+      seed: stored,
       meta: {
         ...meta.cwd === undefined ? {} : { cwd: meta.cwd },
         createdAt: meta.createdAt,

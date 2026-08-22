@@ -4,13 +4,16 @@
  * behavior.
  */
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { stat } from 'node:fs/promises'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore from '@deepseek-ai/dsh-session'
-import type { SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
+import Storage from '@deepseek-ai/dsh-storage'
+import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import SessionProjectionCache from '@deepseek-ai/dsh-session-projection-cache'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import {
   SessionQueryError,
@@ -20,11 +23,7 @@ import {
 import type { RpcRequest } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { createApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
-
-vi.mock('node:fs/promises', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs/promises')>()
-  return { ...actual, stat: vi.fn(actual.stat) }
-})
+import { MemoryMediaPool, MemoryStorageBackend } from '../../../storage/storage-domain/tests/helpers/memory-backend.ts'
 
 const sid = (value: string): SessionId => value as SessionId
 const defaults = { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' }
@@ -64,6 +63,36 @@ async function baseContext(): Promise<Context> {
   await ctx.plugin(SessionStore)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(UserQuestionService)
+  return ctx
+}
+
+const healContexts: Context[] = []
+
+afterEach(async () => {
+  await Promise.all(healContexts.splice(0).map(ctx => ctx.fiber.dispose()))
+})
+
+interface HealContextOptions {
+  readFrom?: (id: SessionId, fromSeq: number) => Promise<{ meta: SessionHeader; events: SessionEvent[] }>
+  list?: (signal?: AbortSignal) => Promise<SessionHeader[]>
+}
+
+/** Mount the real heal-read machinery (registry + cache over a memory backend) with a fake persistence seam. */
+async function healContext(cold: SessionHeader[], options: HealContextOptions = {}): Promise<Context> {
+  const ctx = await baseContext()
+  healContexts.push(ctx)
+  const pool = new MemoryMediaPool()
+  await ctx.plugin(Storage)
+  ctx.storage.backend.register('memory', new MemoryStorageBackend(pool))
+  const facility = new DomainFacility(ctx, { backend: 'memory', routes: {} })
+  ctx.storage.mount('domain', facility)
+  ctx.provide('storageDomain', facility)
+  await ctx.plugin(SessionProjectionRegistry)
+  ctx.provide('sessionPersistence', {
+    list: options.list ?? (() => Promise.resolve(cold)),
+    readFrom: options.readFrom ?? (async (id: SessionId) => ({ meta: cold.find(candidate => candidate.id === id)!, events: [] })),
+  } as never)
+  await ctx.plugin(SessionProjectionCache, { writeEveryEvents: 100, writeIntervalMs: 60_000 })
   return ctx
 }
 
@@ -755,23 +784,22 @@ describe('session.search', () => {
     expect(searchSessions.mock.calls[0]?.[0]).not.toHaveProperty('sessionFilters')
   })
 
-  it('propagates cancellation through visible-session collection and stops cold-summary work', async () => {
-    const ctx = await baseContext()
+  it('propagates cancellation through visible-session collection and stops heal-read work', async () => {
     const controller = new AbortController()
     const cold = Array.from({ length: 32 }, (_, index) => header(`cold-${index}`, `/cold-${index}`))
     const list = vi.fn((signal?: AbortSignal) => {
       expect(signal).toBe(controller.signal)
       return Promise.resolve(cold)
     })
-    let locateCalls = 0
-    ctx.provide('sessionPersistence', {
+    let readCalls = 0
+    const ctx = await healContext(cold, {
       list,
-      locate: () => {
-        locateCalls++
+      readFrom: (id) => {
+        readCalls++
         controller.abort()
-        return undefined
+        return Promise.resolve({ meta: cold.find(candidate => candidate.id === id)!, events: [] })
       },
-    } as never)
+    })
     const searchSessions = vi.fn()
     ctx.provide('sessionQuery', { searchSessions } as never)
 
@@ -785,44 +813,40 @@ describe('session.search', () => {
       error: { code: 'cancelled' },
     })
     expect(list).toHaveBeenCalledOnce()
-    expect(locateCalls).toBe(1)
+    expect(readCalls).toBeGreaterThan(0)
     expect(searchSessions).not.toHaveBeenCalled()
   })
 
-  it('awaits every started cold-summary stat before returning cancellation', async () => {
-    const ctx = await baseContext()
+  it('awaits every started heal read before returning cancellation', async () => {
     const controller = new AbortController()
     const cold = Array.from({ length: 16 }, (_, index) => header(`cold-${index}`, `/cold-${index}`))
-    const statGates = cold.map(() => Promise.withResolvers<{ mtimeMs: number }>())
-    const statMock = vi.mocked(stat)
-    statMock.mockClear()
-    for (const gate of statGates) {
-      statMock.mockImplementationOnce((() => gate.promise) as never)
-    }
-    ctx.provide('sessionPersistence', {
-      list: () => Promise.resolve(cold),
-      locate: (meta: SessionHeader) => ({ kind: 'jsonl', path: `/logs/${meta.id}.jsonl` }),
-    } as never)
+    const gates = cold.map(() => Promise.withResolvers<undefined>())
+    const readFrom = vi.fn(async (id: SessionId) => {
+      const gate = gates[cold.findIndex(candidate => candidate.id === id)]!
+      await gate.promise
+      return { meta: cold.find(candidate => candidate.id === id)!, events: [] }
+    })
+    const ctx = await healContext(cold, { readFrom })
     const searchSessions = vi.fn()
     ctx.provide('sessionQuery', { searchSessions } as never)
 
     let settled = false
     const responsePromise = createApiProxy(ctx, defaults).sessions.search(
-      request('cancel-during-cold-stats'),
+      request('cancel-during-heal-reads'),
       controller.signal,
     ).finally(() => {
       settled = true
     })
     await vi.waitFor(() => {
-      expect(statMock).toHaveBeenCalledTimes(16)
+      expect(readFrom).toHaveBeenCalledTimes(16)
     })
 
     controller.abort()
-    statGates[0]!.resolve({ mtimeMs: 101 })
+    gates[0]!.resolve(undefined)
     await new Promise<void>(resolve => setImmediate(resolve))
     expect(settled).toBe(false)
 
-    for (const gate of statGates.slice(1)) gate.resolve({ mtimeMs: 102 })
+    for (const gate of gates.slice(1)) gate.resolve(undefined)
     const response = await responsePromise
     expect(response.result).toMatchObject({
       ok: false,

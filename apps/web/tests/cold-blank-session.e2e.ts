@@ -1,6 +1,6 @@
 /** Cold Session list visibility through the shipped compressed JSONL backend. */
 
-import { mkdir, stat } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import type { Browser, Page } from 'playwright'
@@ -32,9 +32,6 @@ describe('web e2e: cold blank Session visibility', () => {
     const header = (await scaffold.ctx.sessionPersistence.list())
       .find(candidate => candidate.id === SESSION_ID)
     if (header === undefined) throw new Error('blank Session fixture did not materialize')
-    const location = scaffold.ctx.sessionPersistence.locate(header)
-    if (location === undefined) throw new Error('JSONL fixture has no physical artifact')
-    expect((await stat(location.path)).size).toBeLessThanOrEqual(1024)
 
     browser = await chromium.launch()
     page = await newEnglishPage(browser)

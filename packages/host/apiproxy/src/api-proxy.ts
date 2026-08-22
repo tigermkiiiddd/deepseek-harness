@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { mkdir, stat } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname } from 'node:path'
 import { z as zod } from 'zod'
@@ -19,7 +19,6 @@ import { errorChain } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
 import { isAppendSurfaceEvent, isJsonValue } from '@deepseek-ai/dsh-session'
 import type { JsonValue, Session, SessionEvent, SessionEventMap, SessionHeader, SessionId, UserMessage } from '@deepseek-ai/dsh-session'
-import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { SessionQueryError, type SessionSearchCursor } from '@deepseek-ai/dsh-session-query'
 import { SubagentError } from '@deepseek-ai/dsh-subagent'
 import type { SubagentListEntry as CatalogSubagentListEntry } from '@deepseek-ai/dsh-subagent'
@@ -132,10 +131,8 @@ const DEFAULT_MAX_MESSAGES = 50
 /** Provider work budget: at most 100 calls and 2,000 inspected hits. */
 const SESSION_SEARCH_PROVIDER_CALL_LIMIT = 100
 
-/** Bound cold-log stat fan-out and settle each started batch before cancellation returns. */
+/** Bound cold-log heal fan-out and settle each started batch before cancellation returns. */
 const COLD_SUMMARY_BATCH_SIZE = 16
-/** Default maximum artifact size eligible for one cold blankness read. */
-export const DEFAULT_COLD_BLANK_PROBE_MAX_BYTES = 1024
 
 /** Conversation message event types (the pagination counting unit). */
 const MESSAGE_TYPES = new Set(['user/message', 'assistant/message'])
@@ -519,60 +516,51 @@ function summarize(session: Session, running: boolean): SessionSummary {
 }
 
 /**
- * Verify a possibly blank cold Session only when its physical artifact passes
- * the configured per-Session size check. A stale `blank: true`, an
- * absent cache row, a large or location-less artifact, and read failures all
- * resolve to visible (`false`); listing must never hide a conversation on a
- * cache hint or an unavailable optimization.
+ * Resolve one cold persisted Session's list row and its projections block.
+ * The zero-I/O rung serves a durable row that already confirms non-blank —
+ * and, when the title capability is mounted, carries a settled title (a
+ * missing key means a discarded or never-written row: heal it). Otherwise
+ * one ladder read through the projection cache refolds every unit from the
+ * stored log and writes back (fail-soft), so the next list takes the zero-I/O
+ * rung. A cache hint alone never hides a conversation: only an authoritative
+ * read may, and every unavailable rung degrades to visible (`blank: false`).
  */
-async function probeColdSessionMetadata(
+async function resolveColdRow(
   ctx: Context,
-  persistence: SessionPersistence,
   meta: SessionHeader,
-  maxBytes: number,
   signal?: AbortSignal,
-): Promise<SessionListMetadata | undefined> {
-  if (maxBytes === 0) return undefined
-  signal?.throwIfAborted()
-  const location = persistence.locate(meta)
-  if (location === undefined) return undefined
-  signal?.throwIfAborted()
-  let size: number
-  try {
-    size = (await stat(location.path)).size
-  } catch {
-    signal?.throwIfAborted()
-    return undefined
+): Promise<{ summary: SessionSummary; block: SessionProjectionsBlock | undefined }> {
+  const cached = listProjectionsFor(ctx, meta, undefined)
+  const metadata = cached?.values.sessionListMetadata
+  const titleSettled = ctx.get('sessionTitle') === undefined || cached?.values.title !== undefined
+  if (metadata?.blank === false && titleSettled) {
+    return { summary: coldSummary(meta, metadata, false), block: cached }
   }
-  if (size > maxBytes) return undefined
+  const cache = ctx.get('sessionProjectionCache')
+  if (cache === undefined) {
+    // No cache seam to heal through; the zero-I/O rung is all that exists.
+    return { summary: coldSummary(meta, metadata, false), block: cached }
+  }
   try {
-    const { events } = await persistence.readFrom(meta.id, 0, signal)
     signal?.throwIfAborted()
-    return sessionListMetadata(events)
+    const snap = await cache.coldSnapshot(meta.id, signal)
+    signal?.throwIfAborted()
+    const healed = snap.values.sessionListMetadata
+    return { summary: coldSummary(meta, healed, healed?.blank ?? false), block: snap }
   } catch (error) {
     signal?.throwIfAborted()
-    ctx.logger.warn(`session.list: blank probe for "${meta.id}" failed (serving it as visible): ${String(error)}`)
-    return undefined
+    ctx.logger.warn(`session.list: heal read for "${meta.id}" failed (serving it as visible): ${String(error)}`)
+    return { summary: coldSummary(meta, metadata, false), block: cached }
   }
 }
 
-/** SessionSummary projection for a cold persisted Session. */
-async function summarizeCold(
-  ctx: Context,
-  persistence: SessionPersistence,
-  meta: SessionHeader,
-  metadata: SessionListMetadata | undefined,
-  blankProbeMaxBytes: number,
-  signal?: AbortSignal,
-): Promise<SessionSummary> {
-  const probed = metadata?.blank === false
-    ? undefined
-    : await probeColdSessionMetadata(ctx, persistence, meta, blankProbeMaxBytes, signal)
+/** SessionSummary projection for a cold persisted Session from settled display facts. */
+function coldSummary(meta: SessionHeader, metadata: SessionListMetadata | undefined, blank: boolean): SessionSummary {
   return {
     sessionId: meta.id,
-    updatedAt: sessionListUpdatedAt(meta, probed ?? metadata),
+    updatedAt: sessionListUpdatedAt(meta, metadata),
     running: false,
-    blank: metadata?.blank === false ? false : probed?.blank ?? false,
+    blank,
     // Header-only: reading the log for a blank-window preset switch would
     // defeat the same index read, and attaching the session replaces this row
     // with `summarize()`, which resolves the switch from the events.
@@ -613,8 +601,6 @@ export interface ApiProxyDefaults {
   openTextFile?: (path: string, signal: AbortSignal) => Promise<void>
   /** Validated DEFLATE level for session-log ZIP entries; defaults to 6. */
   sessionExportCompressionLevel?: SessionLogCompressionLevel
-  /** Maximum artifact size eligible for one cold blankness read. */
-  coldBlankProbeMaxBytes?: number
   /**
    * Whether handing a path to the native opener can work at all — the
    * `hasDocument` capability the preset roster reports, and the switch
@@ -1066,8 +1052,6 @@ function changedWorkspaceView(workspaceId: string, value: unknown): WorkspaceVie
 export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiProxy {
   const sessionExportCompressionLevel = defaults.sessionExportCompressionLevel
     ?? DEFAULT_SESSION_LOG_COMPRESSION_LEVEL
-  const coldBlankProbeMaxBytes = defaults.coldBlankProbeMaxBytes
-    ?? DEFAULT_COLD_BLANK_PROBE_MAX_BYTES
   /** The seed model each create/resume declares; re-read so it never goes stale. */
   const agentOptions = (): AgentOptions => {
     const { provider, model } = defaults.defaultModelSelection()
@@ -2038,22 +2022,14 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         const batch = cold.slice(offset, offset + COLD_SUMMARY_BATCH_SIZE)
         const settled = await Promise.allSettled(
           batch.map(async (meta) => {
-            // Projection hints remain optional. Blank verification may read
-            // this Session's artifact only when it passes the configured size check.
-            const projections = listProjectionsFor(ctx, meta, undefined)
-            const summary = await summarizeCold(
-              ctx,
-              persistence,
-              meta,
-              projections?.values.sessionListMetadata,
-              coldBlankProbeMaxBytes,
-              signal,
-            )
+            // The zero-I/O rung needs no persistence seam; the heal rung reads
+            // through the projection cache ladder and self-heals its row.
+            const { summary, block } = await resolveColdRow(ctx, meta, signal)
             const attachedSession = ctx.sessions.get(meta.id)
             if (attachedSession !== undefined) return summarizeAttached(attachedSession)
             return {
               ...summary,
-              ...projections === undefined ? {} : { projections },
+              ...block === undefined ? {} : { projections: block },
             }
           }),
         )
@@ -2390,8 +2366,8 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     sessions: {
       // Attached sessions summarize from memory; persisted-but-unattached (cold)
       // sessions merge in from the persistence store so history survives restarts.
-      // Logs without a cwd are not served; every session records its project
-      // at create time.
+      // Free sessions persist with no header.cwd by design and stay listable —
+      // the client groups them under its ungrouped bucket.
       async list(request) {
         return ok(request, { items: await listVisibleSessionSummaries() })
       },
