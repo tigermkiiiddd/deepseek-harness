@@ -40,3 +40,20 @@ worktrees/
 .agents/worktrees/
 .typert-*/
 apps/desktop/release/
+
+# ── 生成产物：编译/类型生成写入 src/ 的中间产物，不进版本库 ──
+# 编译出的 JS 与源映射（对应同名 .ts 源码）
+packages/*/*/src/*.js
+packages/*/*/src/*.js.map
+packages/*/*/src/*.d.ts.map
+# 同名 .ts 配套生成的 .d.ts；手写类型增强声明须保留（见下方排除项）
+packages/*/*/src/*.d.ts
+!src/css-modules.d.ts
+!packages/fs/tool-fs-search/src/ripgrep.d.ts
+
+# ── 运行日志 / 临时文件：不进版本库 ──
+*.log
+*.tmp
+
+# ── 文档约定 ──
+# 说明性文档统一放 docs/（按 docs/*.md 组织）；散落的 tmp-*.md / 空草稿为临时产物，不入库
