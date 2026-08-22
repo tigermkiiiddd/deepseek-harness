@@ -411,4 +411,26 @@ describe('default transport seam', () => {
     )
     expect([...document.querySelectorAll('script')]).toEqual([])
   })
+
+  it('a transient script failure is retried and the bundle still arrives', async () => {
+    let appended = 0
+    vi.spyOn(document.head, 'append').mockImplementation((...nodes) => {
+      const script = nodes[0]
+      if (!(script instanceof HTMLScriptElement)) throw new Error('expected script node')
+      appended += 1
+      queueMicrotask(() => {
+        if (appended === 1) {
+          script.dispatchEvent(new Event('error'))
+          return
+        }
+        win.__ModuleLoader__?.load({ id: 'dee', factory: () => ({ marker: 'retried' }) })
+        script.dispatchEvent(new Event('load'))
+      })
+    })
+    const b = bench([row('dee')], {}, { defaultTransport: true })
+    const exports = await b.loader.import('dee', '', {})
+    expect((exports as { marker: string }).marker).toBe('retried')
+    expect(appended).toBe(2)
+    expect([...document.querySelectorAll('script')]).toEqual([])
+  })
 })

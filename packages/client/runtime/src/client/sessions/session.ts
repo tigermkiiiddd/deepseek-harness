@@ -582,6 +582,19 @@ export class Session implements SessionFace {
   }
 
   /**
+   * host/session-added relay: clear the sticky removed flag set by a prior
+   * host/session-removed (the reseed/rerun path disposes then recreates one
+   * live agent under the same id). A session re-announced by the host is not
+   * removed — the composer must unlock. Idempotent: a never-removed instance
+   * is a no-op.
+   */
+  restoreFromRemoval(): void {
+    if (!this.removed) return
+    this.removed = false
+    this.notifier.markDirty()
+  }
+
+  /**
    * host/agent-error relay: the only outlet for live failures with no turn position.
    * @param message - the stringified error.
    */

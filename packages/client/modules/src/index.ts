@@ -116,6 +116,38 @@ class ClientPackageCompositionError extends AggregateError {
   }
 }
 
+/**
+ * Read attempts and inter-attempt delay for transient bundle-read failures: a
+ * dev watcher or build rewriting `lib/client.js` briefly makes the registered
+ * path unreadable on Windows (ENOENT during replace, EBUSY/EPERM while the
+ * writer holds the file). One boot's 61 bundle reads must not 404 on that
+ * window; anything still failing after it is a real missing bundle.
+ */
+const BUNDLE_READ_ATTEMPTS = 5
+const BUNDLE_READ_RETRY_DELAY_MS = 150
+const TRANSIENT_READ_CODES = new Set(['ENOENT', 'EBUSY', 'EPERM', 'EACCES'])
+
+/**
+ * Read a bundle with bounded retries over transient filesystem errors.
+ * @param path - absolute bundle or source-map path from the plugin table.
+ * @returns the file body.
+ * @throws the last filesystem error once attempts are exhausted or the error
+ * is not transient.
+ */
+async function readBundleWithRetry(path: string): Promise<Buffer> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= BUNDLE_READ_ATTEMPTS; attempt++) {
+    if (attempt > 1) await new Promise((resolve) => { setTimeout(resolve, BUNDLE_READ_RETRY_DELAY_MS) })
+    try {
+      return await readFile(path)
+    } catch (error) {
+      lastError = error
+      if (!TRANSIENT_READ_CODES.has((error as NodeJS.ErrnoException).code ?? '')) throw error
+    }
+  }
+  throw lastError
+}
+
 /** One composed table row: the wire entry plus the resolved package metadata behind it. */
 interface WebPluginRecord {
   entry: WebBootEntry
@@ -551,14 +583,16 @@ export class ClientModuleRegistry extends Service {
       return
     }
     try {
-      const body = await readFile(path)
+      const body = await readBundleWithRetry(path)
       res.writeHead(200, {
         'content-type': isSourceMap ? 'application/json; charset=utf-8' : 'text/javascript; charset=utf-8',
         'cache-control': 'no-cache',
       })
       res.end(body)
     } catch {
-      // Registered but unreadable (bundle not built yet): loud 404 beats a silent SPA-fallback HTML page.
+      // Registered but unreadable (bundle not built yet, or the transient
+      // read window outlasted the retries below): loud 404 beats a silent
+      // SPA-fallback HTML page.
       res.writeHead(404)
       res.end()
     }

@@ -10,8 +10,17 @@ import type {
   ClientModuleSystemOptions,
 } from './manifest.ts'
 
-/** Default bundle-load hook: same-origin external classic script. */
-const defaultLoadBundle = (url: string): Promise<void> => new Promise((resolve, reject) => {
+/**
+ * Default-transport retry bounds: one script arrival can fail transitely — the
+ * host restarted between the boot manifest render and the fetch, or a dev
+ * watcher is rewriting the bundle file. Bounded retries absorb that window
+ * instead of failing the whole plugin boot; exhausting them stays loud.
+ */
+const LOAD_ATTEMPTS = 3
+const LOAD_RETRY_DELAY_MS = 250
+
+/** One same-origin classic-script load attempt. */
+const loadBundleOnce = (url: string): Promise<void> => new Promise((resolve, reject) => {
   const el = document.createElement('script')
   el.async = true
   el.src = url
@@ -25,6 +34,21 @@ const defaultLoadBundle = (url: string): Promise<void> => new Promise((resolve, 
   }, { once: true })
   document.head.append(el)
 })
+
+/** Default bundle-load hook: same-origin external classic script, retried. */
+const defaultLoadBundle = async (url: string): Promise<void> => {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= LOAD_ATTEMPTS; attempt++) {
+    if (attempt > 1) await new Promise((resolve) => { setTimeout(resolve, LOAD_RETRY_DELAY_MS) })
+    try {
+      await loadBundleOnce(url)
+      return
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError
+}
 
 /**
  * Claim and inventory the <style> tags a factory injected during

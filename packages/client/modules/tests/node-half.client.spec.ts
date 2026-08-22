@@ -7,11 +7,31 @@ import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import { Context } from '@deepseek-ai/cordis'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderIndexInjections, type WebServer, type WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import * as modulesClient from '../src/client/index.ts'
 import { ClientModuleRegistry, bootInjections, orderByModuleGraph } from '../src/index.ts'
 import type { ClientModuleLoaderTarget, WebBootEntry, WebBootGraph } from '../src/client/index.ts'
+
+/**
+ * Scripted transient failures for bundle reads whose path names the flaky
+ * fixture: each serve consumes one, throwing `code`. `Infinity` keeps the
+ * read failing for every retry attempt.
+ */
+const flakyReads = vi.hoisted(() => ({ remaining: 0, code: 'EBUSY' }))
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    readFile: ((path: unknown, ...rest: unknown[]) => {
+      if (flakyReads.remaining > 0 && String(path).includes('flaky-read')) {
+        flakyReads.remaining -= 1
+        throw Object.assign(new Error('scripted transient read failure'), { code: flakyReads.code })
+      }
+      return (actual.readFile as (...args: unknown[]) => unknown)(path, ...rest)
+    }) as typeof actual.readFile,
+  }
+})
 
 const MODULES_ID = '@deepseek-ai/dsh-client-modules'
 const RUNTIME_ID = '@deepseek-ai/dsh-client-runtime'
@@ -243,6 +263,62 @@ describe('client bundle activation', () => {
       'cache-control': 'no-cache',
     })
     expect(body).toBe(map)
+  })
+
+  /** Serve one bundle request through the captured route, returning the outcome. */
+  async function serveBundle(route: WebRoute, url: string): Promise<{ status: number; body: string }> {
+    let status = 0
+    let body = ''
+    const response = {
+      writeHead(nextStatus: number) {
+        status = nextStatus
+        return response
+      },
+      end(chunk?: Uint8Array) {
+        body = chunk === undefined ? '' : Buffer.from(chunk).toString('utf8')
+        return response
+      },
+    } as unknown as ServerResponse
+    await route.handler({ method: 'GET', url } as IncomingMessage, response)
+    return { status, body }
+  }
+
+  it('retries a transient bundle read (watcher rewrite window) and serves the file', async () => {
+    const packageName = '@fixture/flaky-read'
+    const clientPath = writePackage(packageName)
+    mkdirSync(dirname(clientPath), { recursive: true })
+    writeFileSync(clientPath, 'module.exports = {}\n')
+    flakyReads.remaining = 1
+    flakyReads.code = 'EBUSY'
+    const { route } = constructWithRoute([packageName])
+    const { status, body } = await serveBundle(route, `/plugins/${packageName}/client.js`)
+    expect(status).toBe(200)
+    expect(body).toBe('module.exports = {}\n')
+    expect(flakyReads.remaining).toBe(0)
+  })
+
+  it('answers 404 without retries for a non-transient read failure', async () => {
+    const packageName = '@fixture/flaky-read'
+    const clientPath = writePackage(packageName)
+    mkdirSync(dirname(clientPath), { recursive: true })
+    writeFileSync(clientPath, 'module.exports = {}\n')
+    flakyReads.remaining = 1
+    flakyReads.code = 'EISDIR'
+    const { route } = constructWithRoute([packageName])
+    const { status } = await serveBundle(route, `/plugins/${packageName}/client.js`)
+    expect(status).toBe(404)
+  })
+
+  it('answers 404 when transient read failures outlast the retry window', async () => {
+    const packageName = '@fixture/flaky-read'
+    const clientPath = writePackage(packageName)
+    mkdirSync(dirname(clientPath), { recursive: true })
+    writeFileSync(clientPath, 'module.exports = {}\n')
+    flakyReads.remaining = Number.POSITIVE_INFINITY
+    flakyReads.code = 'ENOENT'
+    const { route } = constructWithRoute([packageName])
+    const { status } = await serveBundle(route, `/plugins/${packageName}/client.js`)
+    expect(status).toBe(404)
   })
 })
 

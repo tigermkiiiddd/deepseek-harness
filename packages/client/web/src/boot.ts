@@ -16,7 +16,51 @@ import { STATE_LABELS } from './loader-status.ts'
 import './base.css'
 
 /** Module transport hook replaced by jsdom tests. */
-export type BootSeams = Pick<ClientModuleCreateOptions, 'loadBundle'>
+export type BootSeams = Pick<ClientModuleCreateOptions, 'loadBundle'> & {
+  /**
+   * Page reload invoked by boot-failure recovery (jsdom tests replace it);
+   * defaults to `location.reload()`.
+   */
+  reloadPage?: () => void
+}
+
+/** Recovery poll cadence and consecutive healthy probes required before reload. */
+const RECOVERY_POLL_MS = 3_000
+const RECOVERY_HEALTHY_PROBES = 2
+/** Reload budget per rolling window: a persistently failing boot must stop
+ * reloading and leave the failure report visible for diagnosis. */
+const RECOVERY_RELOAD_BUDGET = 3
+const RECOVERY_BUDGET_WINDOW_MS = 10 * 60_000
+const RECOVERY_BUDGET_KEY = 'dsh-boot-recovery-reloads'
+
+/** Count past reloads inside the rolling window (0 when storage is unavailable). */
+function recoveryReloadCount(now: number): number {
+  let raw: string | null = null
+  try {
+    raw = sessionStorage.getItem(RECOVERY_BUDGET_KEY)
+  } catch {
+    // Locked storage (privacy mode): treat as no prior reloads; the page still
+    // recovers, only without cross-reload budget memory.
+    return 0
+  }
+  if (raw === null) return 0
+  const record = JSON.parse(raw) as { reloads: number[] }
+  return record.reloads.filter(at => now - at < RECOVERY_BUDGET_WINDOW_MS).length
+}
+
+/** Record one reload in the rolling budget window. */
+function recordRecoveryReload(now: number): void {
+  try {
+    const raw = sessionStorage.getItem(RECOVERY_BUDGET_KEY)
+    const reloads = [...(raw === null ? [] : (JSON.parse(raw) as { reloads: number[] }).reloads), now]
+    sessionStorage.setItem(
+      RECOVERY_BUDGET_KEY,
+      JSON.stringify({ reloads: reloads.filter(at => now - at < RECOVERY_BUDGET_WINDOW_MS).slice(-RECOVERY_RELOAD_BUDGET) }),
+    )
+  } catch {
+    // Locked storage: budget memory is best-effort only.
+  }
+}
 
 /** Browser boot entry consumed by `apps/web`. */
 export class AppWebEntry {
@@ -26,11 +70,12 @@ export class AppWebEntry {
   private ctx: Context | undefined
   private modules!: ClientModuleSystem
   private manifest!: BootManifest
+  private disposed = false
 
   /**
    * Draw the boot page; {@link run} starts the loader.
    * @param container - Application mount point.
-   * @param seams - Optional module transport replacement.
+   * @param seams - Optional module transport and reload replacements.
    */
   constructor(container: HTMLElement, seams?: BootSeams) {
     this.container = container
@@ -74,11 +119,50 @@ export class AppWebEntry {
     } catch (reason) {
       console.error(reason)
       this.page.fail(reason instanceof Error ? reason.message : String(reason))
+      this.scheduleRecoveryReload()
     }
+  }
+
+  /**
+   * Reload the page once the origin serves a healthy index again. A boot that
+   * failed against a dead or mid-restart host leaves a wedged page — the
+   * connection layer resumes, but plugin boot never re-runs, so the tab stays
+   * on the failure report until a manual refresh. Recovery polls the index
+   * (no-store) and reloads after consecutive healthy probes; the rolling
+   * sessionStorage budget stops a persistently failing boot from reloading
+   * forever. No-op when the budget is exhausted or after {@link dispose}.
+   */
+  private scheduleRecoveryReload(): void {
+    const reload = this.seams?.reloadPage ?? (() => { location.reload() })
+    if (recoveryReloadCount(Date.now()) >= RECOVERY_RELOAD_BUDGET) return
+    let healthy = 0
+    const poll = (): void => {
+      if (this.disposed) return
+      void fetch(location.href, { cache: 'no-store' })
+        .then((response) => {
+          healthy = response.ok ? healthy + 1 : 0
+        })
+        .catch(() => {
+          healthy = 0
+        })
+        .finally(() => {
+          if (this.disposed) return
+          if (healthy >= RECOVERY_HEALTHY_PROBES) {
+            recordRecoveryReload(Date.now())
+            reload()
+            return
+          }
+          if (recoveryReloadCount(Date.now()) < RECOVERY_RELOAD_BUDGET) {
+            setTimeout(poll, RECOVERY_POLL_MS)
+          }
+        })
+    }
+    setTimeout(poll, RECOVERY_POLL_MS)
   }
 
   /** Dispose the client plugin tree and whichever page owns the mount point. */
   async dispose(): Promise<void> {
+    this.disposed = true
     const ctx = this.ctx
     this.ctx = undefined
     if (ctx !== undefined) await ctx.fiber.dispose()

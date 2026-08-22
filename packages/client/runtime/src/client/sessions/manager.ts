@@ -839,6 +839,7 @@ export class SessionManager {
           ...(frame.agentPreset !== undefined ? { agentPreset: frame.agentPreset } : {}),
         })
         this.sessions.get(frame.sessionId)?.handleBlank(frame.blank)
+        this.sessions.get(frame.sessionId)?.restoreFromRemoval()
         if (frame.origin === 'subagent' && frame.parentSessionId !== undefined) {
           this.markCatalogParentExpandable(frame.parentSessionId)
         }

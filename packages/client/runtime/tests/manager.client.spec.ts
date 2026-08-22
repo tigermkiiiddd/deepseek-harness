@@ -326,6 +326,12 @@ describe('host frame routing', () => {
     expect(manager.getListSnapshot().items).toHaveLength(0)
     expect(session.getSnapshot().removed).toBe(true)
     expect(manager.get(S1)).toBe(session) // resident-instance rule survives removal
+
+    // A re-add under the same id (the reseed/rerun path disposes then recreates
+    // one live agent) must clear the sticky removed bit — the composer must unlock.
+    manager.handleHostEnvelope({ rpcId: 'h6' as never, payload: { type: 'host/session-added', blank: false, sessionId: S1 } })
+    expect(session.getSnapshot().removed).toBe(false)
+    expect(manager.getListSnapshot().items).toHaveLength(1)
   })
 })
 

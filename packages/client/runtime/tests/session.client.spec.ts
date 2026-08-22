@@ -765,6 +765,16 @@ describe('remaining branches', () => {
     expect(session.getSnapshot().removed).toBe(true)
   })
 
+  it('restoreFromRemoval clears the flag once and no-ops when already clear', () => {
+    const { session } = makeSession()
+    const beforeClear = session.getSnapshot()
+    session.restoreFromRemoval() // already false: no-op guard branch
+    expect(session.getSnapshot()).toBe(beforeClear)
+    session.handleRemoved()
+    session.restoreFromRemoval()
+    expect(session.getSnapshot().removed).toBe(false)
+  })
+
   it('drops live events while cold/error (no window upkeep)', async () => {
     const { api, session } = makeSession()
     session.handleMuxEnvelope('r' as never, { type: 'session/event', sessionId: SID, event: ev.user(0, '冷态帧') })
