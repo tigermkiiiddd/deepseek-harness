@@ -10,7 +10,7 @@ Status: implemented
 
 ## 决策
 
-`@deepseek-ai/dsh-compaction-structured` 从日志表层直接计算区域事实,并把它作为权威引导在压缩指令之前注入,让模型只浓缩周围的对话叙述,而不复述或重新推导它们。这个设计建立在压缩能力 seam [`2026-06-18-compaction-capability-seam`](../2026-06-18-compaction-capability-seam.md) 之上,但不改动 `surface` 或 `compaction/*` 事件词汇。
+`@deepseek-ai/dsh-compaction-structured` 从日志表层直接计算区域事实,并把它作为权威引导在压缩指令之前注入,让模型只浓缩周围的对话叙述,而不复述或重新推导它们。这个设计建立在压缩能力 seam [`2026-06-18-compaction-capability-seam`](2026-06-18-compaction-capability-seam.md) 之上,但不改动 `surface` 或 `compaction/*` 事件词汇。
 
 ### 区域事实采集
 
@@ -29,6 +29,7 @@ Status: implemented
 > The following are harness-captured facts about the shadowed region. Treat them as authoritative:
 > - Do not restate, verify, or re-derive them.
 > - Do not request tools to confirm them.
+>
 > Condense only the surrounding conversation narrative.
 
 文件段渲染 `## Files touched in the region (harness-guaranteed)`,每个文件一行 `- <path>: <explanation>`;计划段渲染 `## Active plan (harness-guaranteed)`,承载计划文本。这两段是模型可见的,并在包 README 的 Model Experience 中逐字钉住。

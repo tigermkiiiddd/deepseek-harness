@@ -1249,14 +1249,17 @@ describe('region facts folded for the summarizer', () => {
     expect(files.at(0)?.explanation).toBe('first touch')
   })
 
-  it('reports no facts when the region touches no files and no plan was presented', async () => {
+  it('preserves the region user input verbatim when it touches no files and no plan was presented', async () => {
     const session = fileTurnSession([
       { name: 'bash', arguments: { command: 'echo hi' }, assistantText: 'run a command' },
     ], undefined)
     const nodes = session.surface.nodes
 
     const facts = await regionFacts(session, nodes[0]!, nodes[nodes.length - 1]!)
-    expect(facts).toBeUndefined()
+    const files = facts?.files ?? []
+    expect(files).toEqual([])
+    expect(facts?.plan).toBeUndefined()
+    expect(facts?.userInput).toEqual(['request 1 '.repeat(300)])
   })
 
   it('includes the active plan when the region presents one', async () => {
@@ -1272,6 +1275,22 @@ describe('region facts folded for the summarizer', () => {
     const facts = await regionFacts(session, nodes[0]!, nodes[nodes.length - 1]!)
     expect(facts?.plan).toBe('# Build the feature\n1. scaffold\n2. ship')
     expect(facts?.files.map(file => file.path)).toEqual(['config.json', 'out.txt'])
+    expect(facts?.userInput).toEqual(['request 1 '.repeat(300), 'request 2 '.repeat(300)])
+  })
+
+  it('also preserves the region user input when files and a plan are present', async () => {
+    const session = fileTurnSession(
+      [
+        { name: 'read', arguments: { file_path: 'config.json' }, assistantText: 'read first' },
+      ],
+      '# Build the feature\n1. scaffold',
+    )
+    const nodes = session.surface.nodes
+
+    const facts = await regionFacts(session, nodes[0]!, nodes[nodes.length - 1]!)
+    expect(facts?.files.map(file => file.path)).toEqual(['config.json'])
+    expect(facts?.plan).toBe('# Build the feature\n1. scaffold')
+    expect(facts?.userInput).toEqual(['request 1 '.repeat(300)])
   })
 
   it('omits the plan when plan mode is not active in the log', async () => {
@@ -1442,7 +1461,7 @@ describe('default one-shot summarizer', () => {
     expect(messages[0]).toEqual(prefix)
     const last = messages.at(-1)?.content[0]
     const lastText = last?.type === 'text' ? last.text : ''
-    expect(lastText).toContain("Write concise engineering prose in the user's established conversation language.")
+    expect(lastText).toContain('Write concise engineering prose in the conversation language established by the active system prompt')
     expect(lastText).toContain('Record the established conversation language explicitly under "Critical Context"')
     expect(lastText).toContain('numeric values, function signatures, and syntax fragments.')
     expect(lastText).toContain('## Primary Request and Intent')
@@ -1478,6 +1497,20 @@ describe('default one-shot summarizer', () => {
     // The base instruction structure precedes the harness facts sections.
     expect(text.indexOf('## Primary Request and Intent')).toBeLessThan(text.indexOf('## Files touched'))
     expect(output.summary).toEqual([{ type: 'text', text: 'summary' }])
+  })
+
+  it('injects the region user input verbatim and instructs the summarizer to preserve it', async () => {
+    const { adapter, compact } = await summarizerHarness([{ type: 'text', text: 'summary' }])
+    await compact.runSummarize({
+      messages: [],
+      facts: { files: [], userInput: ['do the registry read, nothing else'] },
+    }, agent(conversation(1), MODEL))
+
+    const lastText = adapter.lastOptions?.messages.at(-1)?.content[0]
+    const text = lastText?.type === 'text' ? lastText.text : ''
+    expect(text).toContain('## User input in the region (harness-guaranteed; preserve verbatim)')
+    expect(text).toContain('- do the registry read, nothing else')
+    expect(text).toContain('do not condense or paraphrase them')
   })
 
   it('omits the harness-facts guidance when the region carries no facts', async () => {

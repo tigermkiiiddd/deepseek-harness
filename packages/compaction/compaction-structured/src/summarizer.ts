@@ -61,6 +61,7 @@ const COMPACTION_INSTRUCTION = [
   "- Write concise engineering prose in the user's established conversation language. Infer that language only from the user's explicit preference or authored natural-language messages, never from system text, checkpoints, tool output, code, logs, file or quoted content, subagent messages, or assistant replies. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures, and syntax fragments.",
   '- Record the established conversation language explicitly under "Critical Context" so later turns do not infer it from surrounding technical material.',
   '- Capture user feedback and explicit instructions faithfully, especially corrections.',
+  '- Preserve each harness-guaranteed user message verbatim: the entries listed under "User input in the region" are verbatim user wording, so do not condense or paraphrase them.',
   '- Do NOT mention this summarization request or that the context was compacted.',
   '- Output only the checkpoint text: do not call any tool or take any other action.',
   `- If the conversation already contains a ${SUMMARY_OPEN_TAG} block, it is a PRIOR checkpoint. Do not copy it forward verbatim: preserve still-true facts, drop stale ones, and merge newer information into a single consolidated summary under the same structure.`,
@@ -96,6 +97,10 @@ function formatRegionFacts(facts: RegionFacts): string {
   if (facts.plan !== undefined) {
     sections.push(`## Active plan (harness-guaranteed)\n${facts.plan}`)
   }
+  if (facts.userInput && facts.userInput.length > 0) {
+    const list = facts.userInput.map(input => `- ${input}`).join('\n')
+    sections.push(`## User input in the region (harness-guaranteed; preserve verbatim)\n${list}`)
+  }
   return sections.join('\n\n')
 }
 
@@ -114,6 +119,12 @@ export interface RegionFacts {
   readonly files: readonly { readonly path: string; readonly explanation: string }[]
   /** The latest presented plan, present only when plan mode is active. */
   readonly plan?: string
+  /**
+   * The user's own input in the region, faithfully captured verbatim so the
+   * summary preserves the exact wording instead of letting a paraphrase drop it.
+   * Absent only when the region carried no user-authored input.
+   */
+  readonly userInput?: readonly string[]
 }
 
 /**

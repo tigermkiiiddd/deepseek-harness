@@ -17,7 +17,7 @@ import {
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
 import { createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
-import type { ContentBlock, Message, UserMessage } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, Message, TextBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { TokenMeasurement, TokenMeter } from '@deepseek-ai/dsh-token-meter'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -508,10 +508,16 @@ function buildSummarizationInput(
     .map(seq => session.deriveEventMessage(events[seq]!))
     .filter((message): message is Message => message !== null)
   const facts = extractRegionFacts(session, shadowedSeqs)
+  const userInput = collectUserInput(regionMessages)
+  const baseFiles = facts?.files ?? []
+  const hasRegionFacts = baseFiles.length > 0 || facts?.plan !== undefined || userInput.length > 0
+  const mergedFacts = hasRegionFacts
+    ? { files: baseFiles, ...(facts?.plan === undefined ? {} : { plan: facts.plan }), ...(userInput.length === 0 ? {} : { userInput }) }
+    : undefined
   return {
     ...header?.system === undefined ? {} : { system: header.system },
     ...header?.tools === undefined ? {} : { tools: header.tools },
-    ...(facts === undefined ? {} : { facts }),
+    ...(mergedFacts === undefined ? {} : { facts: mergedFacts }),
     messages: regionMessages,
   }
 }
@@ -523,6 +529,41 @@ const FILE_TOOL_NAMES: ReadonlySet<string> = new Set([
 
 /** Maximum length of a harness-captured file's adjacent explanation before truncation. */
 const ADJACENT_EXPLANATION_LIMIT = 200
+
+/**
+ * Convert one user-role message to the faithful text the summarizer injects:
+ * every text block verbatim, plus a short note when the message carried any
+ * non-text block, so nothing the user sent is paraphrased away.
+ * @param message - a user-role message authored by the real user, whose content is preserved verbatim.
+ * @returns the message text, or a note when it carried only non-text blocks.
+ */
+function serializeUserInput(message: Message): string {
+  const textBlocks = message.content.filter((block): block is TextBlock => block.type === 'text')
+  const text = textBlocks.map(block => block.text).join('\n')
+  const nonText = message.content.length - textBlocks.length
+  const note = nonText > 0 ? `\n\n[user content: ${nonText} non-text block(s) omitted]` : ''
+  return `${text}${note}`
+}
+
+/**
+ * Collect the user's own input from a region, deterministically, in surface
+ * order: messages authored by the real user (not by the model, a plugin, or a
+ * tool result), so the summarizer preserves the exact wording the user typed
+ * instead of letting a later summary paraphrase it away. A `tool`-sourced
+ * message carries the model's result rather than the user's input, so it is
+ * excluded even though its role is `user`.
+ * @param regionMessages - the region's derived messages, in surface order.
+ * @returns the user messages' faithful text, in first-seen order.
+ */
+function collectUserInput(regionMessages: readonly Message[]): readonly string[] {
+  const collected: string[] = []
+  for (const message of regionMessages) {
+    if (message.role !== 'user' || message.source.kind !== 'user') continue
+    const text = serializeUserInput(message)
+    if (text.length > 0) collected.push(text)
+  }
+  return collected
+}
 
 /**
  * Compute the harness facts the summarizer injects verbatim for a shadowed

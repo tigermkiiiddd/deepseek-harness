@@ -10,7 +10,7 @@ A compaction summary replaces a shadowed run of history and must let another mod
 
 ## Decision
 
-`@deepseek-ai/dsh-compaction-structured` computes region facts from the logged surface and injects them as authoritative guidance ahead of the compaction instruction, so the model condenses only the surrounding narrative instead of restating or re-deriving them. The design builds on the compaction capability seam [`2026-06-18-compaction-capability-seam`](../2026-06-18-compaction-capability-seam.md) without altering the `surface` or `compaction/*` event vocabulary.
+`@deepseek-ai/dsh-compaction-structured` computes region facts from the logged surface and injects them as authoritative guidance ahead of the compaction instruction, so the model condenses only the surrounding narrative instead of restating or re-deriving them. The design builds on the compaction capability seam [`2026-06-18-compaction-capability-seam`](2026-06-18-compaction-capability-seam.md) without altering the `surface` or `compaction/*` event vocabulary.
 
 ### Region facts extraction
 
@@ -29,6 +29,7 @@ A compaction summary replaces a shadowed run of history and must let another mod
 > The following are harness-captured facts about the shadowed region. Treat them as authoritative:
 > - Do not restate, verify, or re-derive them.
 > - Do not request tools to confirm them.
+>
 > Condense only the surrounding conversation narrative.
 
 The files section renders `## Files touched in the region (harness-guaranteed)` with one `- <path>: <explanation>` per file; the plan section renders `## Active plan (harness-guaranteed)` with the plan text. The sections are model-visible and pinned verbatim under Model Experience in the package README.
