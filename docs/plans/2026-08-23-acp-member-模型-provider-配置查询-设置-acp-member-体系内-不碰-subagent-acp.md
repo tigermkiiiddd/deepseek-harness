@@ -1,45 +1,55 @@
-# acp member 模型 + provider 配置查询/设置(ACP member 体系内,不碰 subagent-acp)
+# acp member model + provider config query/set (inside the ACP member system, not touching subagent-acp)
 
-## 验收标准(核心)
-- **不手改任何配置文件**——查/改模型配置、provider 配置全部通过 tools 完成。
-- 能查 grok 当前模型;能设 grok 模型。
-- 能查 grok 当前 provider 列表;能设 provider。
-- 缺能力(如 grok 未声明 `providers` capability)时,对应工具显式返回"不支持",不崩溃。
+English | [中文](2026-08-23-acp-member-模型-provider-配置查询-设置-acp-member-体系内-不碰-subagent-acp.zh.md)
 
-## 已核实事实
-1. `subagent-acp` 是官方包(deepseek-ai/deepseek-harness master 存在),非本地 fork。"不动官方"= 不碰 subagent-acp 和 ACP SDK。
-2. `@agentclientprotocol/sdk` 0.25.1 能力齐全:`ClientSideConnection.setSessionConfigOption`、`unstable_listProviders`、`unstable_setProvider`。
-3. 断裂只在 `team/MemberConnection`:不解析 `configOptionUpdate`、从不发 `setSessionConfigOption`、不探 `providers` 能力。
+## Acceptance criteria (core)
 
-## ACP 机制(官方约定)
-- **模型**:agent 在创建/加载会话或模型变化时发 `session/update`(`sessionUpdate==='configOptionUpdate'`),`configOptions` 即全部配置项+当前值;客户端调 `setSessionConfigOption` 的响应也回传 `configOptions`。取 `category==='model'`(兜底 `id==='model'`)的 `currentValue`。
-- **Provider**:`unstable_listProviders()` → `{ providers: ProviderInfo[] }`;`unstable_setProvider({ id, apiType, baseUrl, headers? })` 配置 provider;还有 `DisableProvider`。三者都要求 agent 声明 `providers` capability(grok 未声明则相应工具返回不支持)。
+- **Never hand-edit any config file** — querying/setting the model config and provider config is done entirely through tools.
+- Can query grok's current model; can set grok's model.
+- Can query grok's current provider list; can set the provider.
+- When the capability is missing (e.g. grok does not declare the `providers` capability), the corresponding tool explicitly returns "not supported", no crash.
 
-## 改动(仅 `packages/team`;基础设施共用;subagent-acp、SDK 不动)
+## Verified facts
+
+1. `subagent-acp` is an official package (present on deepseek-ai/deepseek-harness master), not a local fork. "Do not touch official" = leave subagent-acp and the ACP SDK alone.
+2. `@agentclientprotocol/sdk` 0.25.1 has full capabilities: `ClientSideConnection.setSessionConfigOption`, `unstable_listProviders`, `unstable_setProvider`.
+3. The break only lives in `team/MemberConnection`: it does not parse `configOptionUpdate`, never sends `setSessionConfigOption`, and does not probe the `providers` capability.
+
+## ACP mechanism (official convention)
+
+- **Model**: on creating/loading a session or on a model change, the agent sends `session/update` (`sessionUpdate==='configOptionUpdate'`); `configOptions` is the full set of config entries plus their current values; the response of the client call to `setSessionConfigOption` also carries `configOptions`. Take the `currentValue` of `category==='model'` (fallback `id==='model'`).
+- **Provider**: `unstable_listProviders()` → `{ providers: ProviderInfo[] }`; `unstable_setProvider({ id, apiType, baseUrl, headers? })` configures the provider; there is also `DisableProvider`. All three require the agent to declare the `providers` capability (if grok does not declare it, the corresponding tool returns "not supported").
+
+## Changes (only `packages/team`; infrastructure is shared; subagent-acp and the SDK are untouched)
 
 ### 1. `packages/team/team/src/member.ts` — `MemberConnection`
-- `receiveUpdate()`:识别 `configOptionUpdate`,按 `sessionId` 缓存 `configOptions`。
-- 新增方法:
-  - `getSessionConfig(sessionId)` / `setSessionConfig(sessionId, configId, value)`(调 `conn.setSessionConfigOption`)。
-  - `listProviders()` → `conn.unstable_listProviders()`(仅当 `capabilities` 含 `providers` capability)。
-  - `setProvider(id, apiType, baseUrl, headers?)` / `disableProvider(id)` → `conn.unstable_setProvider(...)` / `conn.disableProvider(...)`(同上, gated on capability)。
-- `newSession`/`loadSession` 抓到初始 `configOptionUpdate` 与 provider 信息。
-- `currentModel(sessionId)` 从缓存 config 挑 model 项。
+
+- `receiveUpdate()`: recognize `configOptionUpdate`, cache `configOptions` per `sessionId`.
+- New methods:
+  - `getSessionConfig(sessionId)` / `setSessionConfig(sessionId, configId, value)` (calls `conn.setSessionConfigOption`).
+  - `listProviders()` → `conn.unstable_listProviders()` (only when `capabilities` includes the `providers` capability).
+  - `setProvider(id, apiType, baseUrl, headers?)` / `disableProvider(id)` → `conn.unstable_setProvider(...)` / `conn.disableProvider(...)` (same, gated on capability).
+- `newSession`/`loadSession` catch the initial `configOptionUpdate` and the provider info.
+- `currentModel(sessionId)` picks the model entry from the cached config.
 
 ### 2. `packages/team/team/src/types.ts` + `index.ts` — `TeamService`
-- `getConfig(memberId, sessionId?)` / `setConfig(memberId, sessionId, configId, value)`。
-- `listProviders(memberId)` / `setProvider(memberId, {id, apiType, baseUrl, headers?})` / `disableProvider(memberId, id)`。
-- `MemberSnapshot` 带 `model?`(及可选 providers 快照);错误语义与现有 `RequestError` 分支一致。
 
-### 3. `packages/team/tool-team/src/index.ts` — 模型-facing 工具
-- `member-model`:`{ sessionId?, action: 'get' | 'set', value? }` —— 查/设模型配置。
-- `member-provider`:`{ action: 'list' | 'set', id?, apiType?, baseUrl?, headers? }` —— 查/设 provider。
-- schema 不含 ACP/transport 词汇。
+- `getConfig(memberId, sessionId?)` / `setConfig(memberId, sessionId, configId, value)`.
+- `listProviders(memberId)` / `setProvider(memberId, {id, apiType, baseUrl, headers?})` / `disableProvider(memberId, id)`.
+- `MemberSnapshot` carries `model?` (and an optional providers snapshot); the error semantics match the existing `RequestError` branch.
 
-### 4. 配套
-- 真·组合/快照测试:`configOptionUpdate` 解析、`setSessionConfigOption`、provider 探能力门禁、空 config/providers 兜底、snapshot 模型字段。
-- README + JSDoc、package `./invariant`、一条 Agent Note。
+### 3. `packages/team/tool-team/src/index.ts` — model-facing tools
 
-## 非目标
-- 不动 `subagent-acp`、不动 `@agentclientprotocol/sdk`、不在 subagent 委派链上做。
-- provider 部分为实验性(`unstable_*`),仅在 agent 声明 `providers` capability 时生效。
+- `member-model`: `{ sessionId?, action: 'get' | 'set', value? }` — query/set the model config.
+- `member-provider`: `{ action: 'list' | 'set', id?, apiType?, baseUrl?, headers? }` — query/set the provider.
+- The schema contains no ACP/transport vocabulary.
+
+### 4. Supporting
+
+- Real composition/snapshot tests: `configOptionUpdate` parsing, `setSessionConfigOption`, the provider capability-probe guard, empty config/providers fallback, snapshot model fields.
+- README + JSDoc, the package `./invariant`, one Agent Note.
+
+## Out of scope
+
+- Leave `subagent-acp` alone, leave `@agentclientprotocol/sdk` alone, do not work on the subagent delegation chain.
+- The provider parts are experimental (`unstable_*`) and take effect only when the agent declares the `providers` capability.
