@@ -330,7 +330,9 @@ function makeAgent(conn: AgentSideConnection): Agent {
       // A select option's value is a bare string; a boolean option carries
       // `{ type: 'boolean', value: boolean }`. The mock only models the model
       // selector, so read the string value id when present.
-      const newValue = typeof params.value === 'string' ? params.value : (params.value as { value: unknown }).value
+      const newValue = typeof params.value === 'string'
+        ? params.value
+        : (params.value as unknown as { value: unknown }).value
       const updated = buildConfigOptions(MODEL).map(option =>
         option.type === 'select' && option.id === params.configId
           ? { ...option, currentValue: newValue as string }

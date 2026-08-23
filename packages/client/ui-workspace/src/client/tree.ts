@@ -286,6 +286,8 @@ function sessionNode(
  * @param workspaces - real workspaces in stable Host order.
  * @param archivedSessionIds - registry-global archive set.
  * @param view - local expansion arrays.
+ * @param scope - agent scope: `null` (default) hides member topics; a member
+ *   id shows only that member's topics.
  * @returns group sections in render order.
  */
 export function deriveGroups(

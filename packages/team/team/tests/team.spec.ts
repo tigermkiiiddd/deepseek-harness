@@ -345,7 +345,7 @@ describe('member sessions (owned by the member process)', () => {
       await harness.service.start('architect')
       const providers = await harness.service.listProviders('architect')
       expect(providers.map(provider => provider.id)).toContain('mock-provider')
-      expect(providers[0].current).toEqual({ apiType: 'openai', baseUrl: 'https://mock.example/v1' })
+      expect(providers[0]!.current).toEqual({ apiType: 'openai', baseUrl: 'https://mock.example/v1' })
     })
 
     it('rejects provider listing when the capability is not advertised', async () => {

@@ -209,7 +209,12 @@ function currentModel(
   return { currentValue: option.currentValue as string, options: option.options }
 }
 
-/** Resolve the full session configuration set to a snapshot. */
+/**
+ * Resolve the full session configuration set to a snapshot.
+ * @param options - the session configuration option set.
+ * @returns the resolved option infos plus the model selector, whose `model` is
+ *   `undefined` when the option set carries no model choice.
+ */
 export function sessionConfigToSnapshot(options: readonly SessionConfigOption[]): SessionConfigSnapshot {
   const resolved = options.map(optionToInfo)
   return { options: resolved, model: currentModel(resolved) }
