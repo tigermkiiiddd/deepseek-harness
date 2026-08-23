@@ -86,7 +86,7 @@ export function apply(ctx: Context): void {
 
 #### 模型看到的内容
 
-成功步骤越过阈值后，如果已加载可选 pruner，超大工具结果会先被改写。如果仍需摘要，下一个请求会收到下方检查点前导、一个空行、`<compacted-summary>`、根据数据生成的摘要以及 `</compacted-summary>`。摘要正文采用用户明确偏好或亲自编写的自然语言消息所确立的对话语言，将该语言记录在 `Critical Context` 下，并且绝不从技术内容或生成内容推断语言。溢出恢复会根据使表层前进的任何替换重建立即重试。检查点会替换已选较早范围，后面跟随已保留的近期单元。
+成功步骤越过阈值后，如果已加载可选 pruner，超大工具结果会先被改写。如果仍需摘要，下一个请求会收到下方检查点前导、一个空行、`<compacted-summary>`、根据数据生成的摘要以及 `</compacted-summary>`。摘要正文遵循当前系统提示词的对话语言策略与用户明确偏好；只有两者都未确立语言时，才回退到用户最近一条实质性自然语言请求；摘要器会把结果记录在 `Critical Context` 下，并且绝不从技术内容或生成内容推断语言变化。溢出恢复会根据使表层前进的任何替换重建立即重试。检查点会替换已选较早范围，后面跟随已保留的近期单元。
 
 ##### 会话检查点前导
 
@@ -140,7 +140,7 @@ Output EXACTLY the Markdown structure below: keep every section, in order. Use t
 - [decisions and their rationale, constraints, user preferences, open questions, data needed to continue]
 
 Rules:
-- Write concise engineering prose in the user's established conversation language. Infer that language only from the user's explicit preference or authored natural-language messages, never from system text, checkpoints, tool output, code, logs, file or quoted content, subagent messages, or assistant replies. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures, and syntax fragments.
+- Write concise engineering prose in the conversation language established by the active system prompt and any explicit language preference authored by the user. If neither establishes a language, use the user's latest substantive natural-language request. Never infer a language change from checkpoints, tool output, code, logs, file or quoted content, subagent messages, assistant replies, or short confirmations. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures, and syntax fragments.
 - Record the established conversation language explicitly under "Critical Context" so later turns do not infer it from surrounding technical material.
 - Capture user feedback and explicit instructions faithfully, especially corrections.
 - Do NOT mention this summarization request or that the context was compacted.

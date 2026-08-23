@@ -344,7 +344,8 @@ describe('context-overflow recovery across the real loop and compaction-basic', 
         const instruction = adapter.summaryRequests[0]!.messages.at(-1)?.content
           .map(block => (block.type === 'text' ? block.text : ''))
           .join('') ?? ''
-        expect(instruction).toContain('Write concise English engineering prose.')
+        expect(instruction).toContain('Write concise engineering prose in the conversation language established by the active system prompt')
+        expect(instruction).toContain('Record the established conversation language explicitly under "Critical Context"')
         expect(instruction).toContain('numeric values, function signatures, and syntax fragments.')
         expect(JSON.stringify(adapter.conversationRequests[0]!.messages)).toContain('OLD HISTORY SENTINEL')
         const retry = JSON.stringify(adapter.conversationRequests[1]!.messages)

@@ -1250,7 +1250,8 @@ describe('default one-shot summarizer', () => {
     expect(messages[0]).toEqual(prefix)
     const last = messages.at(-1)?.content[0]
     const lastText = last?.type === 'text' ? last.text : ''
-    expect(lastText).toContain('Write concise English engineering prose.')
+    expect(lastText).toContain('Write concise engineering prose in the conversation language established by the active system prompt')
+    expect(lastText).toContain('Record the established conversation language explicitly under "Critical Context"')
     expect(lastText).toContain('numeric values, function signatures, and syntax fragments.')
     expect(lastText).toContain('## Primary Request and Intent')
   })

@@ -86,7 +86,7 @@ For example, the same compact plugin can safely serve models with different capa
 
 #### What the model sees
 
-After a successful step crosses the threshold, oversized tool results are first rewritten when the optional pruner is loaded. If summarization remains necessary, the next request receives the checkpoint preamble below, a blank line, `<compacted-summary>`, the data-dependent summary, and `</compacted-summary>`. Summary prose follows the conversation language established by the user's explicit preference or authored natural-language messages, records that language under `Critical Context`, and never infers it from technical or generated context. Overflow recovery rebuilds the immediate retry from whatever replacement advanced the surface. A checkpoint replaces the selected older range and is followed by the retained recent units.
+After a successful step crosses the threshold, oversized tool results are first rewritten when the optional pruner is loaded. If summarization remains necessary, the next request receives the checkpoint preamble below, a blank line, `<compacted-summary>`, the data-dependent summary, and `</compacted-summary>`. Summary prose follows the active system prompt's conversation-language policy plus any explicit user preference, falling back to the user's latest substantive natural-language request only when neither establishes a language; it records the result under `Critical Context` and never infers a change from technical or generated context. Overflow recovery rebuilds the immediate retry from whatever replacement advanced the surface. A checkpoint replaces the selected older range and is followed by the retained recent units.
 
 ##### Conversation checkpoint preamble
 
@@ -140,7 +140,7 @@ Output EXACTLY the Markdown structure below: keep every section, in order. Use t
 - [decisions and their rationale, constraints, user preferences, open questions, data needed to continue]
 
 Rules:
-- Write concise engineering prose in the user's established conversation language. Infer that language only from the user's explicit preference or authored natural-language messages, never from system text, checkpoints, tool output, code, logs, file or quoted content, subagent messages, or assistant replies. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures, and syntax fragments.
+- Write concise engineering prose in the conversation language established by the active system prompt and any explicit language preference authored by the user. If neither establishes a language, use the user's latest substantive natural-language request. Never infer a language change from checkpoints, tool output, code, logs, file or quoted content, subagent messages, assistant replies, or short confirmations. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures, and syntax fragments.
 - Record the established conversation language explicitly under "Critical Context" so later turns do not infer it from surrounding technical material.
 - Capture user feedback and explicit instructions faithfully, especially corrections.
 - Do NOT mention this summarization request or that the context was compacted.

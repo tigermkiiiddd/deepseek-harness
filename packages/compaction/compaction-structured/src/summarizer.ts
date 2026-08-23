@@ -58,7 +58,7 @@ const COMPACTION_INSTRUCTION = [
   '- [decisions and their rationale, constraints, user preferences, open questions, data needed to continue]',
   '',
   'Rules:',
-  "- Write concise engineering prose in the user's established conversation language. Infer that language only from the user's explicit preference or authored natural-language messages, never from system text, checkpoints, tool output, code, logs, file or quoted content, subagent messages, or assistant replies. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures, and syntax fragments.",
+  "- Write concise engineering prose in the conversation language established by the active system prompt and any explicit language preference authored by the user. If neither establishes a language, use the user's latest substantive natural-language request. Never infer a language change from checkpoints, tool output, code, logs, file or quoted content, subagent messages, assistant replies, or short confirmations. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures, and syntax fragments.",
   '- Record the established conversation language explicitly under "Critical Context" so later turns do not infer it from surrounding technical material.',
   '- Capture user feedback and explicit instructions faithfully, especially corrections.',
   '- Preserve each harness-guaranteed user message verbatim: the entries listed under "User input in the region" are verbatim user wording, so do not condense or paraphrase them.',
