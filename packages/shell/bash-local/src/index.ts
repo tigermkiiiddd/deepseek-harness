@@ -66,6 +66,21 @@ function finalOutput(reader: SubprocessOutputReader): CollectedOutput {
   }
 }
 
+/**
+ * Strip WSL's one-time stderr banner that leaks onto every spawned process's
+ * stderr on Windows+WSL (a `wsl`/`WSL` marker followed by NUL-separated,
+ * sometimes binary, noise). It is environment noise, not command output, so it
+ * is removed before the model-facing result. No-op on non-WSL hosts, where no
+ * such marker bytes appear.
+ */
+function cleanStderr(text: string): string {
+  // The marker is UTF-16-ish, so `w`/`s`/`l` are spaced by NUL bytes; match the
+  // leading marker and drop everything from it onward (the banner is the whole
+  // stderr on WSL, ahead of any real command output).
+  const idx = text.search(/[\x00]*w[\x00]*s[\x00]*l[\x00]*/i)
+  return idx === -1 ? text : text.slice(0, idx)
+}
+
 function assertPositiveFinite(name: string, value: number): void {
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error(`bash-local: ${name} must be a positive finite number`)
@@ -229,13 +244,14 @@ export class LocalBashExecutor extends ShellExecutor {
     // Only this executor's timeout reason counts as timedOut; outer deadlines count as aborts.
     const timedOut = timeoutOf(d.signal, 'BASH_TIMEOUT') !== undefined
     const aborted = d.signal.aborted && !timedOut
+    const stderrOutput = finalOutput(collected.stderr)
     return {
       ...outcome,
       timedOut,
       aborted,
       timeoutMs: spec.timeoutMs,
       stdout: finalOutput(collected.stdout),
-      stderr: finalOutput(collected.stderr),
+      stderr: { ...stderrOutput, text: cleanStderr(stderrOutput.text) },
     }
   }
 
@@ -294,7 +310,8 @@ export class LocalBashExecutor extends ShellExecutor {
 
         // A failed spawn never produced process output, so the note and real
         // stderr text are mutually exclusive.
-        const errText = err.text.length > 0 ? err.text : consumeSpawnFailure()
+        const rawErr = err.text.length > 0 ? err.text : consumeSpawnFailure()
+        const errText = cleanStderr(rawErr)
         // Single newline between sections: stdout chunks usually end with one
         // already; add it only when missing.
         const separator = out.text.length > 0 && !out.text.endsWith('\n') ? '\n' : ''
