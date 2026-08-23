@@ -24,7 +24,7 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-tool-bash-persistent` | `bash` | `ctx.tools`, `ctx.terminals`, `an owning Agent at execution time` | `tool/call`, `PTY shell state`, `tool/result` | - | One owner-isolated persistent bash tool; deployment composition supplies the PTY backend and may override the model-facing environment description. |
 | `@deepseek-ai/dsh-tool-pwsh-persistent` | `pwsh` | `ctx.tools`, `ctx.terminals`, `an owning Agent at execution time` | `tool/call`, `PTY shell state`, `tool/result` | - | One owner-isolated persistent pwsh tool, the Windows counterpart of the persistent bash tool; deployment composition supplies a pwsh-dialect PTY backend and may override the model-facing environment description. |
 | `@deepseek-ai/dsh-tool-str-replace-editor` | `str_replace_editor` | `ctx.tools`, `ctx.fs` | `tool/call`, `fs/observed after view presence/absence, edit absence, or successful mutation`, `tool/result` | - | Standalone view/create/unique literal replace/line insert tool over the filesystem seam; it composes with any shell or terminal API. |
-| `@deepseek-ai/dsh-tool-fs` | `edit`, `read`, `read_image`, `write` | `ctx.tools`, `ctx.fs`, `ctx.systemPrompt`, `ctx.attachments (image-tool registration)`, `ctx.llm + an image-capable route (image-tool execution)` | `tool/call`, `fs/write-intent or fs/edit-intent for mutations`, `fs/observed after read presence/absence or successful file operation`, `durable attachment (read_image)`, `tool/result` | - | The read-before-write/edit policy is added by `@deepseek-ai/dsh-fs-observation-policy` (an `fs/*` event-gate plugin, no schema change); a deployment that loads these tools is expected to also load it. The image tool is not registered without `ctx.attachments`; its schema is route-independent, and execution refuses unless the exact routed model declares image input. |
+| `@deepseek-ai/dsh-tool-fs` | `edit`, `read`, `read_image`, `set_cwd`, `write` | `ctx.tools`, `ctx.fs`, `ctx.systemPrompt`, `ctx.attachments (image-tool registration)`, `ctx.llm + an image-capable route (image-tool execution)` | `tool/call`, `fs/write-intent or fs/edit-intent for mutations`, `fs/observed after read presence/absence or successful file operation`, `durable attachment (read_image)`, `tool/result` | - | The read-before-write/edit policy is added by `@deepseek-ai/dsh-fs-observation-policy` (an `fs/*` event-gate plugin, no schema change); a deployment that loads these tools is expected to also load it. The image tool is not registered without `ctx.attachments`; its schema is route-independent, and execution refuses unless the exact routed model declares image input. |
 | `@deepseek-ai/dsh-tool-fs-search` | `glob`, `grep` | `ctx.tools`, `ctx.subprocess`, `ctx.systemPrompt` | `tool/call`, `tool/result` | - | glob and grep are unconditional discovery tools that spawn the packaged ripgrep binary (`@vscode/ripgrep`) through ctx.subprocess as ordinary foreground calls (never background jobs) — no host `rg` install and no shell layer. The catalog uses `sampleOverCapGlobResults: true`; deployments must choose that behavior explicitly. Capped results save the complete formatted list through the optional ctx.spillStore backend; returned locators are follow-up-readable/searchable when the backend exposes local paths in co-located deployments. |
 | `@deepseek-ai/dsh-tool-terminal` | `terminal_close`, `terminal_list`, `terminal_open`, `terminal_read`, `terminal_send`, `terminal_signal` | `ctx.tools`, `ctx.terminals`, `ctx.systemPrompt`, `ctx.jobs at call time for run_in_background` | `tool/call`, `tool/result` | - | The six terminal tools are opt-in and complement one-shot shell/filesystem tools. `terminal_send(run_in_background: true)` registers with `ctx.jobs`; TUI, named key sequences, BEL, resize, auto-start, and cross-agent sharing are absent from the schema. |
 | `@deepseek-ai/dsh-tool-goal` | `create_goal`, `get_goal`, `update_goal` | `ctx.tools`, `ctx.agents`, `ctx.goals`, `ctx.systemPrompt`, `a calling Agent in an authorized open turn` | `tool/call`, `goal/change for mutations`, `tool/result` | - | create, edit, pause, and resume require direct-human root authority; complete and blocked also accept the exact current goal round. The default blocked lower bound is three admitted rounds. |
@@ -39,6 +39,7 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-tool-subagent-report` | `report` | `ctx.subagents`, `ctx.systemPrompt`, `a live continuable in-process child Agent` | `tool/call`, `tool/result`, `a user-role message in the direct parent session` | - | Registered per continuable in-process child rather than globally, so this schema is visible only inside such a child and survives its global `toolFilter`. The same contribution installs the child-scoped `tool:report` prompt section, which this catalog does not render. The parent-facing `send_message` tool is installed independently. |
 | `@deepseek-ai/dsh-tool-jobs` | `job_kill`, `job_list`, `job_output` | `ctx.tools`, `ctx.jobs`, `ctx.systemPrompt` | `tool/call`, `tool/result`, `user/message via agent.inject() for background completion notices` | - | The kind-agnostic background-job controller: background bash commands, PTY sends, and subagents are read, listed, and killed through the same three tools. Loading the plugin attaches the controller that arms producers' `ctx.jobs.start()`. |
 | `@deepseek-ai/dsh-experimental-tool-agent-team` | `followup_task`, `interrupt_agent`, `list_agents`, `send_message`, `spawn_teammate`, `team_task_create`, `team_task_get`, `team_task_list`, `team_task_update`, `wait_agent` | `ctx.tools`, `ctx.systemPrompt`, `ctx.agentTeams`, `an exact live Team member Agent` | `tool/call`, `team/member`, `team/message/queued`, `team/message/delivered`, `team/task`, `tool/result` | - | All ten tools are scoped to implicit Team Leads and durable teammates. The shipped dsh-base bundle keeps the package disabled; the documented Agent Teams profile patch enables it while disabling the legacy continuable-child control names. |
+| `@deepseek-ai/dsh-tool-team` | `member_add`, `member_chat`, `member_model`, `member_provider`, `member_remove`, `member_restart`, `member_sessions`, `member_start`, `member_stop` | `ctx.tools` | `tool/call`, `tool/result`, `team/message/queued` | - | Model-facing team tools over the host `team` service: enumerate the roster and each member's own conversation topics, chat with a member on a topic (or a new one), and manage the roster and member lifecycle (add / remove / start / stop / restart). Members own their sessions and are driven through the ACP wire. |
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`, `owning Agent session` | `tool/call`, `todo/write`, `tool/result` | - | todo_write is session-owned state; UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task. |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`, `ctx.workflowEngine`, `ctx.systemPrompt`, `a calling Agent (exec.agent parents the script children)` | `tool/call`, `tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`, `web_search` | `ctx.tools`, `ctx.web`, `ctx.systemPrompt` | `tool/call`, `tool/result` | - | web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps. |
@@ -2078,21 +2079,326 @@ Source: [`packages/experimental/tool-agent-team/src/index.ts`](../packages/exper
 
 All ten tools are scoped to implicit Team Leads and durable teammates. The shipped dsh-base bundle keeps the package disabled; the documented Agent Teams profile patch enables it while disabling the legacy continuable-child control names.
 
+<a id="deepseek-aidsh-tool-team"></a>
+
+## `@deepseek-ai/dsh-tool-team`
+
+### `member_add`
+
+Add a new team member at runtime: spawn its ACP agent process, persist it in the team roster, and join it to the team. The member is re-spawned automatically after a host restart (unless autostart is false). Use member_remove to tear it down and forget it.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "Stable member id, unique within the team."
+    },
+    "title": {
+      "type": "string",
+      "description": "Display name shown in the team view."
+    },
+    "description": {
+      "type": "string",
+      "description": "One-line role or persona description."
+    },
+    "kind": {
+      "type": "string",
+      "description": "Member kind: \"dsh\" relaunches the current harness installation as an ACP server; command and args must be omitted.",
+      "enum": [
+        "dsh"
+      ]
+    },
+    "command": {
+      "type": "string",
+      "description": "Executable that runs an ACP agent (any ACP server). Required unless kind is \"dsh\"."
+    },
+    "args": {
+      "type": "array",
+      "description": "Arguments passed to the member command.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "cwd": {
+      "type": "string",
+      "description": "Working directory for the member process and its sessions; omit to use the harness launch directory."
+    },
+    "env": {
+      "type": "object",
+      "description": "Extra environment variables layered over the full parent environment (credentials included); every value must be a string.",
+      "additionalProperties": true
+    },
+    "permission": {
+      "type": "string",
+      "description": "Auto-answer the member's permission prompts with this policy when no GUI subscriber answers them.",
+      "enum": [
+        "allow",
+        "reject"
+      ]
+    },
+    "autostart": {
+      "type": "boolean",
+      "description": "Start the member now and on every host restart (default true)."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+Source: [`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_chat`
+
+Chat with a team member on one of its topics. Pass an existing topic id from member_sessions to continue that conversation, or set new_topic to start a fresh topic on the member. Returns the member's full reply.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to talk to."
+    },
+    "text": {
+      "type": "string",
+      "description": "Your message to the member."
+    },
+    "topic": {
+      "type": "string",
+      "description": "The member's topic id to continue (from member_sessions)."
+    },
+    "new_topic": {
+      "type": "boolean",
+      "description": "Start a new topic on the member instead of continuing one."
+    }
+  },
+  "required": [
+    "member_id",
+    "text"
+  ]
+}
+```
+
+Source: [`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_model`
+
+Query or set a team member's session model configuration. Use action "get" to read the current model and its selectable options, or "set" to switch the model to one of those value ids. Requires a session id from member_sessions; create one with member_chat new_topic first. The member must advertise session config options, otherwise the call reports it.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member whose model config is read or set."
+    },
+    "session_id": {
+      "type": "string",
+      "description": "The member session (topic) id from member_sessions."
+    },
+    "action": {
+      "type": "string",
+      "description": "\"get\" reads the current model and its options (default); \"set\" switches the model to value.",
+      "enum": [
+        "get",
+        "set"
+      ]
+    },
+    "value": {
+      "type": "string",
+      "description": "The model value id to set (action \"set\"); pick one from a prior \"get\"."
+    }
+  },
+  "required": [
+    "member_id",
+    "session_id"
+  ]
+}
+```
+
+Source: [`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_provider`
+
+List or set a team member's ACP provider configuration. Use action "list" to read the advertised providers, or "set" to configure one (id, api_type, base_url, optional headers). Requires the member to advertise the providers capability, otherwise the call reports it.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member whose providers are listed or set."
+    },
+    "action": {
+      "type": "string",
+      "description": "\"list\" reads the advertised providers (default); \"set\" configures one.",
+      "default": "list",
+      "enum": [
+        "list",
+        "set"
+      ]
+    },
+    "id": {
+      "type": "string",
+      "description": "Provider id (action \"set\")."
+    },
+    "api_type": {
+      "type": "string",
+      "description": "Protocol: anthropic/openai/azure/vertex/bedrock (action \"set\")."
+    },
+    "base_url": {
+      "type": "string",
+      "description": "Base URL for the provider (action \"set\")."
+    },
+    "headers": {
+      "type": "object",
+      "description": "Headers map for the provider (action \"set\"); every value must be a string.",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+Source: [`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_remove`
+
+Remove a team member: tear down its process, drop it from the roster, and delete its persisted roster record. The member's own sessions stay with the member; adding the same id later spawns a fresh process. A member that is also declared in the deployment config reappears at the next restart.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to remove."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+Source: [`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_restart`
+
+Restart a team member: stop its process, then start it again. Use after a member is offline or misbehaving.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to restart."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+Source: [`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_sessions`
+
+List the team members and each member's own conversation topics. Use the returned topic ids with member_chat to continue a topic or start a new one.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "Optional member id; omit to list every member."
+    }
+  }
+}
+```
+
+Source: [`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_start`
+
+Start a team member: spawn its ACP agent process and complete the protocol handshake. Idempotent — starting a running member settles immediately. Members autostart by default; use this to bring a stopped or failed member back up.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to start."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+Source: [`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_stop`
+
+Stop a team member: tear down its process and return it to offline. The member's own sessions stay with the member and remain listable after a later start.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to stop."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+Source: [`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+Model-facing team tools over the host `team` service: enumerate the roster and each member's own conversation topics, chat with a member on a topic (or a new one), and manage the roster and member lifecycle (add / remove / start / stop / restart). Members own their sessions and are driven through the ACP wire.
+
 <a id="deepseek-aidsh-tool-todo"></a>
 
 ## `@deepseek-ai/dsh-tool-todo`
 
 ### `todo_write`
 
-Record and update a structured task list for the current work. Send the ENTIRE list every call — it REPLACES the previous list (there are no partial updates, no per-item edits). Use it to plan multi-step work and show progress: add one todo per concrete step before you start. Mark every todo being actively worked on `in_progress` — several at once when work genuinely runs in parallel (e.g. concurrent subagents or background commands), one for sequential work; while work remains, at least one task should be `in_progress`. Mark a todo `completed` the moment it is done (do not batch completions), and allow no `in_progress` item only once all work is complete. Skip the list for trivial single-step tasks. Statuses: `pending` (not started), `in_progress` (being worked on now), `completed` (finished).
+Record and update a structured task list for the current work. UPDATE specific tasks with a delta instead of resending the whole list: use `action` — `merge` upserts each entry by `content` (adds new tasks, updates the `status` of tasks that already exist), `remove` deletes the listed tasks, and `clear` empties the list; each delta merges onto the current list. ONLY send the COMPLETE list with `action: replace` when the task direction changes significantly, for example when the plan is restructured. Keep the list current as work progresses. Use it to plan multi-step work: add one todo per concrete step before you start. Mark every todo being actively worked on `in_progress` — several at once when work genuinely runs in parallel (e.g. concurrent subagents or background commands), one for sequential work; while work remains, at least one task should be `in_progress`. Mark a todo `completed` the moment it is done (do not batch completions), and allow no `in_progress` item only once all work is complete. Skip the list for trivial single-step tasks. Statuses: `pending` (not started), `in_progress` (being worked on now), `completed` (finished).
 
 ```json
 {
   "type": "object",
   "properties": {
+    "action": {
+      "type": "string",
+      "description": "replace (default): the whole list, replacing the previous one. merge: upsert each entry by content (add new tasks, update the status of existing tasks). remove: delete the listed contents. clear: empty the list. Each delta operates on the current list (the latest todo/write).",
+      "enum": [
+        "replace",
+        "clear",
+        "merge",
+        "remove"
+      ]
+    },
     "todos": {
       "type": "array",
-      "description": "The COMPLETE task list, replacing any previous list.",
+      "description": "Task entries to change. replace (default): the COMPLETE list replacing the previous one. merge: a delta to add entries or update their status (matched by content). remove: the content values to delete (status ignored). Omit for clear.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -2117,10 +2423,7 @@ Record and update a structured task list for the current work. Send the ENTIRE l
         ]
       }
     }
-  },
-  "required": [
-    "todos"
-  ]
+  }
 }
 ```
 

@@ -61,7 +61,9 @@ import * as ToolSelfCognition from '@deepseek-ai/dsh-tool-self-cognition'
 import * as ToolSessionQuery from '@deepseek-ai/dsh-tool-session-query'
 import * as ToolTasks from '@deepseek-ai/dsh-tool-jobs'
 import type TeamService from '@deepseek-ai/dsh-experimental-agent-team'
+import type { TeamService as TeamMemberService } from '@deepseek-ai/dsh-team'
 import * as ToolTeam from '@deepseek-ai/dsh-experimental-tool-agent-team'
+import * as ToolTeamRelease from '@deepseek-ai/dsh-tool-team'
 import * as ToolTodo from '@deepseek-ai/dsh-tool-todo'
 import * as ToolSubagent from '@deepseek-ai/dsh-tool-subagent'
 import * as ToolWeb from '@deepseek-ai/dsh-tool-web'
@@ -575,6 +577,21 @@ const TOOL_PACKAGES: ToolPackage[] = [
     scope: ctx => catalogChildScopes.get(ctx) as Agent,
     note:
       'All ten tools are scoped to implicit Team Leads and durable teammates. The shipped dsh-base bundle keeps the package disabled; the documented Agent Teams profile patch enables it while disabling the legacy continuable-child control names.',
+  },
+  {
+    pkg: '@deepseek-ai/dsh-tool-team',
+    dir: 'tool-team',
+    source: 'packages/team/tool-team/src/index.ts',
+    requires: ['ctx.tools'],
+    writes: ['tool/call', 'tool/result', 'team/message/queued'],
+    async mount(ctx) {
+      // `team` is optional (read via ctx.get); schema harvest needs no roster, so an
+      // empty stub keeps the fiber from being PENDING while its tools are enumerated.
+      ctx.provide('team', {} as unknown as TeamMemberService)
+      await ctx.plugin(ToolTeamRelease)
+    },
+    note:
+      'Model-facing team tools over the host `team` service: enumerate the roster and each member\'s own conversation topics, chat with a member on a topic (or a new one), and manage the roster and member lifecycle (add / remove / start / stop / restart). Members own their sessions and are driven through the ACP wire.',
   },
   {
     pkg: '@deepseek-ai/dsh-tool-todo',

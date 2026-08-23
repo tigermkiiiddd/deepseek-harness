@@ -43,6 +43,7 @@
 | `@deepseek-ai/dsh-tool-subagent-report` | `report` | `ctx.subagents`、`ctx.systemPrompt`、`a live continuable in-process child Agent` | `tool/call`、`tool/result`、`a user-role message in the direct parent session` | - | 按可继续的进程内子级注册，而非全局注册，因此该 schema 仅在这种子级内部可见，并且不受其全局 `toolFilter` 影响。同一份贡献还会安装子级作用域的 `tool:report` 系统提示词 section，本目录不渲染该 section。面向父级的 `send_message` 工具单独安装。 |
 | `@deepseek-ai/dsh-tool-jobs` | `job_kill`、`job_list`、`job_output` | `ctx.tools`、`ctx.jobs`、`ctx.systemPrompt` | `tool/call`、`tool/result`、`user/message via agent.inject() for background completion notices` | - | 与任务种类无关的后台任务控制器：后台 bash 命令、PTY 发送和 subagent 都通过相同的 3 个工具读取、列出和终止。加载该插件会挂接控制器，从而启用生产方的 `ctx.jobs.start()`。 |
 | `@deepseek-ai/dsh-experimental-tool-agent-team` | `followup_task`、`interrupt_agent`、`list_agents`、`send_message`、`spawn_teammate`、`team_task_create`、`team_task_get`、`team_task_list`、`team_task_update`、`wait_agent` | `ctx.tools`、`ctx.systemPrompt`、`ctx.agentTeams`、`an exact live Team member Agent` | `tool/call`、`team/member`、`team/message/queued`、`team/message/delivered`、`team/task`、`tool/result` | - | 这 10 个工具限定于隐式 Team Lead 与持久 teammate 作用域。随产品发布的 dsh-base bundle 默认禁用该包；文档中的 Agent Teams profile patch 会启用它，并禁用旧 continuable child 的同名控制工具。 |
+| `@deepseek-ai/dsh-tool-team` | `member_add`、`member_chat`、`member_model`、`member_provider`、`member_remove`、`member_restart`、`member_sessions`、`member_start`、`member_stop` | `ctx.tools` | `tool/call`、`tool/result`、`team/message/queued` | - | 这些是面向 `team`（宿主）服务的团队工具：列举花名册与每个成员的对话主题，就某主题（或新主题）与成员对话，并管理花名册与成员生命周期（添加／删除／启动／停止／重启）。成员自己拥有其会话，并通过 ACP 线驱动。 |
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`、`owning Agent session` | `tool/call`、`todo/write`、`tool/result` | - | todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为检查清单。`allowParallelInProgress` 是没有默认值的必填项，因此本目录明确选择 `true`，对应描述允许同时存在多个 `in_progress` 项。选择 `false` 的部署会获得同一工具，但描述会要求只能有 1 个活动任务。 |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`、`ctx.workflowEngine`、`ctx.systemPrompt`、`a calling Agent (exec.agent parents the script children)` | `tool/call`、`tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`、`web_search` | `ctx.tools`、`ctx.web`、`ctx.systemPrompt` | `tool/call`、`tool/result` | - | web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可见 schema 在更换后端时保持稳定。 |
@@ -2084,6 +2085,300 @@ lsp 工具将提供方选择和语言服务器子进程置于 ctx.lsp 之后，�
 
 这 10 个工具限定于隐式 Team Lead 与持久 teammate 作用域。随产品发布的 dsh-base bundle 默认禁用该包；文档中的 Agent Teams profile patch 会启用它，并禁用旧 continuable child 的同名控制工具。
 
+<a id="deepseek-aidsh-tool-team"></a>
+
+## `@deepseek-ai/dsh-tool-team`
+
+### `member_add`
+
+在运行时添加一个新的团队成员：启动其 ACP agent 进程，持久化到团队花名册，并加入团队。成员会在宿主重启后自动重新生成（除非 autostart 为 false）。用 member_remove 销毁并遗忘它。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "Stable member id, unique within the team."
+    },
+    "title": {
+      "type": "string",
+      "description": "Display name shown in the team view."
+    },
+    "description": {
+      "type": "string",
+      "description": "One-line role or persona description."
+    },
+    "kind": {
+      "type": "string",
+      "description": "Member kind: \"dsh\" relaunches the current harness installation as an ACP server; command and args must be omitted.",
+      "enum": [
+        "dsh"
+      ]
+    },
+    "command": {
+      "type": "string",
+      "description": "Executable that runs an ACP agent (any ACP server). Required unless kind is \"dsh\"."
+    },
+    "args": {
+      "type": "array",
+      "description": "Arguments passed to the member command.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "cwd": {
+      "type": "string",
+      "description": "Working directory for the member process and its sessions; omit to use the harness launch directory."
+    },
+    "env": {
+      "type": "object",
+      "description": "Extra environment variables layered over the full parent environment (credentials included); every value must be a string.",
+      "additionalProperties": true
+    },
+    "permission": {
+      "type": "string",
+      "description": "Auto-answer the member's permission prompts with this policy when no GUI subscriber answers them.",
+      "enum": [
+        "allow",
+        "reject"
+      ]
+    },
+    "autostart": {
+      "type": "boolean",
+      "description": "Start the member now and on every host restart (default true)."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+来源：[`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_chat`
+
+就成员的某个主题与该成员对话。从 member_sessions 传入现有 topic id 以继续该对话，或设置 new_topic 在成员上开启一个新主题。返回成员的完整回复。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to talk to."
+    },
+    "text": {
+      "type": "string",
+      "description": "Your message to the member."
+    },
+    "topic": {
+      "type": "string",
+      "description": "The member's topic id to continue (from member_sessions)."
+    },
+    "new_topic": {
+      "type": "boolean",
+      "description": "Start a new topic on the member instead of continuing one."
+    }
+  },
+  "required": [
+    "member_id",
+    "text"
+  ]
+}
+```
+
+来源：[`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_model`
+
+查询或设置团队成员的会话模型配置。用 action "get" 读取当前模型及其可选项，或用 "set" 将模型切换为这些 value id 之一。需要来自 member_sessions 的 session id；先用 member_chat 的 new_topic 创建一个。成员必须声明会话配置选项，否则本次调用会报错。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member whose model config is read or set."
+    },
+    "session_id": {
+      "type": "string",
+      "description": "The member session (topic) id from member_sessions."
+    },
+    "action": {
+      "type": "string",
+      "description": "\"get\" reads the current model and its options (default); \"set\" switches the model to value.",
+      "enum": [
+        "get",
+        "set"
+      ]
+    },
+    "value": {
+      "type": "string",
+      "description": "The model value id to set (action \"set\"); pick one from a prior \"get\"."
+    }
+  },
+  "required": [
+    "member_id",
+    "session_id"
+  ]
+}
+```
+
+来源：[`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_provider`
+
+列出或设置团队成员的 ACP provider 配置。用 action "list" 读取声明的提供方，或用 "set" 配置一个（id、api_type、base_url、可选 headers）。成员必须声明 providers 能力，否则本次调用会报错。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member whose providers are listed or set."
+    },
+    "action": {
+      "type": "string",
+      "description": "\"list\" reads the advertised providers (default); \"set\" configures one.",
+      "default": "list",
+      "enum": [
+        "list",
+        "set"
+      ]
+    },
+    "id": {
+      "type": "string",
+      "description": "Provider id (action \"set\")."
+    },
+    "api_type": {
+      "type": "string",
+      "description": "Protocol: anthropic/openai/azure/vertex/bedrock (action \"set\")."
+    },
+    "base_url": {
+      "type": "string",
+      "description": "Base URL for the provider (action \"set\")."
+    },
+    "headers": {
+      "type": "object",
+      "description": "Headers map for the provider (action \"set\"); every value must be a string.",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+来源：[`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_remove`
+
+移除团队成员：销毁其进程，从花名册移除，并删除其持久化的花名册记录。成员自己的会话仍保留在该成员；之后用相同 id 再次添加会生成一个新进程。若某成员也在部署配置中声明，会在下次重启时重新出现。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to remove."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+来源：[`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_restart`
+
+重启团队成员：停止其进程，然后重新启用。在成员离线或异常时使用。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to restart."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+来源：[`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_sessions`
+
+列出团队成员及每个成员自己的对话主题。将返回的 topic id 与 member_chat 配合使用，以继续某主题或开启新主题。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "Optional member id; omit to list every member."
+    }
+  }
+}
+```
+
+来源：[`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_start`
+
+启用团队成员：启动其 ACP agent 进程并完成协议握手。幂等——启用正在运行的成员会立即结算。成员默认 autostart；用此把已停止或失败的成员恢复上线。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to start."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+来源：[`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+### `member_stop`
+
+停止团队成员：销毁其进程并使其回到离线。成员自己的会话仍保留在该成员，并在之后再次启用后仍可列出。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "member_id": {
+      "type": "string",
+      "description": "The member to stop."
+    }
+  },
+  "required": [
+    "member_id"
+  ]
+}
+```
+
+来源：[`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts)
+
+这些是面向 `team`（宿主）服务的团队工具：列举花名册与每个成员的对话主题，就某主题（或新主题）与成员对话，并管理花名册与成员生命周期（添加／删除／启动／停止／重启）。成员自己拥有其会话，并通过 ACP 线驱动。
 
 <a id="deepseek-aidsh-tool-todo"></a>
 
@@ -2091,15 +2386,25 @@ lsp 工具将提供方选择和语言服务器子进程置于 ctx.lsp 之后，�
 
 ### `todo_write`
 
-记录并更新当前工作的结构化任务列表。每次调用都要发送**完整列表**，它会**替换**之前的列表，不支持局部更新或逐项编辑。请用它规划多步骤工作并展示进度：开始前为每个具体步骤添加一项 todo。将当前正在处理的每项 todo 标记为 `in_progress`；确实并行运行时（例如并发 subagent 或后台命令）可同时标记多项，顺序工作则标记 1 项。只要工作尚未完成，就应至少有一项任务为 `in_progress`。某项 todo 完成后立即标记为 `completed`，不要批量标记完成；只有全部工作完成后，才可以没有 `in_progress` 项。简单的单步骤任务无需使用列表。状态：`pending`（未开始）、`in_progress`（正在处理）、`completed`（已完成）。
+记录并更新当前工作的结构化任务列表。用增量更新具体任务，而不是重发整个列表：使用 `action`——`merge` 按 `content` 逐条 upsert（新增任务，并更新已存在任务的 `status`）、`remove` 删除所列任务、`clear` 清空列表；每个 delta 都会合并到当前列表。仅当任务方向发生显著变化（例如计划被重构）时才以 `action: replace` 发送**完整列表**。随着工作推进，保持列表为最新。用它规划多步骤工作：开始前为每个具体步骤添加一项 todo。将当前正在处理的每项 todo 标记为 `in_progress`——确实在并行运行时（例如并发 subagent 或后台命令）可同时标记多项，顺序工作则标记 1 项；只要工作尚未完成，就应至少有一项任务为 `in_progress`。某项 todo 完成后立即标记为 `completed`，不要批量标记完成；只有全部工作完成后，才可以没有 `in_progress` 项。简单的单步骤任务无需使用列表。状态：`pending`（未开始）、`in_progress`（正在处理）、`completed`（已完成）。
 
 ```json
 {
   "type": "object",
   "properties": {
+    "action": {
+      "type": "string",
+      "description": "replace (default): the whole list, replacing the previous one. merge: upsert each entry by content (add new tasks, update the status of existing tasks). remove: delete the listed contents. clear: empty the list. Each delta operates on the current list (the latest todo/write).",
+      "enum": [
+        "replace",
+        "clear",
+        "merge",
+        "remove"
+      ]
+    },
     "todos": {
       "type": "array",
-      "description": "The COMPLETE task list, replacing any previous list.",
+      "description": "Task entries to change. replace (default): the COMPLETE list replacing the previous one. merge: a delta to add entries or update their status (matched by content). remove: the content values to delete (status ignored). Omit for clear.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -2124,10 +2429,7 @@ lsp 工具将提供方选择和语言服务器子进程置于 ctx.lsp 之后，�
         ]
       }
     }
-  },
-  "required": [
-    "todos"
-  ]
+  }
 }
 ```
 
