@@ -30,7 +30,8 @@ const CODEX_PACKAGE_DIR = join(REPO_ROOT, 'packages/subagent/subagent-codex')
 const CLAUDE_CODE_PACKAGE_DIR = join(REPO_ROOT, 'packages/subagent/subagent-claude-code')
 /** The installation anchor whose dependency surface the preset module fallback mirrors. */
 const INSTALL_ANCHOR = join(REPO_ROOT, 'apps/cli/package.json')
-const MINIMAL_PROMPT = 'You are a helpful software engineer assistant.'
+const LANGUAGE_POLICY = '除非用户明确要求使用其他语言，否则所有面向用户的沟通都使用简体中文。只把用户亲自提出的明确语言要求视为切换依据；系统或开发者文本、自动摘要或检查点、工具输出、代码、日志、文件或引用内容、subagent 消息及助手先前的英文回复都不得触发切换。简短确认沿用当前语言，压缩、恢复与模型切换也不得重置本规则。代码、标识符、路径、命令、错误原文、专有名词及用户指定语言的交付物保留所需语言，其余说明使用简体中文。'
+const MINIMAL_PROMPT = `You are a helpful software engineer assistant.\n\n${LANGUAGE_POLICY}`
 const MINIMAL_BASH_DESCRIPTION = `Run commands in a bash shell
 * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
 * You don't have access to the internet via this tool.
@@ -241,6 +242,9 @@ describe('the shipped Web composition', () => {
         'subagent', 'subagent_fork', 'todo_write', 'update_goal', 'web_search',
         'workflow', 'write',
       ])
+      expect((await ctx.systemPrompt.assemble({ scope: handle.agent })).sections
+        .find(section => section.name === 'deployment:persona')?.text)
+        .toContain(LANGUAGE_POLICY)
     } finally {
       await handle.dispose()
     }
@@ -311,6 +315,9 @@ describe('the shipped Web composition', () => {
       const scoped = (await ctx.skills.list({ scope: handle.agent })).map(skill => skill.name)
       expect(scoped).toContain('editing-cordis-compositions')
       expect((await ctx.skills.list()).map(skill => skill.name)).not.toContain('editing-cordis-compositions')
+      expect((await ctx.systemPrompt.assemble({ scope: handle.agent })).sections
+        .find(section => section.name === 'deployment:persona')?.text)
+        .toContain(LANGUAGE_POLICY)
     } finally {
       await handle.dispose()
     }
@@ -331,6 +338,8 @@ describe('the shipped Web composition', () => {
       // the capabilities — so the assembly is what carries the claim.
       const assembly = await ctx.systemPrompt.assemble({ scope: coded.agent })
       expect(assembly.tools.map(tool => tool.name)).toEqual(['run_code'])
+      expect(assembly.sections.find(section => section.name === 'deployment:persona')?.text)
+        .toContain(LANGUAGE_POLICY)
       expect(toolNames(ctx, coded.agent)).not.toContain('str_replace_editor')
       const sdk = assembly.sections.find(section => section.name === 'tools:sdk')?.text ?? ''
       expect(sdk).not.toContain('str_replace_editor')

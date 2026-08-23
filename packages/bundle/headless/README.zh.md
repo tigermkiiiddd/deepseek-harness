@@ -8,11 +8,19 @@ Loader 结算后，runner 读取共享的 [`ctx.agentDefaultModel`](../../core/a
 
 ## 模型体验
 
-无影响，因为 runner 把任务作为普通用户消息提交；提示词与工具由 base 和 headless 组合包中的相应条目提供。
+### 部署 persona
+
+#### 模型看到的内容
+
+Headless 组合包的 `deployment:persona` 默认让所有面向用户的沟通使用简体中文。只有用户明确要求其他语言时才会切换，技术内容、生成内容、subagent 消息和助手先前的文本不参与语言判断；代码和交付物仍保留所需语言。
+
+#### Token 影响
+
+这项固定策略属于每次 headless 请求既有的 persona。
 
 #### KV Cache 影响
 
-无；runner 不向请求前缀添加任何内容。
+该策略跨轮次保持稳定，因此首次请求后不会使提示词前缀失效。Runner 不再向该前缀添加其他内容。
 
 ## 已知限制与暂缓事项
 

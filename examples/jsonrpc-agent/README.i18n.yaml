@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write examples/jsonrpc-agent/README.md
-README.md: ec94fa7ceec5a51585241851eaee2cfcf938738f
-README.zh.md: f1f448a4c8ae0c343ffce0f686291a29ba6e5995
+README.md: 5b585ffbe154aa46f19bd08bf2776b769c975d66
+README.zh.md: 94abeb31326e3868ec99f029b74a4ed01f662fb9

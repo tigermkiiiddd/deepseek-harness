@@ -10,6 +10,20 @@ Web uses the shared bounded normal default of five eligible retries after the in
 
 ## Model Experience
 
+### Deployment persona
+
+#### What the model sees
+
+The Web deployment persona defaults all user-facing communication to Simplified Chinese. It switches only when the user explicitly requests another language and excludes technical, generated, subagent, and prior assistant text from language detection; required code and artifact language remains unchanged. An agent preset's scoped persona shadows this deployment default.
+
+#### Token effect
+
+The fixed policy is part of the existing deployment persona whenever no scoped persona shadows it.
+
+#### KV Cache effect
+
+The policy is stable across turns, so it does not invalidate the prompt prefix after the first request.
+
 ### Harness-source and Web-surface context
 
 #### What the model sees

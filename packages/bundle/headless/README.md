@@ -8,11 +8,19 @@ After the Loader settles, the runner reads the shared [`ctx.agentDefaultModel`](
 
 ## Model Experience
 
-None, as the runner submits the task as an ordinary user message; prompts and tools belong to the base and headless bundle rows.
+### Deployment persona
+
+#### What the model sees
+
+The headless bundle's `deployment:persona` defaults all user-facing communication to Simplified Chinese. It switches only when the user explicitly requests another language and excludes technical, generated, subagent, and prior assistant text from language detection; required code and artifact language remains unchanged.
+
+#### Token effect
+
+The fixed policy is part of every headless request's existing persona.
 
 #### KV Cache effect
 
-None; the runner adds nothing to the request prefix.
+The policy is stable across turns, so it does not invalidate the prompt prefix after the first request. The runner itself adds nothing else to that prefix.
 
 ## Known Limitations and Deferred Work
 
