@@ -108,7 +108,7 @@ provider 配置（`providers/list`、`providers/set`）受 `initialize` 中声�
 
 ## 进程边界
 
-成员经 [`dsh-subprocess`](../../subprocess/subprocess/README.md) 接缝派生。ACP wire 是序列化边界。协作式关闭终止进程；意外进程死亡使成员进入 `offline`。
+成员经 [`dsh-subprocess`](../../subprocess/subprocess/README.zh.md) 接缝派生。ACP wire 是序列化边界。协作式关闭终止进程；意外进程死亡使成员进入 `offline`。
 
 ## 模型体验
 

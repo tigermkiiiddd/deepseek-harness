@@ -3,4 +3,4 @@
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/extensions/tool-self-cognition/README.md
 README.md: 74384182babc174fad0df33d2b96759e4e3bf1c6
-README.zh.md: 7fd723af9c5f9a8a0816c66dc82e1a0be7d4c1d8
+README.zh.md: e0be65090a1d8f212a45f253b43695e3f80fee27

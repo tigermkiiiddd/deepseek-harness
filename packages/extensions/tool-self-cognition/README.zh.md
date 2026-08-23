@@ -29,7 +29,7 @@
 
 ## 导出形态
 
-函数/命名空间插件:命名导出 `name` / `inject` / `apply`,无默认导出([docs/postmortem/0001](../../../docs/postmortem/0001-acp-default-export-drops-inject.md))。注入 `loader`、`systemPrompt`、`tools`;preset roster 是可选能力,经 `ctx.get('agentPresets')` 读取。
+函数/命名空间插件:命名导出 `name` / `inject` / `apply`,无默认导出([docs/postmortem/0001](../../../docs/postmortem/0001-acp-default-export-drops-inject.zh.md))。注入 `loader`、`systemPrompt`、`tools`;preset roster 是可选能力,经 `ctx.get('agentPresets')` 读取。
 
 ## Model Experience
 
@@ -67,7 +67,7 @@ You are running on DeepSeek Harness. The `self_cognition` tool reports your live
 
 #### What the model sees
 
-模型看到的是生成的 [`self_cognition` schema](../../../docs/tool-catalog.md#deepseek-aidsh-tool-self-cognition)。
+模型看到的是生成的 [`self_cognition` schema](../../../docs/tool-catalog.zh.md#deepseek-aidsh-tool-self-cognition)。
 
 #### Token effect
 

@@ -39,7 +39,7 @@ Web 客户端使用该插件提供的 `/plan` 命令；其他入口可以直接�
 
 `section` 必填且非空。`plansDir` 可选，用于覆盖经批准 plan 的记录目录（默认 `docs/plans`，相对会话工作目录解析）。出现未知键时，插件会加载失败。该包不接受任意命名的 mode、工具过滤器、沙箱设置或批准策略。
 
-设计：[plan 专用协作状态](../../../.agents/notes/implemented/simplification/2026-07-22-plan-specific-collaboration-state.zh.md)。
+设计：[plan 专用协作状态](../../../.agents/notes/implemented/simplification/2026-07-22-plan-specific-collaboration-state.zh.md)、[批准的 plan 记录到工作区](../../../.agents/notes/implemented/feature/2026-08-16-approved-plans-recorded-to-workspace.zh.md)、以及[模型自主的 plan mode 入口](../../../.agents/notes/implemented/feature/2026-08-16-model-initiated-plan-mode-entry.zh.md)。
 
 ## 模型体验
 
@@ -104,6 +104,16 @@ You are in plan mode. Explore and design before presenting the complete plan thr
 #### KV Cache 影响
 
 mode 转换不改变工具目录；plan 参数与评审结果按常规方式扩展对话。
+
+### 已记录 Plan 存档
+
+#### 模型所见内容
+
+批准后，plan markdown 会被写入 `<plansDir>/yyyy-mm-dd-<slug>.md`，按会话的工作目录解析——除非另行配置，默认是 `docs/plans`——slug 取自 plan 的第一个标题，同一天且 slug 相同的存档会覆盖。结果会带上已记录的 `path`；确认文本指明它。被拒绝的 plan 不留下任何文件——其草稿仅存于会话日志中。会话没有工作目录、或写入被沙箱策略禁止，都让调用失败并保持 plan mode 激活以便可重试批准；缺少文件系统能力则完全跳过该记录。
+
+#### Token 影响
+
+此次记录只把结果的 `path` 行加入请求；plan 内容本身已作为调用参数存在于历史中。
 
 <a id="known-limitations-and-deferred-work"></a>
 
