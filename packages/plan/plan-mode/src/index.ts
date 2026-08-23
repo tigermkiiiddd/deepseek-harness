@@ -465,6 +465,23 @@ export class PlanModeController extends Service {
         if (interaction === undefined) {
           throw new Error('no user-questions channel is available to review the plan; ask the user to switch the session mode instead')
         }
+        // Persist the plan to the workspace before the review so a mid-plan
+        // revision is a durable file, not only an in-memory tool argument.
+        // Compositions without a filesystem capability skip the trace; a write
+        // failure fails the call and keeps plan mode active so the plan can be
+        // presented again.
+        const fs = ctx.get('fs')
+        let recordedPath: string | undefined
+        if (fs !== undefined) {
+          const cwd = currentSessionCwd(agent.session)
+          if (cwd === undefined) {
+            throw new Error('the plan is presented, but this session has no working directory to record it to')
+          }
+          const policy = ctx.get('sandboxPolicy')?.resolve({ session: agent.session })
+          const target = await fs.resolve(`${this.plansDir}/${dateStamp()}-${planSlug(heading)}.md`, { cwd, signal: exec.signal })
+          await fs.writeText(target, args.plan, undefined, exec.signal, policy)
+          recordedPath = target.displayPath
+        }
         const answer = await interaction.ask({
           questions: [{
             id: REVIEW_ID,
@@ -507,28 +524,11 @@ export class PlanModeController extends Service {
             ? 'The user chose to keep planning; revise the plan and present it again.'
             : `The user chose to keep planning; their feedback: ${feedback}`)
         }
-        // Record the approved plan to the workspace before leaving: the file
-        // is the durable work trace (the session log already holds the same
-        // content as this call's argument). Compositions without a filesystem
-        // capability skip the trace; a write failure fails the call and keeps
-        // plan mode active so the approval can be retried.
-        const fs = ctx.get('fs')
-        let path: string | undefined
-        if (fs !== undefined) {
-          const cwd = currentSessionCwd(agent.session)
-          if (cwd === undefined) {
-            throw new Error('the plan is approved, but this session has no working directory to record it to')
-          }
-          const policy = ctx.get('sandboxPolicy')?.resolve({ session: agent.session })
-          const target = await fs.resolve(`${this.plansDir}/${dateStamp()}-${planSlug(heading)}.md`, { cwd, signal: exec.signal })
-          await fs.writeText(target, args.plan, undefined, exec.signal, policy)
-          path = target.displayPath
-        }
         // Keep plan guidance for the rest of this assistant tool batch. The
         // silent selection is appended at the next accepted in-turn pre-step,
         // before its request assembly.
         this.pendingIntents.set(agent.session, { active: false, narrate: false })
-        return { approved: true, ...path === undefined ? {} : { path } }
+        return { approved: true, ...recordedPath === undefined ? {} : { path: recordedPath } }
       },
       presentCall: args => ({
         card: 'generic',

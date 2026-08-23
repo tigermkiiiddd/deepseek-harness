@@ -23,6 +23,11 @@ The only append point while an agent is running is a prepended `agent/pre-step` 
 interface PlanModeConfig {
   /** Guidance rendered as the `plan:policy` prompt section while plan mode is active. */
   section: string
+  /**
+   * Directory an approved plan is recorded to, resolved against the session's
+   * working directory. Defaults to `docs/plans`.
+   */
+  plansDir?: string
 }
 ```
 

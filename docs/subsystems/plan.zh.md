@@ -23,6 +23,11 @@ agent 运行时，唯一的追加点是前置（prepend）注册的 `agent/pre-s
 interface PlanModeConfig {
   /** Guidance rendered as the `plan:policy` prompt section while plan mode is active. */
   section: string
+  /**
+   * Directory an approved plan is recorded to, resolved against the session's
+   * working directory. Defaults to `docs/plans`.
+   */
+  plansDir?: string
 }
 ```
 
