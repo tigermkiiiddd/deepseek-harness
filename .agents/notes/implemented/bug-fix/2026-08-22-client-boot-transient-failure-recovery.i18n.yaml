@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-22-client-boot-transient-failure-recovery.md
+2026-08-22-client-boot-transient-failure-recovery.md: 53fab6bfe41481bfc5090a2e2169ab5601bcfdad
+2026-08-22-client-boot-transient-failure-recovery.zh.md: 785ad2725d162af305dd49760f7fd8678c2150ef
