@@ -3,4 +3,4 @@
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-16-reedit-edits-in-place.md
 2026-08-16-reedit-edits-in-place.md: 6f782bea97b13fa7d339b58bba3973d079071f27
-2026-08-16-reedit-edits-in-place.zh.md: 8d00940b7f9ad755df9053d1377a19ecab6dbad1
+2026-08-16-reedit-edits-in-place.zh.md: 6f3eb3a7bd97bb5d053a84bc7a24ba7d3014f942

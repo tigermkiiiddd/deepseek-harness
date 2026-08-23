@@ -6,7 +6,7 @@ Status: implemented
 
 ## 问题
 
-ACP 虚拟团队的第一版实现（[原 Agent Note](2026-08-16-acp-virtual-team.md)）只让 harness 位于协议的 agent 侧：`dsh-acp` 应答外部客户端，但 harness 自身没有 ACP *客户端*接缝来驱动其他 agent 进程。临时的 `packages/team/team` 实现表现得像一个部分手工搓制的客户端：惰性拉起成员、清洗掉环境凭证、轮询存活状态、把成员输出降级为纯文本、不保留能力、名册只写在内存里。这违反了定义团队成员是什么的核心设计约束 C1–C7：团队成员应是 harness 作为客户端连接的独立 ACP agent 进程，具备显式生命周期、完整协议保真度和持久名册。
+ACP 虚拟团队的第一版实现（[原 Agent Note](2026-08-16-acp-virtual-team.zh.md)）只让 harness 位于协议的 agent 侧：`dsh-acp` 应答外部客户端，但 harness 自身没有 ACP *客户端*接缝来驱动其他 agent 进程。临时的 `packages/team/team` 实现表现得像一个部分手工搓制的客户端：惰性拉起成员、清洗掉环境凭证、轮询存活状态、把成员输出降级为纯文本、不保留能力、名册只写在内存里。这违反了定义团队成员是什么的核心设计约束 C1–C7：团队成员应是 harness 作为客户端连接的独立 ACP agent 进程，具备显式生命周期、完整协议保真度和持久名册。
 
 ## 决策
 

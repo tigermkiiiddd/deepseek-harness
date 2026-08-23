@@ -3,4 +3,4 @@
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-16-rerun-truncates-and-rebuilds-in-place.md
 2026-08-16-rerun-truncates-and-rebuilds-in-place.md: b925cf6a4d01b00b16feea0f1f65c37452cc1ced
-2026-08-16-rerun-truncates-and-rebuilds-in-place.zh.md: b4dbc40ac59942c3bc9a893ce261f44932a299a9
+2026-08-16-rerun-truncates-and-rebuilds-in-place.zh.md: 2566fbf26334ad669f758194ef35d4ba93e91031

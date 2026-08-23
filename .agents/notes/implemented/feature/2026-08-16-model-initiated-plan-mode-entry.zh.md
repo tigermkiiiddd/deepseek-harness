@@ -8,7 +8,7 @@ Status: implemented
 
 plan mode 的进入此前只有人类通道：`/plan` 负责选择，而模型没有进入工具，并且——因为 `plan:policy` 在未激活时不渲染任何内容——连 plan mode 的存在都无法得知。实际表现就是 agent 几乎从不规划：它进不去、没法建议进入，只能读到一个写着"仅在 plan mode 中使用"却无法触及的工具。
 
-[plan 专用协作状态](../simplification/2026-07-22-plan-specific-collaboration-state.md) 记录了"plan 状态的选择与评审归面向人类的组合所有"。该所有权现在被刻意拆分：**评审仍归人类，进入与模型共享。**
+[plan 专用协作状态](../simplification/2026-07-22-plan-specific-collaboration-state.zh.md) 记录了"plan 状态的选择与评审归面向人类的组合所有"。该所有权现在被刻意拆分：**评审仍归人类，进入与模型共享。**
 
 ## Decision
 

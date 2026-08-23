@@ -3,4 +3,4 @@
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-23-region-facts-into-compaction-summaries.md
 2026-08-23-region-facts-into-compaction-summaries.md: dc2e31b2aa691228c69111f8db7db4ec60852f86
-2026-08-23-region-facts-into-compaction-summaries.zh.md: 458a42c7e9246e306d5ce9afcfbbd19aa136ffb4
+2026-08-23-region-facts-into-compaction-summaries.zh.md: a831d219ab5a0a62241044b389273e7592c5d637

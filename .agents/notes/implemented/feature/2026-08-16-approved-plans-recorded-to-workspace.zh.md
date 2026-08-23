@@ -12,7 +12,7 @@ Status: implemented
 
 ## Decision
 
-exit 工具的 `plan` 参数保持不变——记进日志的参数仍是权威的、可重放的记录（见 [plan 专用协作状态](../simplification/2026-07-22-plan-specific-collaboration-state.md)）。批准时由 `exit_plan_mode` 自己把 plan markdown 写入相对会话工作目录（`currentSessionCwd`）解析的 `<plansDir>/yyyy-mm-dd-<slug>.md`，其中：
+exit 工具的 `plan` 参数保持不变——记进日志的参数仍是权威的、可重放的记录（见 [plan 专用协作状态](../simplification/2026-07-22-plan-specific-collaboration-state.zh.md)）。批准时由 `exit_plan_mode` 自己把 plan markdown 写入相对会话工作目录（`currentSessionCwd`）解析的 `<plansDir>/yyyy-mm-dd-<slug>.md`，其中：
 
 - `plansDir` 是经过校验的 config 字段，默认 `docs/plans`；
 - slug 取自 plan 的第一个标题（转小写、非字母/数字串折叠为连字符、Unicode 字母保留）；纯标点标题回退为 `plan`；

@@ -14,7 +14,7 @@ harness 只教给 agent 一条自我扩展路径:动态 Cordis 工具集(`@deeps
 
 `cordis` agent preset——本来就是「开发 harness 自身」的组合——获得一个源码级自开发入口,由三部分组成。
 
-**自我认知插件**([`@deepseek-ai/dsh-tool-self-cognition`](../../../../packages/extensions/tool-self-cognition/README.md))。`harness:self-cognition` 提示段(order `-97`)告诉 agent 它运行在一个源码 checkout 上(插入绝对路径),可以通过编辑它迭代自身,改动在下次进程启动时生效——绝不热加载。探测不到 checkout 时(安装版 profile),提示段如实说明,而不是宣传一条不存在的路径。只读工具 `self_cognition` 每次调用重新读取活体状态:checkout 根(从模块 URL 逐级向上找第一个同时含 `pnpm-workspace.yaml` + `AGENTS.md` + `packages/` 的目录)、会话的 preset id 及其经 `agentPresets.readEntries` 扁平化的插件条目、以及每个非 group Loader 条目的启用状态和 fiber 相位。不硬编码任何部署值,一切来自活体服务。
+**自我认知插件**([`@deepseek-ai/dsh-tool-self-cognition`](../../../../packages/extensions/tool-self-cognition/README.zh.md))。`harness:self-cognition` 提示段(order `-97`)告诉 agent 它运行在一个源码 checkout 上(插入绝对路径),可以通过编辑它迭代自身,改动在下次进程启动时生效——绝不热加载。探测不到 checkout 时(安装版 profile),提示段如实说明,而不是宣传一条不存在的路径。只读工具 `self_cognition` 每次调用重新读取活体状态:checkout 根(从模块 URL 逐级向上找第一个同时含 `pnpm-workspace.yaml` + `AGENTS.md` + `packages/` 的目录)、会话的 preset id 及其经 `agentPresets.readEntries` 扁平化的插件条目、以及每个非 group Loader 条目的启用状态和 fiber 相位。不硬编码任何部署值,一切来自活体服务。
 
 **`self-development` skill**(`apps/cli/config/agent-presets/cordis/skills/self-development/SKILL.md`)。源码编辑工作流:先用 `self_cognition` 确认 checkout,读 `AGENTS.md` 与 `docs/architecture.md`,按文档化扩展点设计插件,按 `docs/cookbook/adding-a-package.md` / `adding-a-tool.md` 实现,经 preset 的 `cordis.yml` 和解析 manifest 挂载,用最小检查集验证,最后补齐双语 README 和 Agent Note。它明确写出:源码改动在下次进程启动生效,绝不允许声称改动在当前会话已生效。
 

@@ -10,7 +10,7 @@ Status: implemented
 
 ## Decision
 
-重编辑现在是 `UserMessageNodeView` 的视图状态：非空的草稿种子把用户气泡原位替换成 `UserReeditEditor`，打开期间同时替换操作行。发送走 `rerunUserMessage` 动作（它把会话在该消息之前的已完成轮次处原地截断并重建——见[原地 rerun 决策](2026-08-16-rerun-truncates-and-rebuilds-in-place.md)）并关闭编辑器；取消不发送、直接关闭并恢复气泡。`UserRerunActions` 重新成为纯粹的操作行，只抛出 `onReedit`；编辑器组件及其样式仍与它同处 `UserRerunActions.tsx` / `UserRerunActions.module.css`。
+重编辑现在是 `UserMessageNodeView` 的视图状态：非空的草稿种子把用户气泡原位替换成 `UserReeditEditor`，打开期间同时替换操作行。发送走 `rerunUserMessage` 动作（它把会话在该消息之前的已完成轮次处原地截断并重建——见[原地 rerun 决策](2026-08-16-rerun-truncates-and-rebuilds-in-place.zh.md)）并关闭编辑器；取消不发送、直接关闭并恢复气泡。`UserRerunActions` 重新成为纯粹的操作行，只抛出 `onReedit`；编辑器组件及其样式仍与它同处 `UserRerunActions.tsx` / `UserRerunActions.module.css`。
 
 ## Alternatives considered
 

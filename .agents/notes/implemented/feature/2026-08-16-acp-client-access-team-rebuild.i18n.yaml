@@ -3,4 +3,4 @@
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-16-acp-client-access-team-rebuild.md
 2026-08-16-acp-client-access-team-rebuild.md: 9037d15d35a4aef01036d0858ed014b364fc111c
-2026-08-16-acp-client-access-team-rebuild.zh.md: 4b0b01df26c9110c5da5c2480e7f2417612d70f8
+2026-08-16-acp-client-access-team-rebuild.zh.md: d0006b32f77436e7e35c321e89f0842e0bb63df3

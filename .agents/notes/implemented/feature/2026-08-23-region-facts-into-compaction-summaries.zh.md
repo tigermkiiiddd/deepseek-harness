@@ -10,7 +10,7 @@ Status: implemented
 
 ## 决策
 
-`@deepseek-ai/dsh-compaction-structured` 从日志表层直接计算区域事实,并把它作为权威引导在压缩指令之前注入,让模型只浓缩周围的对话叙述,而不复述或重新推导它们。这个设计建立在压缩能力 seam [`2026-06-18-compaction-capability-seam`](2026-06-18-compaction-capability-seam.md) 之上,但不改动 `surface` 或 `compaction/*` 事件词汇。
+`@deepseek-ai/dsh-compaction-structured` 从日志表层直接计算区域事实,并把它作为权威引导在压缩指令之前注入,让模型只浓缩周围的对话叙述,而不复述或重新推导它们。这个设计建立在压缩能力 seam [`2026-06-18-compaction-capability-seam`](2026-06-18-compaction-capability-seam.zh.md) 之上,但不改动 `surface` 或 `compaction/*` 事件词汇。
 
 ### 区域事实采集
 

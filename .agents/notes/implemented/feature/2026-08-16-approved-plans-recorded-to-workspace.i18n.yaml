@@ -3,4 +3,4 @@
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-16-approved-plans-recorded-to-workspace.md
 2026-08-16-approved-plans-recorded-to-workspace.md: 4a342b6419c2a42b82f020562c69fcb2211096a8
-2026-08-16-approved-plans-recorded-to-workspace.zh.md: c7b18bd6b9dd5d42460659b307a553c6ac3bc882
+2026-08-16-approved-plans-recorded-to-workspace.zh.md: c01fb74cf7d733d0b5f8d129cf30ab90257e7569
