@@ -103,6 +103,15 @@ interface SessionEventMap {
    */
   'request/context': RequestContext
   /**
+   * Absolute working directory the session's agent should default relative
+   * paths against (the "dynamic cwd" of a free session). Log-only, whole-value
+   * snapshot: the LAST event of this type reconstructs the session's current
+   * working directory. Written by the `set-cwd` tool for sessions whose
+   * `SessionHeader.cwd` is absent; fixed sessions use their immutable
+   * `header.cwd` instead and never receive one.
+   */
+  'session/cwd': { cwd: string }
+  /**
    * Marks the end of a constructor seed. Events before it have smaller seq
    * values and came from the seed (resume, fork, or replay); this lifecycle
    * produced none of them. This log-only event is the durable projection of
