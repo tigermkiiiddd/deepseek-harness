@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-23-region-facts-into-compaction-summaries.md
-2026-08-23-region-facts-into-compaction-summaries.md: c9d1f474ba5afdcd643dfb57f14fd62763a80b74
-2026-08-23-region-facts-into-compaction-summaries.zh.md: cd44df8eeecdaae9028f0e78dfc66b6a46dda2ca
+2026-08-23-region-facts-into-compaction-summaries.md: dc2e31b2aa691228c69111f8db7db4ec60852f86
+2026-08-23-region-facts-into-compaction-summaries.zh.md: 458a42c7e9246e306d5ce9afcfbbd19aa136ffb4
