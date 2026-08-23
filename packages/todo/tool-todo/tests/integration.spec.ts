@@ -98,4 +98,30 @@ describe('todo_write tool through the agent loop', () => {
       { content: 'step two', status: 'in_progress' },
     ])
   })
+
+  it('a merge delta updates the current list without resending it', async () => {
+    const adapter = new MockAdapter([
+      toolCallResponse('call-1', 'todo_write', { todos: [{ content: 'read', status: 'in_progress' }] }),
+      toolCallResponse('call-2', 'todo_write', {
+        action: 'merge',
+        todos: [
+          { content: 'read', status: 'completed' },
+          { content: 'build', status: 'pending' },
+        ],
+      }),
+      textResponse('Done planning.'),
+    ])
+    const ctx = await harness(adapter)
+    const agent = ctx.agentLoop.create(SessionId('it-todo-merge'), { provider: 'mock', model: 'mock' })
+
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'plan then merge' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+
+    const todoEvents = agent.session.events.filter(e => e.type === 'todo/write')
+    expect(todoEvents).toHaveLength(2)
+    expect(findEvent(agent.session.events, 'todo/write', 'last').data.todos).toEqual([
+      { content: 'read', status: 'completed' },
+      { content: 'build', status: 'pending' },
+    ])
+  })
 })

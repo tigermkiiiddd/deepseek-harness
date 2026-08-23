@@ -2,11 +2,11 @@
 
 [English](README.md) | 中文
 
-面向模型的 `todo_write` 工具：agent（智能体）的完整任务列表，每次调用都会整体替换。
+面向模型的 `todo_write` 工具：agent（智能体）的任务列表——默认整体替换，但也可通过增量操作就地更新。
 
 ## 功能
 
-注册一个工具 `todo_write(todos: [{ content, status }])` 到 `ctx.tools`。模型每次调用都会发送完整列表，不存在部分更新或单项编辑。每次调用都会向调用 agent 的会话日志追加 `todo/write` 事件（完整列表快照），具体调用 `agent.session.append('todo/write', { todos })`；当前列表是最新的该类事件（回放时后写覆盖先写）。
+注册一个工具 `todo_write({ action, todos })` 到 `ctx.tools`。默认情况下发送的列表会替换前一次列表——但要在不重发整个列表就能更新特定任务，可用 `action` 发送增量：`merge` 按 `content` 逐条 upsert（新增任务、更新现有任务的 `status`），`remove` 删除列出的内容，`clear` 清空列表；每条增量都合并到当前列表。仅当任务方向发生显著变化时才用 `action: replace` 发送完整列表。每次调用都会向调用 agent 的会话日志追加 `todo/write` 事件（合并后的完整列表快照），具体调用 `agent.session.append('todo/write', { todos })`; 当前列表是最新的该类事件（回放时后写覆盖先写）。
 
 `status` 是 `pending`、`in_progress` 或 `completed` 之一。
 
@@ -22,7 +22,7 @@
 
 ## 验证
 
-除 schema 的类型／必填／枚举检查外，`execute` 还会拒绝空或重复的 `content`，以及 `content`/`status` 之外的任何条目键——扩展条目形状（id、嵌套）会明确报错而不是被静默压平，保证落日志的快照与模型自认为写入的内容一致。同时可以有多少任务处于 `in_progress` 由部署决定（见 § 配置）：选择 `true` 的组合允许并行工作（并发 subagent、后台命令）同时将多个任务标记为 `in_progress`。列表的顺序及及时更新由模型依照工具描述负责。
+除 schema 的类型／必填／枚举检查外，`execute` 还会拒绝空或重复的 `content`，以及 `content`/`status` 之外的任何条目键——扩展条目形状（id、嵌套）会明确报错而不是被静默压平，保证落日志的快照与模型自认为写入的内容一致。对 `replace`／`merge`／`remove`，`todos` 列表必填；`clear` 忽略它。活跃数量规则（见 § 配置）作用于每个操作的**结果列表**：在单活跃组合下，会将超过一个 `in_progress` 的 `merge`／`remove` 拒绝，因此增量无法把单活跃计划放大成并行工作。列表的顺序及及时更新由模型依照工具描述负责。
 
 ## 渲染
 
@@ -56,7 +56,7 @@
 
 #### 模型看到的内容
 
-每个 assistant 工具调用都会在参数中保留整个替换列表。成功时原样返回 `Updated todo list: <pending> pending, <inProgress> in progress, <completed> completed.`。稳定失败文本为 ``Error: invalid todo: `content` must be a non-empty string``、`Error: invalid todos: duplicate content "<content>"`、`Error: todo_write requires an owning agent session`，以及——仅在部署设置了 `allowParallelInProgress: false` 时——`Error: invalid todos: at most one task may be in_progress (got <n>)`。完整 `todo/write` 会话事件是 UI 与回放状态，而非第二条模型消息。
+每个 assistant 工具调用都会在参数中保留要写入的内容（整表对应 `replace`／`clear`，增量对应 `merge`／`remove`）。成功时原样返回 `Updated todo list: <pending> pending, <inProgress> in progress, <completed> completed.`。稳定失败文本为 ``Error: invalid todo: `content` must be a non-empty string``、`Error: invalid todos: duplicate content "<content>"`、`Error: todo_write requires an owning agent session`、`Error: todo_write requires a \`todos\` array for action "<action>"`——仅当 `replace`／`merge`／`remove` 省略 `todos` 时——以及——仅在部署设置了 `allowParallelInProgress: false` 时——`Error: invalid todos: at most one task may be in_progress (got <n>)`。完整 `todo/write` 会话事件是 UI 与回放状态，而非第二条模型消息。
 
 #### Token 影响
 
@@ -69,5 +69,5 @@ token 用量会随模型每次提交的完整列表增长，且这些调用参�
 ## 已知限制与暂缓事项
 
 - **仅单一所有者 scope**：列表属于唯一调用 agent 会话；subagent／共享／swarm scope 是有意设置的限制（参见「单一所有者」一节），非 agent 调用方会被拒绝。
-- **条目形状有意保持最小**：`content` 加三态 `status`；整表替换不需要稳定 id、优先级或 active-form 字段。
-- **整表替换是唯一操作**：没有部分更新，也没有回读工具；模型每次调用都必须重新发送完整列表。
+- **增量操作以 `content` 为键**：`remove`／`merge` 无法原地重命名任务；重命名是先 `remove`（旧 `content`）再 `merge`（新 `content`）。能令 `merge` 直接重命名、并让模型用标识引用条目的稳定每条 `id` 暂缓实现，因为它需要改 `TodoItem` 形状、`session` 格式版本号加一，以及触达约 9 个消费者（`acp`、`session-query`、`team`、`client/connection`、`session-projection` 等）。
+- **无回读工具**：工具结果已回显完整的 `{ todos, counts }`，且每条增量都会合并并落日志，因此模型每次调用后都能看到当前列表；专门的回读工具作为低价值入口暂缓。

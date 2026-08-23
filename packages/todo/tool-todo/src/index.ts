@@ -1,7 +1,9 @@
 /**
- * Model-facing whole-list replacement. Each call appends a `todo/write` snapshot to the calling
- * agent's session; replay is last-write-wins, and UIs render from session events. A non-agent
- * caller has no owning list and is rejected. Named exports preserve loader injection metadata.
+ * Model-facing todo list: whole-list replacement by default, plus optional delta actions
+ * (`merge` / `remove` / `clear`) that update only specific tasks. Each call appends a `todo/write`
+ * snapshot to the calling agent's session; replay is last-write-wins, and UIs render from session
+ * events. A non-agent caller has no owning list and is rejected. Named exports preserve loader
+ * injection metadata.
  * @module @deepseek-ai/dsh-tool-todo
  */
 
@@ -10,7 +12,7 @@ import z from '@deepseek-ai/schemastery'
 import { z as zod } from 'zod'
 import type { ZodType } from 'zod'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { TodoItem } from '@deepseek-ai/dsh-session'
+import type { Session, TodoItem } from '@deepseek-ai/dsh-session'
 // Type-only: resolves ctx.sessionProjections for the optional unit child.
 import type {} from '@deepseek-ai/dsh-session-projection'
 // The `todos` projection-key declaration lives in src/types.ts (its one home);
@@ -25,7 +27,10 @@ export const inject = ['tools']
 /** The valid {@link TodoItem} statuses, as a runtime set for input narrowing. */
 const STATUSES = ['pending', 'in_progress', 'completed'] as const
 
-/** Model-facing todo tool configuration. */
+/** The delta-action discriminant the model may pass; omitted (or `replace`) means full-list replacement. */
+export type TodoAction = 'replace' | 'clear' | 'merge' | 'remove'
+
+/** Schemastery configuration for the todo tool consumer. */
 export interface Config {
   /**
    * Required deployment choice for whether several todos may be `in_progress` at once. True suits
@@ -43,9 +48,13 @@ export const Config: z<Config> = z.object({
 })
 
 const DESCRIPTION_HEAD =
-  'Record and update a structured task list for the current work. Send the ENTIRE '
-  + 'list every call — it REPLACES the previous list (there are no partial updates, '
-  + 'no per-item edits). Use it to plan multi-step work and show progress: add one '
+  'Record and update a structured task list for the current work. UPDATE specific tasks '
+  + 'with a delta instead of resending the whole list: use `action` — `merge` upserts each '
+  + 'entry by `content` (adds new tasks, updates the `status` of tasks that already exist), '
+  + '`remove` deletes the listed tasks, and `clear` empties the list; each delta merges '
+  + 'onto the current list. ONLY send the COMPLETE list with `action: replace` when the '
+  + 'task direction changes significantly, for example when the plan is restructured. '
+  + 'Keep the list current as work progresses. Use it to plan multi-step work: add one '
   + 'todo per concrete step before you start. '
 
 const DESCRIPTION_PARALLEL =
@@ -78,20 +87,17 @@ function describe(allowParallel: boolean): string {
 }
 
 /**
- * Validate the value constraints the ParameterSchemaSpec can't express and build the canonical {@link
- * TodoItem}[]: trimmed non-empty unique content, and at most one `in_progress` item unless the
- * deployment allows parallel work. The registry has already enforced the status enum and rejected
- * unknown item keys (`additionalProperties: false` — the logged snapshot must equal what the model
- * believes it wrote, so a nested/extended item shape fails loud at the schema boundary instead of
- * silently flattening); the cast below records that guarantee.
+ * Validate and trim a raw todo delta: each entry must be non-empty, unique, and already
+ * status-checked. Deliberately does NOT count `in_progress` items — a delta may legitimately add
+ * one active task even when another already exists, and the active-count rule applies to the
+ * *resulting* list, not the delta. The registry has already rejected an unknown `content`/`status`
+ * shape, so the recorded casts express that guarantee.
  * @param raw - the model-supplied list, already schema-checked.
- * @param allowParallel - whether several items may be `in_progress` at once.
- * @returns the canonical list.
+ * @returns the cleaned canonical list.
  */
-function toTodoList(raw: { content: string; status: string }[], allowParallel: boolean): TodoItem[] {
+function normalize(raw: { content: string; status: string }[]): TodoItem[] {
   const todos: TodoItem[] = []
   const seen = new Set<string>()
-  let active = 0
   for (const item of raw) {
     const content = item.content.trim()
     if (content.length === 0) {
@@ -101,13 +107,65 @@ function toTodoList(raw: { content: string; status: string }[], allowParallel: b
       throw new Error(`invalid todos: duplicate content ${JSON.stringify(content)}`)
     }
     seen.add(content)
-    if (item.status === 'in_progress') active++
     todos.push({ content, status: item.status as TodoItem['status'] })
+  }
+  return todos
+}
+
+/**
+ * Reject any list carrying more than one `in_progress` item unless the deployment allows parallel
+ * work, preserving the deployment's single-active discipline on every action's result.
+ * @param todos - the resulting full list about to be logged.
+ * @param allowParallel - the deployment's parallel-active policy.
+ */
+function assertSingleActive(todos: TodoItem[], allowParallel: boolean): void {
+  let active = 0
+  for (const todo of todos) {
+    if (todo.status === 'in_progress') active++
   }
   if (!allowParallel && active > 1) {
     throw new Error(`invalid todos: at most one task may be in_progress (got ${active})`)
   }
-  return todos
+}
+
+/**
+ * The durable current list: the latest whole `todo/write` snapshot, or `[]` before the first
+ * write. Merge actions build on this so the agent need not resend the entire list.
+ * @param session - the calling agent's session, read back to its latest todo snapshot.
+ * @returns a copy of the current todo entries.
+ */
+function currentTodoList(session: Session): TodoItem[] {
+  const last = session.events.findLast(event => event.type === 'todo/write')
+  return last ? last.data.todos.map(todo => ({ content: todo.content, status: todo.status })) : []
+}
+
+/**
+ * Upsert-by-content: update the `status` of matched entries in place, append newly added entries,
+ * and preserve the existing order of untouched entries.
+ * @param current - the durable current list.
+ * @param delta - the normalized entries to merge in.
+ * @returns the merged full list.
+ */
+function mergeInto(current: TodoItem[], delta: TodoItem[]): TodoItem[] {
+  const byContent = new Map(delta.map(todo => [todo.content, todo] as const))
+  const merged = current.map(todo => byContent.get(todo.content) ?? todo)
+  for (const todo of delta) {
+    if (!current.some(existing => existing.content === todo.content)) merged.push(todo)
+  }
+  return merged
+}
+
+/**
+ * For `replace` / `merge` / `remove` the model must supply the `todos` array; `clear` ignores it.
+ * @param args - the tool call arguments, already schema-checked.
+ * @param action - the chosen action, used only to phrase the missing-argument error.
+ * @returns the present `todos` array.
+ */
+function takeTodos(args: { todos?: TodoItem[] }, action: TodoAction): TodoItem[] {
+  if (args.todos === undefined) {
+    throw new Error(`todo_write requires a \`todos\` array for action "${action}"`)
+  }
+  return args.todos
 }
 
 /** Wire payload schema of the `todos` projection (whole list or pre-first-write null). */
@@ -150,10 +208,19 @@ export function apply(ctx: Context, config: Config): void {
     name: 'todo_write',
     description: describe(allowParallel),
     parameters: {
+      action: {
+        type: 'string',
+        enum: ['replace', 'clear', 'merge', 'remove'],
+        description: 'replace (default): the whole list, replacing the previous one. '
+          + 'merge: upsert each entry by content (add new tasks, update the status of existing '
+          + 'tasks). remove: delete the listed contents. clear: empty the list. Each delta '
+          + 'operates on the current list (the latest todo/write).',
+      },
       todos: {
         type: 'array',
-        required: true,
-        description: 'The COMPLETE task list, replacing any previous list.',
+        description: 'Task entries to change. replace (default): the COMPLETE list replacing the '
+          + 'previous one. merge: a delta to add entries or update their status (matched by '
+          + 'content). remove: the content values to delete (status ignored). Omit for clear.',
         items: {
           type: 'object',
           additionalProperties: false,
@@ -204,14 +271,30 @@ export function apply(ctx: Context, config: Config): void {
       }],
     },
     execute(args, exec) {
-      const todos = toTodoList(args.todos, allowParallel)
       if (!exec.agent) {
         // The list is per-agent-session state; a non-agent caller (no owning
         // session) has nowhere to write it. Reject rather than silently no-op.
         throw new Error('todo_write requires an owning agent session')
       }
+      const action = args.action ?? 'replace'
+      const current = currentTodoList(exec.agent.session)
+      let todos: TodoItem[]
+      if (action === 'clear') {
+        todos = []
+      } else {
+        const delta = normalize(takeTodos(args, action))
+        if (action === 'merge') {
+          todos = mergeInto(current, delta)
+        } else if (action === 'remove') {
+          const remove = new Set(delta.map(todo => todo.content))
+          todos = current.filter(todo => !remove.has(todo.content))
+        } else {
+          todos = delta
+        }
+      }
+      assertSingleActive(todos, allowParallel)
       exec.agent.session.append('todo/write', { todos })
-      const count = (status: TodoItem['status']): number => todos.filter(t => t.status === status).length
+      const count = (status: TodoItem['status']): number => todos.filter(todo => todo.status === status).length
       return Promise.resolve({
         todos: todos.map(todo => ({ content: todo.content, status: todo.status })),
         counts: {
@@ -221,6 +304,6 @@ export function apply(ctx: Context, config: Config): void {
         },
       })
     },
-    presentCall: args => ({ card: 'generic', title: 'Update todo list', kind: 'other', rawInput: args.todos }),
+    presentCall: args => ({ card: 'generic', title: 'Update todo list', kind: 'other', rawInput: args }),
   }))
 }

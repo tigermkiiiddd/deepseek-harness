@@ -2,11 +2,11 @@
 
 English | [中文](README.zh.md)
 
-The model-facing `todo_write` tool: the agent's whole task list, replaced wholesale on each call.
+The model-facing `todo_write` tool: the agent's task list — replaced wholesale by default, but updatable in place via delta actions.
 
 ## What it does
 
-Registers one tool, `todo_write(todos: [{ content, status }])`, on `ctx.tools`. The model sends the ENTIRE list every call — there are no partial updates or per-item edits. Each call appends a `todo/write` event (the full list snapshot) to the calling agent's session log via `agent.session.append('todo/write', { todos })`; the current list is the most recent such event (last-write-wins on replay).
+Registers one tool, `todo_write({ action, todos })`, on `ctx.tools`. By default the sent list REPLACES the previous one — but to update specific tasks without resending everything, send a delta with `action`: `merge` upserts each entry by `content` (add new tasks, update the `status` of existing ones), `remove` deletes listed contents, and `clear` empties the list; each delta merges onto the current list. Reserve the COMPLETE list with `action: replace` when the task direction changes significantly. Each call appends a `todo/write` event (the full resulting list snapshot) to the calling agent's session log via `agent.session.append('todo/write', { todos })`; the current list is the most recent such event (last-write-wins on replay).
 
 `status` is one of `pending`, `in_progress`, or `completed`.
 
@@ -22,7 +22,7 @@ The flag moves the model-facing instruction and the accepted input together — 
 
 ## Validation
 
-Beyond the schema's type/required/enum checks, `execute` rejects an empty or duplicate `content`, and any item key beyond `content`/`status` — an extended item shape (ids, nesting) fails loud instead of silently flattening, keeping the logged snapshot equal to what the model believes it wrote. How many tasks may be `in_progress` at once is the deployment's call (§ Configuration): a composition that chooses `true` permits parallel work (concurrent subagents, background commands) to mark several tasks simultaneously. Ordering and the discipline of keeping the list current are left to the model via the tool description.
+Beyond the schema's type/required/enum checks, `execute` rejects an empty or duplicate `content`, and any item key beyond `content`/`status` — an extended item shape (ids, nesting) fails loud instead of silently flattening, keeping the logged snapshot equal to what the model believes it wrote. For `replace`, `merge`, and `remove` the `todos` array is required; `clear` ignores it. The active-count rule (§ Configuration) applies to the RESULTING list for every action: a `merge`/`remove` that would leave more than one `in_progress` under a single-active composition is rejected, so a delta cannot widen a single-active plan into parallel work. Ordering and the discipline of keeping the list current are left to the model via the tool description.
 
 ## Rendering
 
@@ -56,7 +56,7 @@ Prefix-stable while the definition and visibility are unchanged. Plugin lifecycl
 
 #### What the model sees
 
-Each assistant tool call retains the entire replacement list in its arguments. Success returns exactly `Updated todo list: <pending> pending, <inProgress> in progress, <completed> completed.` Stable failures are ``Error: invalid todo: `content` must be a non-empty string``, `Error: invalid todos: duplicate content "<content>"`, `Error: todo_write requires an owning agent session`, and — only where the deployment set `allowParallelInProgress: false` — `Error: invalid todos: at most one task may be in_progress (got <n>)`. The full `todo/write` session event is UI and replay state, not a second model message.
+Each assistant tool call retains the entire list in its arguments (the full list for `replace`/`clear`, the delta for `merge`/`remove`). Success returns exactly `Updated todo list: <pending> pending, <inProgress> in progress, <completed> completed.` Stable failures are ``Error: invalid todo: `content` must be a non-empty string``, `Error: invalid todos: duplicate content "<content>"`, `Error: todo_write requires an owning agent session`, `Error: todo_write requires a \`todos\` array for action "<action>"` — only for `replace`/`merge`/`remove` when `todos` is omitted — and — only where the deployment set `allowParallelInProgress: false` — `Error: invalid todos: at most one task may be in_progress (got <n>)`. The full `todo/write` session event is UI and replay state, not a second model message.
 
 #### Token effect
 
@@ -69,5 +69,5 @@ Append-only; newly visible content follows the reusable request prefix and does 
 ## Known Limitations and Deferred Work
 
 - **Single-owner scope only** — the list belongs to the one calling agent session; subagent/shared/swarm scopes are a deliberate cut (see § Single owner), and a non-agent caller is rejected.
-- **The item shape is deliberately minimal** — `content` plus three-state `status`; whole-list replacement needs no stable id, priority, or active-form fields.
-- **Whole-list replacement is the only operation** — no partial updates, no read-back tool; the model must resend the entire list each call.
+- **Delta actions key off `content`** — `remove`/`merge` cannot rename a task in place; rename is a `remove` (old `content`) followed by a `merge` (new `content`). A stable per-task `id` that would let `merge` rename directly and let the model address items by identifier is deferred, because it needs a `TodoItem` shape change, a `session` format version bump, and touch across ~9 consumers (`acp`, `session-query`, `team`, `client/connection`, `session-projection`, and more).
+- **No read-back tool** — the tool result already echoes the complete `{ todos, counts }` and every delta is merged and logged, so the model sees the current list after each call; a dedicated read-back tool is deferred as low-value surface.
