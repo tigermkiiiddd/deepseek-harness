@@ -2,9 +2,9 @@
 
 [English](team.md) | 中文
 
-团队子系统通过 [Agent Client Protocol (ACP)](https://github.com/agentclientprotocol/agent-client-protocol) 把独立 agent 进程接入主实例：每个成员都是**完整的 agent**——自己的 preset、模型与持久化的多话题会话——主实例作为 ACP 客户端连接成员。Web GUI 在框架顶部提供全局可视化栏，并把框架切换到用户选中的那个 agent 的界面。团队不是 [subagent 接缝](subagent.md)：成员是持有自己进程与会话的可信对等体，委派栈不参与其中。
+团队子系统通过 [Agent Client Protocol (ACP)](https://github.com/agentclientprotocol/agent-client-protocol) 把独立 agent 进程接入主实例：每个成员都是**完整的 agent**——自己的 preset、模型与持久化的多话题会话——主实例作为 ACP 客户端连接成员。Web GUI 在框架顶部提供全局可视化栏，并把框架切换到用户选中的那个 agent 的界面。团队不是 [subagent 接缝](subagent.zh.md)：成员是持有自己进程与会话的可信对等体，委派栈不参与其中。
 
-Sources: [`packages/team/team`](../../packages/team/team)、[`packages/team/tool-team`](../../packages/team/tool-team)、[`packages/acp/acp`](../../packages/acp/acp) 中的会话能力、[`packages/host/apiproxy`](../../packages/host/apiproxy) 中的 `team` API 域、[`packages/client/ui-team`](../../packages/client/ui-team) 中的浏览器半边。框架栏由 [`packages/client/ui-layout`](../../packages/client/ui-layout)（`shell.topbar`）声明。决策记录见 [ACP 虚拟团队 Agent Note](../../.agents/notes/implemented/feature/2026-08-16-acp-virtual-team.md)。
+Sources: [`packages/team/team`](../../packages/team/team)、[`packages/team/tool-team`](../../packages/team/tool-team)、[`packages/acp/acp`](../../packages/acp/acp) 中的会话能力、[`packages/host/apiproxy`](../../packages/host/apiproxy) 中的 `team` API 域、[`packages/client/ui-team`](../../packages/client/ui-team) 中的浏览器半边。框架栏由 [`packages/client/ui-layout`](../../packages/client/ui-layout)（`shell.topbar`）声明。决策记录见 [ACP 虚拟团队 Agent Note](../../.agents/notes/implemented/feature/2026-08-16-acp-virtual-team.zh.md)。
 
 ## 角色模型
 
@@ -49,7 +49,7 @@ ACP 定义两个角色；同一协议在不同部署中角色分配不同：
 - `DSH_HOME` 为主 harness home 下的 per-member 目录（`<main-home>/members/<member-id>`），让成员的会话与附件相互隔离。
 - `DSH_MAIN_HOME` 指向主 harness home，让成员读取协调器的 `settings.yaml`、`.credentials.yaml` 及其他 home 本地文件。
 
-`kind: 'dsh'` 时不能设置 `command` 与 `args`；省略 `kind` 则必须提供自定义 `command`。实现位于 `@deepseek-ai/dsh-team` 的 `resolveMemberSpec()`，由 `MemberConnection.spawnSpec()` 消费。profile 模板是 `@deepseek-ai/dsh-acp-app`（见 [`packages/bundle/acp-app`](../../packages/bundle/acp-app/README.md)）。
+`kind: 'dsh'` 时不能设置 `command` 与 `args`；省略 `kind` 则必须提供自定义 `command`。实现位于 `@deepseek-ai/dsh-team` 的 `resolveMemberSpec()`，由 `MemberConnection.spawnSpec()` 消费。profile 模板是 `@deepseek-ai/dsh-acp-app`（见 [`packages/bundle/acp-app`](../../packages/bundle/acp-app/README.zh.md)）。
 
 ### 持久名册
 
@@ -61,7 +61,7 @@ ACP 定义两个角色；同一协议在不同部署中角色分配不同：
 
 ## API 域（host API-proxy）
 
-`team.list` / `team.start` / `team.stop` / `team.restart` / `team.sessions` / `team.history` / `team.newSession` / `team.prompt` / `team.cancel` / `team.permission` / `team.addMember` / `team.removeMember` 经标准 RPC 载体提供给浏览器，委托给 `ctx.team`；团队服务缺失时报告该域不可用。成员实时输出不走 RPC 载体：`team/status`、`team/member-update`、`team/permission-requested`、`team/turn-end` 是允许列表中的 host 事件，经 `events.host` SSE 流逐字转发（允许列表位于 [`dsh-api-remotes`](../../packages/api/remotes/README.md)）。
+`team.list` / `team.start` / `team.stop` / `team.restart` / `team.sessions` / `team.history` / `team.newSession` / `team.prompt` / `team.cancel` / `team.permission` / `team.addMember` / `team.removeMember` 经标准 RPC 载体提供给浏览器，委托给 `ctx.team`；团队服务缺失时报告该域不可用。成员实时输出不走 RPC 载体：`team/status`、`team/member-update`、`team/permission-requested`、`team/turn-end` 是允许列表中的 host 事件，经 `events.host` SSE 流逐字转发（允许列表位于 [`dsh-api-remotes`](../../packages/api/remotes/README.zh.md)）。
 
 ## GUI 设计
 
@@ -102,7 +102,7 @@ Web GUI 是一个**多 agent 工作台**：一个框架，顶部一条全局可�
 
 ## Cordis API
 
-Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — this section is byte-identical in both language sides of the page. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
+Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — this section is byte-identical in both language sides of the page. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.zh.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
 
 <a id="ctxteam--teamservice"></a>
 

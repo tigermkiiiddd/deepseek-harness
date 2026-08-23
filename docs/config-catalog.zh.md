@@ -2432,10 +2432,17 @@ export interface MemberConfig {
   readonly title?: string
   /** One-line role/persona description shown in team views. */
   readonly description?: string
-  /** Executable spawned for the member process (any ACP server, e.g. `dsh-acp-demo`). */
-  readonly command: string
+  /**
+   * Member kind. When `'dsh'` the harness relaunches the current installation
+   * (`dsh --profile acp`) with a per-member harness home; `command` and `args`
+   * must be absent. When omitted, `command` is required and the member runs
+   * any ACP server.
+   */
+  readonly kind?: 'dsh'
+  /** Executable spawned for the member process (any ACP server, e.g. `dsh-acp-demo`). Required unless `kind: 'dsh'`. */
+  readonly command?: string
   /** Arguments passed to {@link MemberConfig.command}. */
-  readonly args: string[]
+  readonly args?: string[]
   /**
    * Working directory for the member process and its ACP sessions. When
    * omitted, the member runs in the harness process's launch directory; no
@@ -3370,6 +3377,7 @@ export interface Config {
 
 由其他包作为库导入；`cordis.yml` 无法加载它们。
 
+- `@deepseek-ai/dsh-acp-app`（[`packages/bundle/acp-app/src/index.ts`](../packages/bundle/acp-app/src/index.ts)）
 - `@deepseek-ai/dsh-acp-snapshot`（[`packages/test-support/acp-snapshot/src/index.ts`](../packages/test-support/acp-snapshot/src/index.ts)）
 - `@deepseek-ai/dsh-agent-loop-testkit`（[`packages/test-support/agent-loop-testkit/src/index.ts`](../packages/test-support/agent-loop-testkit/src/index.ts)）
 - `@deepseek-ai/dsh-anonymous-user-id`（[`packages/identity/anonymous-user-id/src/index.ts`](../packages/identity/anonymous-user-id/src/index.ts)）
