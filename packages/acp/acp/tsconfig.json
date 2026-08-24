@@ -27,6 +27,9 @@
       "path": "../../session/session-title"
     },
     {
+      "path": "../../interaction/user-questions"
+    },
+    {
       "path": "../../interaction/user-approval"
     },
     {

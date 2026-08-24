@@ -789,6 +789,23 @@ export function apply(ctx: Context, config: AcpConfig): void {
     })
   })
 
+  // Free-form user questions ride the agent→client extension channel: the
+  // bridge registers as the member process's question provider and forwards
+  // each batch verbatim over one `dsh/user/question` round-trip, so the host
+  // answers with the same wire-safe shapes its own UI already speaks.
+  const userQuestions = ctx.get('userQuestions') as
+    | { registerProvider(provider: { ask(request: { questions: unknown }): Promise<{ answers: unknown }> }): () => void }
+    | undefined
+  userQuestions?.registerProvider({
+    ask: async (request) => {
+      const response = await conn.extMethod('dsh/user/question', { questions: request.questions }) as { answers?: unknown }
+      if (response === null || !Array.isArray(response.answers)) {
+        throw internalError('the client returned a malformed question answer')
+      }
+      return { answers: response.answers }
+    },
+  })
+
   const makeAgent = (connection: AgentSideConnection): AcpAgent => {
     conn = connection
     /**

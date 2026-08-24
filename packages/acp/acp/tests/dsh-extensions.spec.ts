@@ -366,4 +366,48 @@ describe('dsh extension surface', () => {
         .rejects.toThrow(/requires a compaction service/)
     })
   })
+
+  describe('user questions over the reverse extension channel', () => {
+    let harness: BridgeHarness | undefined
+
+    afterEach(async () => {
+      await harness?.dispose()
+      harness = undefined
+    })
+
+    it('round-trips a member ask through dsh/user/question', async () => {
+      harness = await makeBridgeHarness({
+        questions: true,
+        onQuestion: questions => ({
+          answers: [{ id: (questions as { id: string }[])[0]?.id, selected: ['Option A'] }],
+        }),
+      })
+      await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+
+      // The bridge registered itself as the member's question provider; the
+      // service's ask() is the exact seam the member's tool path calls.
+      const userQuestions = harness.ctx.get('userQuestions') as {
+        ask(request: { questions: unknown }): Promise<{ answers: { id?: string; selected: string[] }[] }>
+      }
+      const answer = await userQuestions.ask({
+        questions: [{ id: 'q1', question: 'Which way?', options: [{ label: 'Option A' }, { label: 'Option B' }] }],
+      })
+      expect(answer.answers).toEqual([{ id: 'q1', selected: ['Option A'] }])
+    })
+
+    it('fails soft when the client does not answer questions', async () => {
+      harness = await makeBridgeHarness({ questions: true })
+      await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+
+      const userQuestions = harness.ctx.get('userQuestions') as {
+        ask(request: { questions: unknown }): Promise<unknown>
+      }
+      // The SDK wraps the client's rejection into a generic JSON-RPC internal
+      // error by the time it reaches the member process; the detail lives in
+      // the wire payload only.
+      await expect(userQuestions.ask({
+        questions: [{ id: 'q1', question: 'Anyone there?' }],
+      })).rejects.toThrow(/Internal error/)
+    })
+  })
 })

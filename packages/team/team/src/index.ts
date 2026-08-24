@@ -23,7 +23,12 @@ import { seedMemberHome } from './member-home.ts'
 import { resolveMemberSpec } from './resolve.ts'
 export { AcpUpdateTranslator, stopReasonToTurnEnd, type TranslatedEventType, type TranslatedSessionEvent } from './fidelity-reverse.ts'
 export { resolveMemberSpec } from './resolve.ts'
-export type { ResolvedMemberSpawnSpec } from './types.ts'
+export type {
+  ResolvedMemberSpawnSpec,
+  TeamUserQuestionAnswer,
+  TeamUserQuestionHandler,
+  TeamUserQuestionRequest,
+} from './types.ts'
 import { type TranslatedSessionEvent } from './fidelity-reverse.ts'
 import type {
   ChatResult,
@@ -38,6 +43,8 @@ import type {
   SessionConfigSnapshot,
   TeamPermissionHandler,
   TeamPermissionOutcome,
+  TeamUserQuestionAnswer,
+  TeamUserQuestionHandler,
 } from './types.ts'
 
 export const name = 'team'
@@ -226,6 +233,23 @@ export interface TeamService {
    * @returns the disposer removing this handler.
    */
   onPermissionRequest(handler: TeamPermissionHandler): () => void
+  /**
+   * Register a user-question subscriber. While at least one subscriber
+   * exists, member question batches are surfaced (event + inline or
+   * `team.answerUserQuestion` answers); with none, batches decline with an
+   * empty answer set.
+   * @param handler - the subscriber that receives each batch.
+   * @returns the disposer removing this handler.
+   */
+  onUserQuestion(handler: TeamUserQuestionHandler): () => void
+  /**
+   * Answer one surfaced member question batch externally.
+   * @param memberId - the member that raised the batch.
+   * @param requestId - the locally minted request id from the question event.
+   * @param answers - the structured answers keyed by question id.
+   * @returns `false` when no batch with that id is pending (already answered).
+   */
+  answerUserQuestion(memberId: string, requestId: string, answers: TeamUserQuestionAnswer): boolean
   /** Stop every member process. Idempotent. */
   disposeAll(): Promise<void>
 }
@@ -262,8 +286,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const memberConfigs = new Map<string, MemberConfig>()
   const policies = new Map<string, 'allow' | 'reject'>()
   const permissionHandlers = new Set<TeamPermissionHandler>()
+  const userQuestionHandlers = new Set<TeamUserQuestionHandler>()
   /** Externally answered permission requests, keyed by request id. */
   const pendingAnswers = new Map<string, { memberId: string; resolve: (outcome: TeamPermissionOutcome) => void }>()
+  /** Externally answered question batches, keyed by request id. */
+  const pendingQuestionAnswers = new Map<string, { memberId: string; resolve: (answer: TeamUserQuestionAnswer) => void }>()
   let rosterDomain: Domain<typeof teamRosterDomainSpec> | undefined
   let rosterTable: KvTable<string, TeamRosterRecord> | undefined
   let cacheTable: KvTable<string, MemberCacheRecord> | undefined
@@ -304,6 +331,27 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     return Promise.race([external, ...inline]).finally(() => { pendingAnswers.delete(request.requestId) })
   }
 
+  const routeUserQuestion: MemberHooks['onUserQuestion'] = (request) => {
+    if (userQuestionHandlers.size === 0) {
+      // No subscriber: decline with an empty answer set — the member's ask
+      // fails soft, exactly like a user dismissing the question.
+      return Promise.resolve({ answers: [] })
+    }
+    ctx.emit('team/user-question', request)
+    let resolveExternal!: (answer: TeamUserQuestionAnswer) => void
+    const external = new Promise<TeamUserQuestionAnswer>((resolve) => { resolveExternal = resolve })
+    pendingQuestionAnswers.set(request.requestId, { memberId: request.memberId, resolve: resolveExternal })
+    const never = (): Promise<TeamUserQuestionAnswer> => new Promise<TeamUserQuestionAnswer>(() => {})
+    const inline = [...userQuestionHandlers].map(handler =>
+      Promise.resolve().then(() => handler(request))
+        .then(answer => answer === undefined ? never() : answer)
+        .catch((error: unknown) => {
+          ctx.logger.warn(`team: question subscriber failed for member "${request.memberId}": ${String(error)}`)
+          return never()
+        }))
+    return Promise.race([external, ...inline]).finally(() => { pendingQuestionAnswers.delete(request.requestId) })
+  }
+
   const addConnection = (member: MemberConfig): MemberConnection => {
     const cache = caches.get(member.id) ?? new MemberCache()
     caches.set(member.id, cache)
@@ -324,6 +372,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       },
       onUpdate: (sessionId, update) => { ctx.emit('team/member-update', member.id, sessionId, update) },
       onPermission: routePermission,
+      onUserQuestion: routeUserQuestion,
       onTurnEnd: (sessionId, promptId, stopReason, error) => {
         // No trailing undefined: the remote-event forwarder rejects non-JSON args.
         if (error === undefined) ctx.emit('team/turn-end', member.id, sessionId, promptId, stopReason)
@@ -471,6 +520,15 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     onPermissionRequest: (handler) => {
       permissionHandlers.add(handler)
       return () => { permissionHandlers.delete(handler) }
+    },
+    onUserQuestion: (handler) => {
+      userQuestionHandlers.add(handler)
+      return () => { userQuestionHandlers.delete(handler) }
+    },
+    answerUserQuestion: (memberId, requestId, answers) => {
+      const pending = pendingQuestionAnswers.get(requestId)
+      if (pending === undefined || pending.memberId !== memberId) return false
+      return requireMember(connections, memberId).answerUserQuestion(requestId, answers)
     },
     disposeAll: async () => {
       await Promise.allSettled([...connections.values()].map(connection => connection.stop()))

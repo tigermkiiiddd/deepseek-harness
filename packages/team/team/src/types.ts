@@ -10,6 +10,7 @@
  */
 
 import type { AgentCapabilities, PermissionOption, SessionUpdate, StopReason, ToolCallUpdate } from '@agentclientprotocol/sdk'
+import type { AskUserQuestionAnswerItem, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 
 /** One configured team member: how to spawn its persistent ACP process. */
 export interface MemberConfig {
@@ -236,6 +237,32 @@ export type TeamPermissionHandler = (
   request: TeamPermissionRequest,
 ) => TeamPermissionOutcome | undefined | Promise<TeamPermissionOutcome | undefined>
 
+/** One member question batch surfaced to subscribers, verbatim from the wire. */
+export interface TeamUserQuestionRequest {
+  /** Locally minted stable id used to answer this batch. */
+  readonly requestId: string
+  /** The member that raised the questions. */
+  readonly memberId: string
+  /** The questions awaiting answers, verbatim from the wire-safe types. */
+  readonly questions: readonly AskUserQuestionItem[]
+}
+
+/** The human's answers returned for one question batch. */
+export interface TeamUserQuestionAnswer {
+  /** Structured answers keyed by question id; empty when declined. */
+  readonly answers: readonly AskUserQuestionAnswerItem[]
+}
+
+/**
+ * A user-question subscriber: receives the batch and may answer inline with
+ * the structured answers. Returning `undefined` means the subscriber surfaced
+ * the batch and an external answer will arrive through
+ * `team.answerUserQuestion` — the batch stays pending until then.
+ */
+export type TeamUserQuestionHandler = (
+  request: TeamUserQuestionRequest,
+) => TeamUserQuestionAnswer | undefined | Promise<TeamUserQuestionAnswer | undefined>
+
 declare module '@deepseek-ai/cordis' {
   interface Events {
     /**
@@ -268,6 +295,13 @@ declare module '@deepseek-ai/cordis' {
      * @param request - the surfaced permission request.
      */
     'team/permission-requested'(request: TeamPermissionRequest): void
+    /**
+     * A member raised `dsh/user/question`. The GUI answers inline or through
+     * `team.answerUserQuestion`; with no subscriber the batch declines.
+     * @mode emit
+     * @param request - the surfaced question batch.
+     */
+    'team/user-question'(request: TeamUserQuestionRequest): void
     /**
      * A prompt turn settled: the member answered `session/prompt` (or the
      * connection died and the turn was settled `cancelled` locally). A turn

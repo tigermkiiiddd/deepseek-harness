@@ -55,6 +55,8 @@ import type {
   SessionConfigValueInfo,
   TeamPermissionOutcome,
   TeamPermissionRequest,
+  TeamUserQuestionAnswer,
+  TeamUserQuestionRequest,
 } from './types.ts'
 
 /** Event hooks the owning service wires to the Cordis context. */
@@ -65,6 +67,11 @@ export interface MemberHooks {
   onUpdate: (sessionId: string, update: SessionUpdate) => void
   /** Route one permission request; the returned promise is answered externally or by policy. */
   onPermission: (request: TeamPermissionRequest) => Promise<TeamPermissionOutcome>
+  /**
+   * Route one member question batch; the returned promise is answered
+   * externally (through `answerUserQuestion`) or inline by a subscriber.
+   */
+  onUserQuestion: (request: TeamUserQuestionRequest) => Promise<TeamUserQuestionAnswer>
   /**
    * One settled prompt turn. A failed turn (the member answered the prompt
    * with a protocol error) carries `error`; in that case `stopReason` is a
@@ -86,6 +93,11 @@ interface InflightTurn {
 interface PendingPermission {
   readonly sessionId: string
   readonly resolve: (outcome: TeamPermissionOutcome) => void
+}
+
+/** One unanswered member question batch awaiting an external answer. */
+interface PendingUserQuestion {
+  readonly resolve: (answer: TeamUserQuestionAnswer) => void
 }
 
 /**
@@ -276,6 +288,7 @@ export class MemberConnection {
   private readonly historyEvents = new Map<string, TranslatedSessionEvent[]>()
   /** Permission requests awaiting an external answer, keyed by request id. */
   private readonly pendingPermissions = new Map<string, PendingPermission>()
+  private readonly pendingUserQuestions = new Map<string, PendingUserQuestion>()
   /**
    * Cached raw session configuration per session, captured from
    * `config_option_update` notifications and the `newSession`/`loadSession`
@@ -692,6 +705,20 @@ export class MemberConnection {
   }
 
   /**
+   * Answer one unanswered question batch of this member.
+   * @param requestId - the locally minted request id from the request event.
+   * @param answers - the structured answers keyed by question id.
+   * @returns `false` when no batch with that id is pending (already answered).
+   */
+  answerUserQuestion(requestId: string, answers: TeamUserQuestionAnswer): boolean {
+    const pending = this.pendingUserQuestions.get(requestId)
+    if (pending === undefined) return false
+    this.pendingUserQuestions.delete(requestId)
+    pending.resolve(answers)
+    return true
+  }
+
+  /**
    * Establish the member process and connection. Any failure tears the
    * process down and leaves the member `failed`; a stop racing the connect
    * wins (its teardown owns the process).
@@ -759,7 +786,7 @@ export class MemberConnection {
     }
   }
 
-  /** The client handler: lossless update forwarding, permission routing. */
+  /** The client handler: lossless update forwarding, permission routing, question routing. */
   private makeClient() {
     return {
       sessionUpdate: (notification: SessionNotification): Promise<void> => {
@@ -768,6 +795,12 @@ export class MemberConnection {
       },
       requestPermission: (params: RequestPermissionRequest): Promise<RequestPermissionResponse> =>
         this.receivePermission(params),
+      extMethod: (method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> => {
+        if (method !== 'dsh/user/question') {
+          return Promise.reject(new Error(`unsupported client extension: ${method}`))
+        }
+        return this.receiveUserQuestion(params)
+      },
     }
   }
 
@@ -818,6 +851,35 @@ export class MemberConnection {
           // to the safest outcome.
           this.ctx.logger.warn(`team: permission subscriber failed for member "${this.config.id}": ${String(error)}`)
           this.answerPermission(request.requestId, { outcome: 'cancelled' })
+        })
+    })
+  }
+
+  /**
+   * Receive one `dsh/user/question` batch from the member process and surface
+   * it to the host plane. The wire response resolves with the structured
+   * answers; a subscriber failure declines with an empty answer set so the
+   * member's ask fails soft instead of wedging its turn.
+   */
+  private receiveUserQuestion(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const questions = params['questions']
+    if (!Array.isArray(questions)) {
+      return Promise.reject(new Error('dsh/user/question requires a questions array'))
+    }
+    const request: TeamUserQuestionRequest = {
+      requestId: randomUUID(),
+      memberId: this.config.id,
+      questions: questions as TeamUserQuestionRequest['questions'],
+    }
+    return new Promise<Record<string, unknown>>((resolve) => {
+      this.pendingUserQuestions.set(request.requestId, {
+        resolve: (answer) => { resolve({ answers: answer.answers }) },
+      })
+      void this.hooks.onUserQuestion(request)
+        .then((answer) => { this.answerUserQuestion(request.requestId, answer) })
+        .catch((error: unknown) => {
+          this.ctx.logger.warn(`team: question subscriber failed for member "${this.config.id}": ${String(error)}`)
+          this.answerUserQuestion(request.requestId, { answers: [] })
         })
     })
   }

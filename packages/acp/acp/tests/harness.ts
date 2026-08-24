@@ -19,6 +19,7 @@ import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { SessionTitleInvalidError } from '@deepseek-ai/dsh-session-title'
+import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import * as AcpPlugin from '../src/index.ts'
 import type { AcpConfig } from '../src/index.ts'
 
@@ -198,6 +199,8 @@ export interface BridgeHarness {
   sessionUpdates: { sessionId: string; update: CapturedUpdate }[]
   permissionRequests: RequestPermissionRequest[]
   onPermission: (request: RequestPermissionRequest) => RequestPermissionResponse
+  /** Client-side answerer for member question batches; absent rejects the batch. */
+  onQuestion: ((questions: unknown) => { answers: unknown[] }) | undefined
   onSessionUpdateError: (() => void) | undefined
   /** Session ids the compaction stub received, for call assertions. */
   compactedWith: unknown[]
@@ -232,6 +235,14 @@ export async function makeBridgeHarness(options: {
   sessionQuery?: 'none' | 'disabled' | 'ok'
   /** Compaction seam posture for manual-compact coverage; default `none` mounts nothing. */
   compaction?: 'none' | 'ok'
+  /**
+   * Client-side answerer for member question batches. Default absent: an
+   * agent→client question round-trip rejects with the unsupported-extension
+   * error.
+   */
+  onQuestion?: (questions: unknown) => { answers: unknown[] }
+  /** Mount the member process's user-questions service so ask() has a seam. */
+  questions?: boolean
 } = {}): Promise<BridgeHarness> {
   const adapter = new MockAdapter(
     options.script ?? [],
@@ -241,6 +252,7 @@ export async function makeBridgeHarness(options: {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: options.persona ?? '' } })
   if (options.attachments !== false) await ctx.plugin(MemoryAttachmentStore)
+  if (options.questions === true) await ctx.plugin(UserQuestionService)
   const loopFiber = await ctx.plugin(AgentLoop, { agents: [] })
   ctx.llm.registerAdapter(['mock', 'mock-alt'], adapter)
   if (options.titleService === 'ok') {
@@ -315,6 +327,7 @@ export async function makeBridgeHarness(options: {
     onPermission: () => ({ outcome: { outcome: 'cancelled' } }),
     onSessionUpdateError: undefined,
     compactedWith: compactedWith ?? [],
+    onQuestion: options.onQuestion,
     client: undefined as unknown as ClientSideConnection,
     acpFiber: undefined as unknown as BridgeHarness['acpFiber'],
     loopFiber,
@@ -333,6 +346,12 @@ export async function makeBridgeHarness(options: {
     requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
       permissionRequests.push(params)
       return Promise.resolve(harness.onPermission(params))
+    },
+    extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+      if (method === 'dsh/user/question' && harness.onQuestion !== undefined) {
+        return Promise.resolve(harness.onQuestion(params['questions']) as Record<string, unknown>)
+      }
+      return Promise.reject(new Error(`unsupported client extension: ${method}`))
     },
   })
 
