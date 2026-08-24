@@ -209,6 +209,14 @@ export interface LlmModelDiscoveryRequest {
   api?: string
   /** Credential for this interrogation alone; the harness never stores it. */
   apiKey?: string
+  /**
+   * Interrogate the endpoint even when the adapter's installed catalog
+   * describes this route. The installed catalog is a version cache: it stays
+   * current only until upstream adds or retires models, and the endpoint is
+   * the one that knows today's list. Absent (or false) keeps the default —
+   * a catalog route answers from its cache with no network call.
+   */
+  preferEndpoint?: boolean
   /** Caller cancellation; implementations must settle promptly after it aborts. */
   signal?: AbortSignal
 }
@@ -227,6 +235,14 @@ export interface LlmDiscoveredModel {
   contextWindow?: number
   /** Maximum output tokens, when disclosed. */
   maxTokens?: number
+  /**
+   * Wire protocol this model speaks, when the answerer knows it — an installed
+   * catalog entry's own protocol, or a route whose catalog agrees on one. A
+   * listing endpoint discloses ids, not protocols, so a route spanning several
+   * protocols cannot name one for a model its cache does not describe; adopting
+   * such a model then owes the protocol itself.
+   */
+  api?: string
 }
 
 /** One adapter-discovered model; catalog membership is advisory, not request validation. */
