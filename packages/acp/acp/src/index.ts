@@ -619,7 +619,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
    * thought, tool-call, plan, and usage updates; every other client gets the
    * unchanged committed-text automation stream.
    */
-  const fullFidelity = false
+  let fullFidelity = false
   let conn: AgentSideConnection
   let imagePromptEnabled = false
 
@@ -754,6 +754,15 @@ export function apply(ctx: Context, config: AcpConfig): void {
     const record = sessions.get(session.header.id)
     if (record === undefined || record.agent.session !== session) return
     try {
+      // Every wire emission joins this session's ordered chain, so the
+      // client-visible order equals log order regardless of which handler ran
+      // synchronously. Committed text stays the automation backbone; the
+      // full-fidelity extras ride the same chain right after their event.
+      const enqueueEmission = (emit: () => Promise<void> | void): void => {
+        record.outputTail = record.outputTail.then(emit).catch((error: unknown) => {
+          logger.warn(`acp: update emission failed: ${errorChain(error)}`)
+        })
+      }
       if (event.type === 'assistant/message') {
         const inflight = record.inflight?.turn === event.data.turn ? record.inflight : undefined
         const previous = record.outputTail
@@ -773,8 +782,10 @@ export function apply(ctx: Context, config: AcpConfig): void {
           if (inflight !== undefined) inflight.outputError ??= failure
           logger.warn(`acp: assistant output conversion failed: ${errorChain(error)}`)
         })
+        if (fullFidelity) enqueueEmission(() => { emitFullFidelity(record, event) })
+      } else if (fullFidelity) {
+        enqueueEmission(() => { emitFullFidelity(record, event) })
       }
-      if (fullFidelity) emitFullFidelity(record, event)
     } finally {
       const inflight = record.inflight
       if (inflight !== undefined && event.type === 'turn/end' && inflight.turn === event.data.turn) {
@@ -852,9 +863,10 @@ export function apply(ctx: Context, config: AcpConfig): void {
       if (presets !== undefined) await presets.mount(agentCtx)
     }
     return {
-      async initialize(_params: InitializeRequest): Promise<InitializeResponse> {
+      async initialize(params: InitializeRequest): Promise<InitializeResponse> {
         // Single-version agent: the spec's "same version if supported, else
         // the latest supported" both resolve to this server's one version.
+        fullFidelity = (params._meta as { fullFidelity?: boolean } | undefined)?.fullFidelity === true
         imagePromptEnabled = await supportsAcpImagePrompts(ctx, config.provider, config.model)
         const extensionNames = Object.keys(extensions)
         return {
