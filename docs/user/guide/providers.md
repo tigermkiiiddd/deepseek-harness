@@ -26,7 +26,7 @@ Choose **Add a custom provider** for a company gateway, self-hosted server, or p
 
 The Provider ID is permanent because requests, saved sessions, model defaults, and credential references use it. To rename a provider, add a new provider and delete the old one. The display name, base URL, protocol, credential, and models remain editable.
 
-Under **Model catalog**, choose **Fetch available models** to query the base URL and credential currently shown in the form. Selecting candidates updates the draft; the provider is not stored until you save. Catalog providers use their installed catalog without a network request.
+Under **Model catalog**, choose **Refresh models** to query the base URL and credential currently shown in the form: for a custom provider the model list is replaced directly by what the endpoint reports (still a draft until you save); for a built-in catalog provider the route re-syncs from its own endpoints into a local cache, keeping its built-in identity instead of being marked customized. A successful refresh shows "Synced N models" on the page; an unreachable endpoint reports its error beside the rows, which stay editable by hand.
 
 ### Image input
 
@@ -125,7 +125,7 @@ If a saved default names a provider that was deleted, the composer displays **Se
 
 - **`MISSING_CREDENTIAL`** — Store the provider key through the Models page or supply the referenced environment variable.
 - **`UNKNOWN_MODEL`** — Select a configured model or add the missing model to the custom provider.
-- **Fetching available models returns 401** — Check the key. Model discovery calls the OpenAI-compatible `GET /models` endpoint; enter models manually for endpoints that do not provide it.
+- **Refreshing models returns 401** — Check the key. Model discovery calls the OpenAI-compatible `GET /models` endpoint; enter models manually for endpoints that do not provide it.
 - **The gateway refuses every request although the key and URL are right** — Its request shape differs from OpenAI's. Start with `compat.supportsDeveloperRole: false` and `compat.maxTokensField: max_tokens` on the route.
 - **Only reasoning models fail** — pi-ai sends their system prompt as the `developer` role, which the gateway rejects. Set `compat.supportsDeveloperRole: false`.
 - **A compat switch is refused as having no value** — A key written with nothing after the colon. Give it a value, or remove the key to keep the installed catalog's.

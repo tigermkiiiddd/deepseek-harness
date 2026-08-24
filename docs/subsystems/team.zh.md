@@ -102,7 +102,7 @@ Web GUI 是一个**多 agent 工作台**：一个框架，顶部一条全局可�
 
 ## Cordis API
 
-Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — this section is byte-identical in both language sides of the page. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.zh.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
+Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — the language sides differ only in locale-specific paired document paths. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.zh.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
 
 <a id="ctxteam--teamservice"></a>
 
@@ -182,6 +182,45 @@ isTurnInFlight(memberId: string, sessionId: string): boolean
 newSession(memberId: string): Promise<string>
 
 /**
+ * The member's resolved session configuration set plus the model shortcut.
+ * The snapshot is derived from options cached when the topic was created,
+ * loaded, or updated — create or load the topic first.
+ * @param memberId - the member that owns the topic.
+ * @param sessionId - the topic whose config is read.
+ * @returns the resolved options and the current model, if any.
+ * @throws when the member has no cached options for the topic.
+ */
+getConfig(memberId: string, sessionId: string): Promise<SessionConfigSnapshot>
+
+/**
+ * Set one session configuration option (e.g. `"model"`) and return the
+ * updated snapshot. The value is validated by the agent.
+ * @param memberId - the member that owns the topic.
+ * @param sessionId - the topic whose option is set.
+ * @param configId - the option id, e.g. `"model"`.
+ * @param value - the new value id.
+ * @returns the updated snapshot.
+ */
+setConfig(memberId: string, sessionId: string, configId: string, value: string): Promise<SessionConfigSnapshot>
+
+/**
+ * The providers the member advertises, gated on the `providers` capability.
+ * @param memberId - the member whose providers are listed.
+ * @returns the provider list.
+ * @throws when the member did not advertise `providers` in `initialize`.
+ */
+listProviders(memberId: string): Promise<MemberProviderInfo[]>
+
+/**
+ * Configure one provider (member-scoped). The agent stores the routing
+ * config on its own side; the harness never persists secrets.
+ * @param memberId - the member whose provider is configured.
+ * @param config - the provider id, protocol, base URL, and optional headers.
+ * @throws when the member did not advertise `providers` in `initialize`.
+ */
+setProvider(memberId: string, config: MemberProviderConfigInput): Promise<void>
+
+/**
  * Accept one prompt turn and return immediately; chunks stream as
  * `team/member-update` events and settlement as `team/turn-end`.
  * @param memberId - the member to prompt.
@@ -246,7 +285,7 @@ onPermissionRequest(handler: TeamPermissionHandler): () => void
 disposeAll(): Promise<void>
 ```
 
-Source: [`packages/team/team/src/index.ts:63`](../../packages/team/team/src/index.ts)
+Source: [`packages/team/team/src/index.ts`](../../packages/team/team/src/index.ts)
 
 <a id="team-events"></a>
 
@@ -272,7 +311,7 @@ One typed `session/update` notification from a member, forwarded losslessly: tex
 'team/member-update'(memberId: string, sessionId: string, update: SessionUpdate): void
 ```
 
-Source: [`packages/team/team/src/types.ts:178`](../../packages/team/team/src/types.ts)
+Source: [`packages/team/team/src/types.ts`](../../packages/team/team/src/types.ts)
 
 <a id="teampermission-requested--emit"></a>
 
@@ -290,7 +329,7 @@ A member raised `session/request_permission`. The GUI answers through `team.perm
 'team/permission-requested'(request: TeamPermissionRequest): void
 ```
 
-Source: [`packages/team/team/src/types.ts:185`](../../packages/team/team/src/types.ts)
+Source: [`packages/team/team/src/types.ts`](../../packages/team/team/src/types.ts)
 
 <a id="teamstatus--emit"></a>
 
@@ -313,7 +352,7 @@ A member's status migrated. Every transition emits exactly one public event (`id
 'team/status'(memberId: string, status: MemberStatus, error?: string): void
 ```
 
-Source: [`packages/team/team/src/types.ts:167`](../../packages/team/team/src/types.ts)
+Source: [`packages/team/team/src/types.ts`](../../packages/team/team/src/types.ts)
 
 <a id="teamturn-end--emit"></a>
 
@@ -337,5 +376,5 @@ A prompt turn settled: the member answered `session/prompt` (or the connection d
 'team/turn-end'(memberId: string, sessionId: string, promptId: string, stopReason: StopReason, error?: string): void
 ```
 
-Source: [`packages/team/team/src/types.ts:198`](../../packages/team/team/src/types.ts)
+Source: [`packages/team/team/src/types.ts`](../../packages/team/team/src/types.ts)
 <!-- END GENERATED cordis-surface -->

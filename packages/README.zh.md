@@ -36,7 +36,7 @@ npm scope 为 `@deepseek-ai/dsh-*`；Cordis `Service` 子类和函数插件通�
 | [`web/`](web/README.zh.md) | Web 能力系列：seam、搜索／获取提供方实现和面向模型的 Web 工具 | 产品：稳定 API |
 | [`attachment/`](attachment/README.zh.md) | 持久附件标识、校验、本地内容寻址存储 | 产品：稳定 API |
 | [`spill/`](spill/README.zh.md) | spill 能力系列：存储 seam、本地实现、工具结果 spill 策略 | 产品：稳定 API |
-| [`todo/`](todo/README.zh.md) | 面向模型的 `todo_write` 工具 | 产品：稳定 API |
+| [`todo/`](todo/README.zh.md) | 面向模型的索引式 todo 读写工具 | 产品：稳定 API |
 | [`plan/`](plan/README.zh.md) | Plan 协作状态，提供直接进入命令与经评审的退出 | 产品：稳定 API |
 | [`preset/`](preset/README.zh.md) | 由 preset `cordis.yml` 按会话组装 agent | 产品：稳定 API |
 | [`guard/`](guard/README.zh.md) | 循环卫生守卫：建议性重复调用提醒 + `tools/execute` 截止时间强制执行器 | 产品：稳定 API |

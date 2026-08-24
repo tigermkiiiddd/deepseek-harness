@@ -20,7 +20,19 @@ Registry and cross-page router behind the two model-facing inspect tools.
 
 ```ts cordis-catalog
 /**
- * Register one Host provider.
+ * Register one Host provider, replacing any earlier provider under the same id.
+ *
+ * Replacement, not rejection, because the registrant is a preset row and a
+ * preset's standing mount is generational: an edited composition file mounts a
+ * new generation while the superseded one — still joined by live sessions —
+ * keeps its registration until whole-tree teardown. Throwing on the collision
+ * made every later session on that preset fail to create or resume until the
+ * process restarted. The newest registration is the right winner anyway: the
+ * first-party providers are stateless wrappers over generated catalogs, and
+ * the one stateful provider ('Tool') resolves per-request state from the
+ * `agent` each query carries. A superseded disposer stays inert through the
+ * identity check below, so the old generation's eventual teardown cannot
+ * unregister its replacement.
  * @param registration - manifest and local query handler.
  * @returns idempotent disposer.
  */

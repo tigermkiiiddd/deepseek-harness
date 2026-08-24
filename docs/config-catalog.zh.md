@@ -521,6 +521,52 @@ export interface ModelCompactPolicyConfig extends CompactionPolicyConfig {
 
 来源：[`packages/compaction/compaction-basic/src/types.ts:38`](../packages/compaction/compaction-basic/src/types.ts)
 
+<a id="deepseek-aidsh-compaction-structured"></a>
+
+## `@deepseek-ai/dsh-compaction-structured`
+
+需要：`llm` · `tokenMeter` · `sessions`
+
+```ts config-catalog
+/** Basic compaction configuration with an optional exact-target policy table. */
+export interface StructuredCompactionConfig extends CompactionPolicyConfig {
+  /** Exact provider/model overrides; duplicate targets fail plugin load. */
+  modelPolicies?: ModelCompactPolicyConfig[]
+  /** Enable automatic step-boundary pressure and overflow-recovery listeners. Defaults to `true`. */
+  auto?: boolean
+}
+
+/** Policy fields shared by the default policy and exact model overrides. */
+export interface CompactionPolicyConfig {
+  /** Compact at this fraction of the model's context window. Defaults to `0.8`. */
+  thresholdRatio?: number
+  /** Recent context retained as a fraction of the model's window. Defaults to `0.16`. */
+  retainRatio?: number
+  /** Absolute recent-context budget; mutually exclusive with `retainRatio`. */
+  retainTokens?: number
+  /** Summary provider; set together with `summarizationModel`, or inherit the conversation target. */
+  summarizationProvider?: string
+  /** Summary model; set together with `summarizationProvider`, or inherit the conversation target. */
+  summarizationModel?: string
+  /** Provider generation cap for summarization. Defaults to `8192`. */
+  maxTokens?: number
+  /** Extra attempts after the first compaction when pressure remains above threshold. Defaults to `1`. */
+  compactionRetries?: number
+  /** Maximum retries after canonical context overflow; `0` disables recovery. Defaults to `1`. */
+  maxOverflowRetries?: number
+}
+
+/** Exact provider/model override merged over the default compaction policy. */
+export interface ModelCompactPolicyConfig extends CompactionPolicyConfig {
+  /** Registered provider route to match. */
+  provider: string
+  /** Exact routed model id to match within `provider`. */
+  model: string
+}
+```
+
+来源：[`packages/compaction/compaction-structured/src/types.ts:38`](../packages/compaction/compaction-structured/src/types.ts)
+
 <a id="deepseek-aidsh-compaction-tool-result-pruner"></a>
 
 ## `@deepseek-ai/dsh-compaction-tool-result-pruner`
@@ -1109,6 +1155,12 @@ export interface PiAiModelProfile {
    */
   maxTokens?: number
   /**
+   * Per-request reasoning-token cap sent as vLLM's
+   * `thinking_token_budget`; supported only by `openai-completions` models and
+   * independent of this model's visible-output `maxTokens`.
+   */
+  thinkingTokenBudget?: number
+  /**
    * Request modalities this model accepts. Absent — or empty, which describes
    * a model that accepts nothing and so states no answer either — keeps the
    * installed catalog entry's modalities, then the route's `defaultInput`.
@@ -1237,7 +1289,7 @@ export type PiAiThinkingFormat = NonNullable<OpenAICompletionsCompat['thinkingFo
 
 依赖：`Api`（`@earendil-works/pi-ai`）· `CacheRetention`（`@earendil-works/pi-ai`）· `Model`（`@earendil-works/pi-ai`）· `ModelThinkingLevel`（`@earendil-works/pi-ai`）· `OpenAICompletionsCompat`（`@earendil-works/pi-ai`）· [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts) · `ThinkingBudgets`（`@earendil-works/pi-ai`）· `Transport`（`@earendil-works/pi-ai`)
 
-来源：[`packages/llm/llm-pi-ai/src/config.ts:213`](../packages/llm/llm-pi-ai/src/config.ts)
+来源：[`packages/llm/llm-pi-ai/src/config.ts:215`](../packages/llm/llm-pi-ai/src/config.ts)
 
 <a id="deepseek-aidsh-llm-replay"></a>
 
@@ -2459,6 +2511,15 @@ export interface MemberConfig {
   readonly permission?: 'allow' | 'reject'
   /** Spawn and connect this member when the service loads (default `true`). */
   readonly autostart?: boolean
+  /**
+   * The member's own agent preset composition: a YAML top-level list of plugin
+   * rows (persona, tools, prompt sections) that makes this member unique.
+   * Only `kind: 'dsh'` members carry one — they are the members with a harness
+   * home to hold it. Seeded once at creation into the member home's preset
+   * root and made the member's default preset; a restart never re-seeds, so
+   * the composition is fixed for the member's lifetime in that home.
+   */
+  readonly preset?: string
 }
 ```
 
@@ -2948,7 +3009,7 @@ export interface Config {
 需要：`tools`
 
 ```ts config-catalog
-/** Model-facing todo tool configuration. */
+/** Schemastery configuration for the todo tool consumer. */
 export interface Config {
   /**
    * Required deployment choice for whether several todos may be `in_progress` at once. True suits
@@ -2961,7 +3022,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/todo/tool-todo/src/index.ts:29`](../packages/todo/tool-todo/src/index.ts)
+来源：[`packages/todo/tool-todo/src/index.ts:41`](../packages/todo/tool-todo/src/index.ts)
 
 <a id="deepseek-aidsh-tool-web"></a>
 

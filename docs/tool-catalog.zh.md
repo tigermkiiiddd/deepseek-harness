@@ -44,7 +44,7 @@
 | `@deepseek-ai/dsh-tool-jobs` | `job_kill`、`job_list`、`job_output` | `ctx.tools`、`ctx.jobs`、`ctx.systemPrompt` | `tool/call`、`tool/result`、`user/message via agent.inject() for background completion notices` | - | 与任务种类无关的后台任务控制器：后台 bash 命令、PTY 发送和 subagent 都通过相同的 3 个工具读取、列出和终止。加载该插件会挂接控制器，从而启用生产方的 `ctx.jobs.start()`。 |
 | `@deepseek-ai/dsh-experimental-tool-agent-team` | `followup_task`、`interrupt_agent`、`list_agents`、`send_message`、`spawn_teammate`、`team_task_create`、`team_task_get`、`team_task_list`、`team_task_update`、`wait_agent` | `ctx.tools`、`ctx.systemPrompt`、`ctx.agentTeams`、`an exact live Team member Agent` | `tool/call`、`team/member`、`team/message/queued`、`team/message/delivered`、`team/task`、`tool/result` | - | 这 10 个工具限定于隐式 Team Lead 与持久 teammate 作用域。随产品发布的 dsh-base bundle 默认禁用该包；文档中的 Agent Teams profile patch 会启用它，并禁用旧 continuable child 的同名控制工具。 |
 | `@deepseek-ai/dsh-tool-team` | `member_add`、`member_chat`、`member_model`、`member_provider`、`member_remove`、`member_restart`、`member_sessions`、`member_start`、`member_stop` | `ctx.tools` | `tool/call`、`tool/result`、`team/message/queued` | - | 这些是面向 `team`（宿主）服务的团队工具：列举花名册与每个成员的对话主题，就某主题（或新主题）与成员对话，并管理花名册与成员生命周期（添加／删除／启动／停止／重启）。成员自己拥有其会话，并通过 ACP 线驱动。 |
-| `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`、`owning Agent session` | `tool/call`、`todo/write`、`tool/result` | - | todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为检查清单。`allowParallelInProgress` 是没有默认值的必填项，因此本目录明确选择 `true`，对应描述允许同时存在多个 `in_progress` 项。选择 `false` 的部署会获得同一工具，但描述会要求只能有 1 个活动任务。 |
+| `@deepseek-ai/dsh-tool-todo` | `todo_read`、`todo_write` | `ctx.tools`、`owning Agent session` | `tool/call`、`todo/write`、`tool/result` | - | todo_read 会公开当前操作索引且不追加事件；todo_write 对会话所有的状态应用按索引增量，UI 则将最新的 todo/write 事件渲染为检查清单。`allowParallelInProgress` 是没有默认值的必填项，因此本目录明确选择 `true`，对应描述允许同时存在多个 `in_progress` 项。选择 `false` 的部署会获得同一工具，但描述会要求只能有 1 个活动任务。 |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`、`ctx.workflowEngine`、`ctx.systemPrompt`、`a calling Agent (exec.agent parents the script children)` | `tool/call`、`tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`、`web_search` | `ctx.tools`、`ctx.web`、`ctx.systemPrompt` | `tool/call`、`tool/result` | - | web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可见 schema 在更换后端时保持稳定。 |
 
@@ -2091,7 +2091,7 @@ lsp 工具将提供方选择和语言服务器子进程置于 ctx.lsp 之后，�
 
 ### `member_add`
 
-在运行时添加一个新的团队成员：启动其 ACP agent 进程，持久化到团队花名册，并加入团队。成员会在宿主重启后自动重新生成（除非 autostart 为 false）。用 member_remove 销毁并遗忘它。
+在运行时添加一个新的团队成员：启动其 ACP agent 进程，持久化到团队花名册，并加入团队。成员会在宿主重启后自动重新生成（除非 autostart 为 false）。对 kind "dsh" 成员，传 preset 赋予该成员独一无二的人设：一份在创建时写入其私有 home 的 preset composition，其每个会话都从它装配。用 member_remove 销毁并遗忘它。
 
 ```json
 {
@@ -2147,6 +2147,10 @@ lsp 工具将提供方选择和语言服务器子进程置于 ctx.lsp 之后，�
     "autostart": {
       "type": "boolean",
       "description": "Start the member now and on every host restart (default true)."
+    },
+    "preset": {
+      "type": "string",
+      "description": "Only for kind \"dsh\" members. The member's own unique agent preset composition, as YAML: a top-level list of plugin rows. At minimum give it a persona row — and write its text as a complete system prompt (role, what it owns, how it works, limits), not a placeholder label; each member is meant to be genuinely distinct:\n- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: You are a terse architecture reviewer on a small engineering team. Your job is to challenge design decisions before they are built: read the code first, question assumptions about data flow and failure modes, and state trade-offs concretely — cost, complexity, blast radius. Be direct; when you disagree, propose the alternative you would take instead.\nTo add or configure tools, read an existing agent preset composition for the exact rows — find one with glob '**/agent.cordis.yml' (the standard preset shipped with the installation is a working reference) and copy the rows the member should have. Each row is id/name plus optional config, e.g.:\n- id: tool-web\n  name: '@deepseek-ai/dsh-tool-web'\n  config:\n    fetch: false\nWritten into the member's private home at creation, it becomes its default preset for every session."
     }
   },
   "required": [
@@ -2384,9 +2388,22 @@ lsp 工具将提供方选择和语言服务器子进程置于 ctx.lsp 之后，�
 
 ## `@deepseek-ai/dsh-tool-todo`
 
+### `todo_read`
+
+读取带有从零开始索引的当前有序任务列表。只要无法看到最新的索引列表（包括经过压缩后），就在调用 `todo_write` 的 update 或 remove 前使用此工具。绝不要猜测索引。
+
+```json
+{
+  "type": "object",
+  "properties": {}
+}
+```
+
+来源：[`packages/todo/tool-todo/src/index.ts`](../packages/todo/tool-todo/src/index.ts)
+
 ### `todo_write`
 
-记录并更新当前工作的结构化任务列表。用增量更新具体任务，而不是重发整个列表：使用 `action`——`merge` 按 `content` 逐条 upsert（新增任务，并更新已存在任务的 `status`）、`remove` 删除所列任务、`clear` 清空列表；每个 delta 都会合并到当前列表。仅当任务方向发生显著变化（例如计划被重构）时才以 `action: replace` 发送**完整列表**。随着工作推进，保持列表为最新。用它规划多步骤工作：开始前为每个具体步骤添加一项 todo。将当前正在处理的每项 todo 标记为 `in_progress`——确实在并行运行时（例如并发 subagent 或后台命令）可同时标记多项，顺序工作则标记 1 项；只要工作尚未完成，就应至少有一项任务为 `in_progress`。某项 todo 完成后立即标记为 `completed`，不要批量标记完成；只有全部工作完成后，才可以没有 `in_progress` 项。简单的单步骤任务无需使用列表。状态：`pending`（未开始）、`in_progress`（正在处理）、`completed`（已完成）。
+记录并更新当前工作的结构化任务列表，且不重发整个列表。`action` **必须提供**：`add` 追加新的 `todos`；`update` 通过从零开始的 `updates[].index` 修改现有条目；`remove` 删除从零开始的 `indices`；`clear` 清空列表。索引始终指向调用前的当前有序列表。`update` 永不新增任务，无效索引会失败而不是追加。协议不提供整表 replace。只要无法看到最新的索引列表，就在 `update` 或 `remove` 前调用 `todo_read`。随着工作推进，保持列表为最新。用它规划多步骤工作：开始前为每个具体步骤添加一项 todo。将当前正在处理的每项 todo 标记为 `in_progress`——确实在并行运行时（例如并发 subagent 或后台命令）可同时标记多项，顺序工作则标记 1 项；只要工作尚未完成，就应至少有一项任务为 `in_progress`。某项 todo 完成后立即标记为 `completed`，不要批量标记完成；只有全部工作完成后，才可以没有 `in_progress` 项。简单的单步骤任务无需使用列表。状态：`pending`（未开始）、`in_progress`（正在处理）、`completed`（已完成）。
 
 ```json
 {
@@ -2394,17 +2411,17 @@ lsp 工具将提供方选择和语言服务器子进程置于 ctx.lsp 之后，�
   "properties": {
     "action": {
       "type": "string",
-      "description": "replace (default): the whole list, replacing the previous one. merge: upsert each entry by content (add new tasks, update the status of existing tasks). remove: delete the listed contents. clear: empty the list. Each delta operates on the current list (the latest todo/write).",
+      "description": "add: append `todos`. update: change entries addressed by zero-based `updates[].index`. remove: delete entries addressed by zero-based `indices`. clear: empty the list. Whole-list replacement is not supported.",
       "enum": [
-        "replace",
-        "clear",
-        "merge",
-        "remove"
+        "add",
+        "update",
+        "remove",
+        "clear"
       ]
     },
     "todos": {
       "type": "array",
-      "description": "Task entries to change. replace (default): the COMPLETE list replacing the previous one. merge: a delta to add entries or update their status (matched by content). remove: the content values to delete (status ignored). Omit for clear.",
+      "description": "New task entries. Required by add; omitted by update, remove, and clear.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -2428,14 +2445,54 @@ lsp 工具将提供方选择和语言服务器子进程置于 ctx.lsp 之后，�
           "status"
         ]
       }
+    },
+    "updates": {
+      "type": "array",
+      "description": "Changes for action update. Each zero-based index addresses the current list before this call; provide content, status, or both. Updating never appends.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "index": {
+            "type": "integer",
+            "description": "Zero-based current-list index."
+          },
+          "content": {
+            "type": "string",
+            "description": "Replacement task text. Omit to keep it."
+          },
+          "status": {
+            "type": "string",
+            "description": "Replacement lifecycle state. Omit to keep it.",
+            "enum": [
+              "pending",
+              "in_progress",
+              "completed"
+            ]
+          }
+        },
+        "required": [
+          "index"
+        ]
+      }
+    },
+    "indices": {
+      "type": "array",
+      "description": "Zero-based current-list indices to delete for action remove.",
+      "items": {
+        "type": "integer"
+      }
     }
-  }
+  },
+  "required": [
+    "action"
+  ]
 }
 ```
 
 来源：[`packages/todo/tool-todo/src/index.ts`](../packages/todo/tool-todo/src/index.ts)
 
-todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为检查清单。`allowParallelInProgress` 是没有默认值的必填项，因此本目录明确选择 `true`，对应描述允许同时存在多个 `in_progress` 项。选择 `false` 的部署会获得同一工具，但描述会要求只能有 1 个活动任务。
+todo_read 会公开当前操作索引且不追加事件；todo_write 对会话所有的状态应用按索引增量，UI 则将最新的 todo/write 事件渲染为检查清单。`allowParallelInProgress` 是没有默认值的必填项，因此本目录明确选择 `true`，对应描述允许同时存在多个 `in_progress` 项。选择 `false` 的部署会获得同一工具，但描述会要求只能有 1 个活动任务。
 
 <a id="deepseek-aidsh-tool-workflow"></a>
 

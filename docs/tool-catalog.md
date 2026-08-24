@@ -40,7 +40,7 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-tool-jobs` | `job_kill`, `job_list`, `job_output` | `ctx.tools`, `ctx.jobs`, `ctx.systemPrompt` | `tool/call`, `tool/result`, `user/message via agent.inject() for background completion notices` | - | The kind-agnostic background-job controller: background bash commands, PTY sends, and subagents are read, listed, and killed through the same three tools. Loading the plugin attaches the controller that arms producers' `ctx.jobs.start()`. |
 | `@deepseek-ai/dsh-experimental-tool-agent-team` | `followup_task`, `interrupt_agent`, `list_agents`, `send_message`, `spawn_teammate`, `team_task_create`, `team_task_get`, `team_task_list`, `team_task_update`, `wait_agent` | `ctx.tools`, `ctx.systemPrompt`, `ctx.agentTeams`, `an exact live Team member Agent` | `tool/call`, `team/member`, `team/message/queued`, `team/message/delivered`, `team/task`, `tool/result` | - | All ten tools are scoped to implicit Team Leads and durable teammates. The shipped dsh-base bundle keeps the package disabled; the documented Agent Teams profile patch enables it while disabling the legacy continuable-child control names. |
 | `@deepseek-ai/dsh-tool-team` | `member_add`, `member_chat`, `member_model`, `member_provider`, `member_remove`, `member_restart`, `member_sessions`, `member_start`, `member_stop` | `ctx.tools` | `tool/call`, `tool/result`, `team/message/queued` | - | Model-facing team tools over the host `team` service: enumerate the roster and each member's own conversation topics, chat with a member on a topic (or a new one), and manage the roster and member lifecycle (add / remove / start / stop / restart). Members own their sessions and are driven through the ACP wire. |
-| `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`, `owning Agent session` | `tool/call`, `todo/write`, `tool/result` | - | todo_write is session-owned state; UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task. |
+| `@deepseek-ai/dsh-tool-todo` | `todo_read`, `todo_write` | `ctx.tools`, `owning Agent session` | `tool/call`, `todo/write`, `tool/result` | - | todo_read exposes the current operation indices without appending an event; todo_write applies indexed deltas to session-owned state, and UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task. |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`, `ctx.workflowEngine`, `ctx.systemPrompt`, `a calling Agent (exec.agent parents the script children)` | `tool/call`, `tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`, `web_search` | `ctx.tools`, `ctx.web`, `ctx.systemPrompt` | `tool/call`, `tool/result` | - | web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps. |
 
@@ -2085,7 +2085,7 @@ All ten tools are scoped to implicit Team Leads and durable teammates. The shipp
 
 ### `member_add`
 
-Add a new team member at runtime: spawn its ACP agent process, persist it in the team roster, and join it to the team. The member is re-spawned automatically after a host restart (unless autostart is false). Use member_remove to tear it down and forget it.
+Add a new team member at runtime: spawn its ACP agent process, persist it in the team roster, and join it to the team. The member is re-spawned automatically after a host restart (unless autostart is false). For kind "dsh" members, pass preset to give the member its own unique persona: a preset composition written into its private home at creation, which it runs on for every session. Use member_remove to tear it down and forget it.
 
 ```json
 {
@@ -2141,6 +2141,10 @@ Add a new team member at runtime: spawn its ACP agent process, persist it in the
     "autostart": {
       "type": "boolean",
       "description": "Start the member now and on every host restart (default true)."
+    },
+    "preset": {
+      "type": "string",
+      "description": "Only for kind \"dsh\" members. The member's own unique agent preset composition, as YAML: a top-level list of plugin rows. At minimum give it a persona row — and write its text as a complete system prompt (role, what it owns, how it works, limits), not a placeholder label; each member is meant to be genuinely distinct:\n- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: You are a terse architecture reviewer on a small engineering team. Your job is to challenge design decisions before they are built: read the code first, question assumptions about data flow and failure modes, and state trade-offs concretely — cost, complexity, blast radius. Be direct; when you disagree, propose the alternative you would take instead.\nTo add or configure tools, read an existing agent preset composition for the exact rows — find one with glob '**/agent.cordis.yml' (the standard preset shipped with the installation is a working reference) and copy the rows the member should have. Each row is id/name plus optional config, e.g.:\n- id: tool-web\n  name: '@deepseek-ai/dsh-tool-web'\n  config:\n    fetch: false\nWritten into the member's private home at creation, it becomes its default preset for every session."
     }
   },
   "required": [
@@ -2378,9 +2382,22 @@ Model-facing team tools over the host `team` service: enumerate the roster and e
 
 ## `@deepseek-ai/dsh-tool-todo`
 
+### `todo_read`
+
+Read the current ordered task list with zero-based indices. Call this before `todo_write` update or remove whenever the latest indexed list is not visible, including after compaction. Never guess an index.
+
+```json
+{
+  "type": "object",
+  "properties": {}
+}
+```
+
+Source: [`packages/todo/tool-todo/src/index.ts`](../packages/todo/tool-todo/src/index.ts)
+
 ### `todo_write`
 
-Record and update a structured task list for the current work. UPDATE specific tasks with a delta instead of resending the whole list: use `action` — `merge` upserts each entry by `content` (adds new tasks, updates the `status` of tasks that already exist), `remove` deletes the listed tasks, and `clear` empties the list; each delta merges onto the current list. ONLY send the COMPLETE list with `action: replace` when the task direction changes significantly, for example when the plan is restructured. Keep the list current as work progresses. Use it to plan multi-step work: add one todo per concrete step before you start. Mark every todo being actively worked on `in_progress` — several at once when work genuinely runs in parallel (e.g. concurrent subagents or background commands), one for sequential work; while work remains, at least one task should be `in_progress`. Mark a todo `completed` the moment it is done (do not batch completions), and allow no `in_progress` item only once all work is complete. Skip the list for trivial single-step tasks. Statuses: `pending` (not started), `in_progress` (being worked on now), `completed` (finished).
+Record and update a structured task list for the current work without resending the whole list. The `action` is REQUIRED: `add` appends new `todos`; `update` changes existing entries using zero-based `updates[].index`; `remove` deletes zero-based `indices`; and `clear` empties the list. Indices always refer to the current ordered list before that call. `update` never adds a task, and an invalid index fails instead of appending. There is no whole-list replace. Call `todo_read` before `update` or `remove` whenever the latest indexed list is not visible. Keep the list current as work progresses. Use it to plan multi-step work: add one todo per concrete step before you start. Mark every todo being actively worked on `in_progress` — several at once when work genuinely runs in parallel (e.g. concurrent subagents or background commands), one for sequential work; while work remains, at least one task should be `in_progress`. Mark a todo `completed` the moment it is done (do not batch completions), and allow no `in_progress` item only once all work is complete. Skip the list for trivial single-step tasks. Statuses: `pending` (not started), `in_progress` (being worked on now), `completed` (finished).
 
 ```json
 {
@@ -2388,17 +2405,17 @@ Record and update a structured task list for the current work. UPDATE specific t
   "properties": {
     "action": {
       "type": "string",
-      "description": "replace (default): the whole list, replacing the previous one. merge: upsert each entry by content (add new tasks, update the status of existing tasks). remove: delete the listed contents. clear: empty the list. Each delta operates on the current list (the latest todo/write).",
+      "description": "add: append `todos`. update: change entries addressed by zero-based `updates[].index`. remove: delete entries addressed by zero-based `indices`. clear: empty the list. Whole-list replacement is not supported.",
       "enum": [
-        "replace",
-        "clear",
-        "merge",
-        "remove"
+        "add",
+        "update",
+        "remove",
+        "clear"
       ]
     },
     "todos": {
       "type": "array",
-      "description": "Task entries to change. replace (default): the COMPLETE list replacing the previous one. merge: a delta to add entries or update their status (matched by content). remove: the content values to delete (status ignored). Omit for clear.",
+      "description": "New task entries. Required by add; omitted by update, remove, and clear.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -2422,14 +2439,54 @@ Record and update a structured task list for the current work. UPDATE specific t
           "status"
         ]
       }
+    },
+    "updates": {
+      "type": "array",
+      "description": "Changes for action update. Each zero-based index addresses the current list before this call; provide content, status, or both. Updating never appends.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "index": {
+            "type": "integer",
+            "description": "Zero-based current-list index."
+          },
+          "content": {
+            "type": "string",
+            "description": "Replacement task text. Omit to keep it."
+          },
+          "status": {
+            "type": "string",
+            "description": "Replacement lifecycle state. Omit to keep it.",
+            "enum": [
+              "pending",
+              "in_progress",
+              "completed"
+            ]
+          }
+        },
+        "required": [
+          "index"
+        ]
+      }
+    },
+    "indices": {
+      "type": "array",
+      "description": "Zero-based current-list indices to delete for action remove.",
+      "items": {
+        "type": "integer"
+      }
     }
-  }
+  },
+  "required": [
+    "action"
+  ]
 }
 ```
 
 Source: [`packages/todo/tool-todo/src/index.ts`](../packages/todo/tool-todo/src/index.ts)
 
-todo_write is session-owned state; UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task.
+todo_read exposes the current operation indices without appending an event; todo_write applies indexed deltas to session-owned state, and UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task.
 
 <a id="deepseek-aidsh-tool-workflow"></a>
 

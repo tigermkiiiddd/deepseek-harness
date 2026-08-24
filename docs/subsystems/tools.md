@@ -491,9 +491,10 @@ Tool registry and execution pipeline. Scoped registrations shadow globals; one v
  * composes Code Mode agents beside native ones in the same process, and a
  * process-global override would be the `mode` config field instead.
  * @param mode - the presentation the covered agents' models see.
+ * @param lazyLoading - optional progressive disclosure fixed by the preset.
  * @returns the exact disposer that restores the deployment default.
  */
-presentAs(mode: ToolPresentationMode): () => void
+presentAs(mode: ToolPresentationMode, lazyLoading?: LazyLoadingConfig): () => void
 
 /**
  * Register globally or in the calling agent scope. Scoped tools shadow

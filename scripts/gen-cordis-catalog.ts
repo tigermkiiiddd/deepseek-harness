@@ -478,6 +478,8 @@ export const LINK_MAP: Readonly<Record<string, string>> = {
   ToolExecutionToken: 'tools.md',
   ToolGuard: 'tools.md',
   ToolPresentationMode: 'tools.md',
+  LazyLoadingConfig: 'tools.md',
+  LazyLoadingState: 'tools.md',
   ToolRuntime: 'tools.md',
   ToolRestriction: 'tools.md',
   ToolSchema: 'tools.md',
