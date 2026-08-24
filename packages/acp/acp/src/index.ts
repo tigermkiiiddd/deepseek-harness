@@ -127,6 +127,14 @@ function internalError(detail: string): RequestError {
 /** Upper bound on one history page; callers asking for more receive this many. */
 const HISTORY_PAGE_MAX = 200
 
+/** The registry's reseed options the rerun projection forwards verbatim. */
+interface ReseedOptions {
+  sessionId: SessionId
+  keepSeqs: number
+  agentOptions: { provider?: string; model?: string }
+  setup: (agentCtx: Context) => Promise<void>
+}
+
 /**
  * Serve `dsh/session/historyPage`: a window of the session's persisted events
  * ending just below `before` (an exclusive 0-based log index; absent means
@@ -517,13 +525,118 @@ async function dshExport(ctx: Context, raw: Record<string, unknown>): Promise<Re
 }
 
 /**
- * The dsh extension methods this bridge serves over ACP `extMethod`, keyed by
- * wire method name. The initialize capability advertisement lists exactly
- * these keys, so a client can drive every surface data-driven.
+ * Serve `dsh/session/rerun`: drop the turn containing `at` and everything
+ * after it (the cut ends at the last completed turn strictly before the
+ * anchor), rebuilding the live agent in place through the registry's reseed —
+ * the main instance's rerun semantics executed inside the member process. A
+ * persisted-but-cold topic truncates its durable log instead; its next resume
+ * rebuilds from the kept prefix.
+ * @param ctx - the bridge context carrying the store, persistence, and agent seams.
+ * @param sessions - the bridge's live-session records.
+ * @param raw - the extension parameters: `sessionId` and `at` (a log index).
+ * @param scope - connection-scoped seams: composition, config, open state, reseed.
+ * @returns `{ accepted: true }`.
+ */
+async function dshRerun(
+  ctx: Context,
+  sessions: Map<SessionId, SessionRecord>,
+  raw: Record<string, unknown>,
+  scope: {
+    config: AcpConfig
+    composeAgent: (agentCtx: Context, model: ModelState) => Promise<void>
+    isClosed: () => boolean
+    reseed: (options: ReseedOptions) => Promise<{ dispose: () => Promise<void>; agent: Agent }>
+  },
+): Promise<Record<string, unknown>> {
+  const sessionId = raw['sessionId']
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
+    throw invalidParams('sessionId must be a non-empty string')
+  }
+  const at = raw['at']
+  if (typeof at !== 'number' || !Number.isInteger(at) || at < 0) {
+    throw invalidParams('at must be a non-negative integer log index')
+  }
+  const id = SessionId(sessionId)
+
+  // Authoritative event view: the live log when attached, else the persisted one.
+  const store = ctx.get('sessions') as
+    | { get(id: SessionId): { events: readonly { seq: number; type: string }[] } | undefined }
+    | undefined
+  const attached = store?.get(id)
+  let events: readonly { seq: number; type: string }[]
+  if (attached !== undefined) {
+    events = attached.events
+  } else {
+    const persistence = ctx.get('sessionPersistence') as SessionPersistenceReader | undefined
+    if (persistence === undefined) {
+      // Nowhere known to look: the session does not exist in this process.
+      throw invalidParams(`unknown session: ${sessionId}`)
+    }
+    try {
+      ({ events } = await persistence.load(id))
+    } catch {
+      throw invalidParams(`unknown session: ${sessionId}`)
+    }
+  }
+  const lastSeq = events.at(-1)?.seq ?? -1
+  if (at > lastSeq) {
+    throw invalidParams(`session "${sessionId}" has no event ${String(at)} to rerun from`)
+  }
+  // The cut is the last completed turn strictly before the anchor, extended
+  // through trailing standalone appends up to the next turn/start or inbox
+  // splice — identical boundary rules to the host's own rerun.
+  const boundary = [...events].reverse().find(event => event.type === 'turn/end' && event.seq < at)
+  let cut = boundary === undefined ? 0 : boundary.seq + 1
+  while (cut < events.length && events[cut]?.type !== 'turn/start' && events[cut]?.type !== 'agent/inbox/spliced') cut++
+
+  const record = sessions.get(id)
+  if (record !== undefined) {
+    const model = await buildModelState(ctx, scope.config)
+    const handle = await scope.reseed({
+      sessionId: id,
+      keepSeqs: cut,
+      agentOptions: agentOptions(scope.config),
+      setup: agentCtx => scope.composeAgent(agentCtx, model),
+    })
+    if (scope.isClosed()) {
+      await handle.dispose()
+      throw internalError('connection closed during session/rerun')
+    }
+    record.dispose()
+    record.agent = handle.agent
+    record.dispose = () => handle.dispose()
+    record.outputTail = Promise.resolve()
+    record.inflight = undefined
+    record.modelRef = model.ref
+    record.modelOptions = model.options
+    record.modelCatalog = model.catalog
+    return { accepted: true }
+  }
+
+  const persistence = ctx.get('sessionPersistence') as SessionPersistenceReader & {
+    truncate?(id: SessionId, keepSeqs: number): Promise<void>
+  } | undefined
+  if (persistence?.truncate === undefined) {
+    throw internalError('cold rerun requires a persistence backend with truncate')
+  }
+  await persistence.truncate(id, cut)
+  return { accepted: true }
+}
+
+/**
+ * The dsh extension registry. Lives inside the connection scope via
+ * {@link dshExtensions}: several projections need the live-session records,
+ * composition, config, and open state that only exist there.
  */
 function dshExtensions(
   ctx: Context,
   sessions: Map<SessionId, SessionRecord>,
+  scope: {
+    config: AcpConfig
+    composeAgent: (agentCtx: Context, model: ModelState) => Promise<void>
+    isClosed: () => boolean
+    reseed: (options: ReseedOptions) => Promise<{ dispose: () => Promise<void>; agent: Agent }>
+  },
 ): Record<string, (params: Record<string, unknown>) => Promise<Record<string, unknown>>> {
   return {
     'dsh/session/historyPage': params => dshHistoryPage(ctx, params),
@@ -534,6 +647,7 @@ function dshExtensions(
     'dsh/session/state': params => dshState(ctx, params),
     'dsh/session/compact': params => dshCompact(ctx, sessions, params),
     'dsh/session/export': params => dshExport(ctx, params),
+    'dsh/session/rerun': params => dshRerun(ctx, sessions, params, scope),
   }
 }
 
@@ -611,7 +725,6 @@ export function apply(ctx: Context, config: AcpConfig): void {
   const agents = ctx.agents
   const logger = ctx.logger
   const sessions = new Map<SessionId, SessionRecord>()
-  const extensions = dshExtensions(ctx, sessions)
   let closed = false
   /**
    * Per-connection negotiation: a client that sent
@@ -862,6 +975,16 @@ export function apply(ctx: Context, config: AcpConfig): void {
       const presets = ctx.get('agentPresets') as PresetsRoster | undefined
       if (presets !== undefined) await presets.mount(agentCtx)
     }
+
+    // The dsh extension registry lives inside the connection scope: rename,
+    // queue, compact, and rerun project onto this connection's live sessions,
+    // composition, and open state.
+    const extensions = dshExtensions(ctx, sessions, {
+      config,
+      composeAgent,
+      isClosed: () => closed,
+      reseed: options => ctx.agents.reseed(options),
+    })
     return {
       async initialize(params: InitializeRequest): Promise<InitializeResponse> {
         // Single-version agent: the spec's "same version if supported, else

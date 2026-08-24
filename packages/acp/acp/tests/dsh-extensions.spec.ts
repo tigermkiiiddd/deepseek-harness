@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { makeBridgeHarness, textResponse, type BridgeHarness } from './harness.ts'
 
 /**
@@ -474,6 +474,61 @@ describe('dsh extension surface', () => {
         .rejects.toThrow(/unknown session/)
       await expect(harness.client.extMethod('dsh/session/export', {}))
         .rejects.toThrow(/sessionId must be a non-empty string/)
+    })
+  })
+
+  describe('dsh/session/rerun', () => {
+    let harness: BridgeHarness | undefined
+
+    afterEach(async () => {
+      await harness?.dispose()
+      harness = undefined
+    })
+
+    it('drops the anchored turn on a live agent and keeps earlier history', async () => {
+      harness = await makeBridgeHarness({
+        script: [textResponse('first'), textResponse('second'), textResponse('after rerun')],
+        persistence: { headers: [], eventsBySession: {} },
+      })
+      await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+      const { sessionId } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+
+      await harness.client.prompt({ sessionId, prompt: [{ type: 'text', text: 'q1' }] })
+      await harness.client.prompt({ sessionId, prompt: [{ type: 'text', text: 'q2' }] })
+
+      // Anchor inside the last turn: its whole turn (and nothing before it)
+      // is dropped.
+      const lastSeq = harness.ctx.sessions
+        .get(SessionId(sessionId))!.events.at(-1)!.seq
+      const result = await harness.client.extMethod('dsh/session/rerun', {
+        sessionId,
+        at: lastSeq,
+      }) as { accepted: boolean }
+      expect(result.accepted).toBe(true)
+
+      await harness.client.prompt({ sessionId, prompt: [{ type: 'text', text: 'again' }] })
+      const request = harness.adapter.requests[2]
+      expect(request).toBeDefined()
+      const texts = request!.messages.map(message =>
+        message.content.filter(block => block.type === 'text').map(block => block.text ?? '').join(''))
+      expect(texts.some(text => text.includes('second'))).toBe(false)
+      expect(texts.some(text => text.includes('q1'))).toBe(true)
+
+      await expect(harness.client.extMethod('dsh/session/rerun', {
+        sessionId,
+        at: 99_999,
+      })).rejects.toThrow(/no event 99999 to rerun from/)
+    })
+
+    it('validates parameters and unknown sessions', async () => {
+      harness = await makeBridgeHarness()
+      await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+      const { sessionId } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+
+      await expect(harness.client.extMethod('dsh/session/rerun', { sessionId })).rejects.toThrow(/at must be/)
+      await expect(harness.client.extMethod('dsh/session/rerun', { sessionId, at: -1 })).rejects.toThrow(/at must be/)
+      await expect(harness.client.extMethod('dsh/session/rerun', { sessionId: 'missing', at: 0 }))
+        .rejects.toThrow(/unknown session/)
     })
   })
 })

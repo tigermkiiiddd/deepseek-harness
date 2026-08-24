@@ -305,6 +305,8 @@ export async function makeBridgeHarness(options: {
         return { events }
       },
       readRaw: async (id: SessionId) => fixture.rawArtifacts?.[String(id)],
+      // Reseed-driven reruns truncate through this backend seam.
+      truncate: async (_id: SessionId, _keepSeqs: number) => {},
     })
   }
 
