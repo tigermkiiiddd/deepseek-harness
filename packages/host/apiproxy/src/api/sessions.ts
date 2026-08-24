@@ -212,6 +212,13 @@ export interface SessionSummary {
    */
   agentPreset?: string
   /**
+   * Owning agent: the member id whose process holds this session's log; absent
+   * for main-instance sessions. Surfaces filter and label by this data field
+   * rather than parsing the session id, and `session.create` accepts it to
+   * route a fresh session to that member.
+   */
+  agentId?: string
+  /**
    * Projection baseline for this row, with zero log loads: attached sessions
    * read the registry's live watermark cut; cold sessions read the persisted
    * projection cache's stored rows — as stale as that session's last durable

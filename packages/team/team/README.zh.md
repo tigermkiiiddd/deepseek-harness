@@ -54,7 +54,7 @@ DSH ACP 虚拟团队的成员连接。**成员**是持久 ACP agent 进程，**�
 
 ### 一等 `dsh` 成员
 
-设置 `kind: 'dsh'` 即可让 harness 把当前安装作为成员进程重新拉起。此模式下省略 `command` 与 `args`：成员以 `dsh --profile acp` 运行，拥有独立的 harness home，并通过 `DSH_MAIN_HOME` 指回协调器 home，从而继承用户的设置与凭证，同时保持会话隔离。
+设置 `kind: 'dsh'` 即可让 harness 把当前安装作为成员进程重新拉起。此模式下省略 `command` 与 `args`：成员以 `dsh --profile acp` 运行，拥有主实例 home 下独立的 harness home（`members/<id>`）。首次派生前，主实例播种该 home 一次——拷入用户的设置文档与凭证——之后成员完全自包含：运行时只读自己的 home，因此成员自己的写入（如经 `member_model` 的模型切换）在重启后保留，重播种绝不覆盖。
 
 ```yaml
 - id: team
@@ -65,8 +65,15 @@ DSH ACP 虚拟团队的成员连接。**成员**是持久 ACP agent 进程，**�
         title: Helper
         description: a first-class dsh peer
         kind: dsh
+        preset: |
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              text: You are a terse architecture reviewer.
         autostart: true
 ```
+
+`preset` 赋予成员独一无二的人设：一份 composition——顶层 YAML 插件行列表（persona、工具、prompt 段）——写入成员 home 的 preset 根并设为该成员的默认 preset，成员创建的每个会话都从它装配，而不是部署默认。persona 文本就是该成员的系统提示词——要完整写（角色、职责、工作方式、边界），占位符式的一句话违背了独一无二成员的初衷。preset id 由成员 id 派生；损坏的 composition 让 `addMember` 大声失败；播种后对该 home 终身固定——重启绝不重播种覆盖成员自己的修改。只有 `dsh` 成员可以有 preset：只有它们有承载它的 harness home。
 
 `kind` 为可选；省略时必须有 `command`，成员运行你指定的任意 ACP 服务器。
 
@@ -133,3 +140,4 @@ provider 配置（`providers/list`、`providers/set`）受 `initialize` 中声�
 - **仅本地工作区**——成员进程运行在同一台机器上；远程 ACP agent 需要自己的工作区映射。
 - **远程工具调用不透明**——成员在自己进程内执行自己的工具；harness 只能看到协议流。
 - **成员↔成员直发尚未开放**——通信经协调 agent（或用户经团队视图）。
+- **preset 创建时固定**——`dsh` 成员自己的 preset 只播种一次，重播种绝不覆盖成员的修改；要改就得编辑成员 home 的 preset 文件，或删除并重新添加该成员。

@@ -133,6 +133,8 @@ export type HostFrame =
     origin?: 'subagent'
     cwd?: string
     agentPreset?: string
+    /** Owning member id for a member-topic row; absent for main-instance sessions. */
+    agentId?: string
   }
   | { type: 'host/session-removed'; sessionId: SessionId }
   | { type: 'host/session-status'; sessionId: SessionId; running: boolean }

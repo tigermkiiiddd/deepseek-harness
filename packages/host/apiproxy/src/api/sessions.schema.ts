@@ -58,6 +58,7 @@ export const sessionSummarySchema = z.object({
   origin: z.literal('subagent').optional(),
   cwd: z.string().optional(),
   agentPreset: z.string().optional(),
+  agentId: z.string().min(1).optional(),
   projections: z.lazy(() => sessionProjectionsBlockSchema).optional(),
 }) as unknown as z.ZodType<Wire<SessionSummary>>
 
@@ -101,15 +102,22 @@ export const sessionSearchValueSchema = z.object({
 /**
  * session.create request payload (at most one of workspaceId / cwd; `cwd: null`
  * counts as provided — it is the explicit free-session request, not an omission).
+ * `agentId` routes the create to that member's process instead of the main
+ * instance and is mutually exclusive with both placement fields: a member
+ * topic has no workspace or host-side cwd of its own.
  */
 export const sessionCreateRequestSchema = z.object({
   workspaceId: workspaceIdSchema.optional(),
   cwd: z.string().nullable().optional(),
   sessionId: sessionIdSchema.optional(),
   agentPreset: z.string().optional(),
+  agentId: z.string().min(1).optional(),
 }).refine(
   payload => payload.workspaceId === undefined || payload.cwd === undefined,
   { message: 'session.create accepts workspaceId or cwd, not both' },
+).refine(
+  payload => payload.agentId === undefined || (payload.workspaceId === undefined && payload.cwd === undefined),
+  { message: 'session.create with agentId accepts neither workspaceId nor cwd' },
 ) satisfies z.ZodType<Wire<RequestPayload<'session.create'>>>
 
 /** session.create response value. */

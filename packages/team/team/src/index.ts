@@ -19,6 +19,7 @@ import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { MemberConnection, type MemberHooks } from './member.ts'
 import { teamRosterDomainSpec, type TeamRosterRecord } from './spec.ts'
 import { MemberCache, type MemberCacheRecord } from './cache.ts'
+import { seedMemberHome } from './member-home.ts'
 import { resolveMemberSpec } from './resolve.ts'
 export { AcpUpdateTranslator, stopReasonToTurnEnd, type TranslatedEventType, type TranslatedSessionEvent } from './fidelity-reverse.ts'
 export { resolveMemberSpec } from './resolve.ts'
@@ -29,6 +30,7 @@ import type {
   MemberConfig,
   MemberConfigInput,
   MemberHistoryEntry,
+  MemberPromptBlock,
   MemberProviderConfigInput,
   MemberProviderInfo,
   MemberSession,
@@ -59,6 +61,7 @@ export const Config: z<Config> = z.object({
     env: z.dict(z.string()).default({}),
     permission: z.union(['allow', 'reject'] as const),
     autostart: z.boolean().default(true),
+    preset: z.string(),
   })).required(),
 })
 
@@ -169,6 +172,16 @@ export interface TeamService {
    */
   prompt(memberId: string, sessionId: string, text: string): Promise<{ promptId: string }>
   /**
+   * Accept one prompt turn carrying text and image blocks (ACP wire form).
+   * The agent validates the blocks on its own side; an unsupported image is a
+   * protocol error that fails the turn.
+   * @param memberId - the member to prompt.
+   * @param sessionId - the member topic to prompt in.
+   * @param content - the user-role blocks in order; at least one non-blank text or one image.
+   * @returns the prompt id assigned to this turn.
+   */
+  promptContent(memberId: string, sessionId: string, content: readonly MemberPromptBlock[]): Promise<{ promptId: string }>
+  /**
    * Cancel the in-flight prompt turn of one session.
    * @param memberId - the member whose turn is in flight.
    * @param sessionId - the member topic whose turn is cancelled.
@@ -245,6 +258,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   }
 
   const connections = new Map<string, MemberConnection>()
+  /** Every joined member's full config; the load-time home seed needs fields the snapshot does not carry. */
+  const memberConfigs = new Map<string, MemberConfig>()
   const policies = new Map<string, 'allow' | 'reject'>()
   const permissionHandlers = new Set<TeamPermissionHandler>()
   /** Externally answered permission requests, keyed by request id. */
@@ -317,6 +332,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     }, cache)
     connections.set(member.id, connection)
     policies.set(member.id, member.permission ?? 'reject')
+    memberConfigs.set(member.id, member)
     return connection
   }
   for (const member of config.members) addConnection(member)
@@ -353,6 +369,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
             env: record.env,
             ...record.permission === undefined ? {} : { permission: record.permission },
             ...record.autostart === undefined ? {} : { autostart: record.autostart },
+            ...record.preset === undefined ? {} : { preset: record.preset },
           }
           assertMemberConfig(member)
           addConnection(member)
@@ -390,12 +407,16 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     },
     isTurnInFlight: (memberId, sessionId) => requireMember(connections, memberId).isTurnInFlight(sessionId),
     newSession: async memberId => requireMember(connections, memberId).newSession(),
-    getConfig: async (memberId, sessionId) => requireMember(connections, memberId).getConfig(sessionId),
+    getConfig: async (memberId, sessionId) => {
+      await ensureRoster()
+      return requireMember(connections, memberId).getConfig(sessionId)
+    },
     setConfig: async (memberId, sessionId, configId, value) =>
       requireMember(connections, memberId).setSessionConfig(sessionId, configId, value),
     listProviders: async memberId => requireMember(connections, memberId).listProviders(),
     setProvider: async (memberId, config) => requireMember(connections, memberId).setProvider(config),
     prompt: async (memberId, sessionId, text) => requireMember(connections, memberId).prompt(sessionId, text),
+    promptContent: async (memberId, sessionId, content) => requireMember(connections, memberId).promptContent(sessionId, content),
     cancel: async (memberId, sessionId) => { await requireMember(connections, memberId).cancel(sessionId) },
     permission: (memberId, requestId, outcome): Promise<void> => {
       const pending = pendingAnswers.get(requestId)
@@ -416,6 +437,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       const member: MemberConfig = { ...input, args: input.args ?? [], env: input.env ?? {} }
       if (connections.has(member.id)) throw new Error(`team: duplicate member id "${member.id}"`)
       assertMemberConfig(member)
+      // Seed the member's home from the main instance before it spawns, so the
+      // member is self-contained (reads only its own DSH_HOME, no DSH_MAIN_HOME).
+      // A seed failure throws before the roster record is written, so no
+      // half-joined member is left behind.
+      await seedMemberHome(member)
       if (rosterTable !== undefined) {
         await rosterTable.put(member.id, { ...member, args: member.args ?? [], env: member.env ?? {} })
       }
@@ -460,6 +486,20 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // roster has been merged, so a restart re-raises every member. Awaiting the
   // roster here means `ctx.plugin(team)` settles with the full roster visible.
   await ensureRoster()
+  // Seed every dsh member's home before any of them spawns. Runtime additions
+  // already seeded in addMember (idempotent per home, so this is a no-op for
+  // them); config and roster members seed here, which also restores a member's
+  // own preset from its roster record when the home was deleted out from under
+  // it. A load-time seed failure warns rather than aborts boot: the member
+  // still joins, and its spawn or first session surfaces the problem.
+  for (const [id, member] of memberConfigs) {
+    if (member.kind !== 'dsh') continue
+    try {
+      await seedMemberHome(member)
+    } catch (error: unknown) {
+      ctx.logger.warn(`team: member "${id}" failed to seed its home: ${String(error)}`)
+    }
+  }
   for (const connection of connections.values()) {
     if (connection.snapshot().autostart) {
       void connection.start().catch((error: unknown) => {

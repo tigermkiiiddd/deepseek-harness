@@ -1,7 +1,9 @@
 /**
  * Resolve a member's configured spawn specification. The `dsh` kind relaunches
- * the current harness installation with a per-member harness home, inheriting
- * the main instance's model settings via `DSH_MAIN_HOME`.
+ * the current harness installation with a per-member harness home. The member
+ * is self-contained: its home is seeded once at creation with the main
+ * instance's settings and credentials (see `member-home.ts`), so it reads only
+ * its own home at runtime and carries no `DSH_MAIN_HOME`.
  *
  * @module @deepseek-ai/dsh-team/resolve
  */
@@ -59,17 +61,25 @@ function removeInspectFlags(execArgv: readonly string[]): string[] {
  * Resolve the spawn spec for a member configuration. A `kind: 'dsh'` member
  * relaunches the current installation (`process.execPath`, the current script
  * via `process.argv[1]`, `--profile acp`) with `DSH_HOME` set to a per-member
- * directory under the main home and `DSH_MAIN_HOME` pointing at the main home
- * so the member reads the main instance's settings and credentials. Custom
- * members require `command` and may set `args`.
+ * directory under the main home. The member is self-contained: its home is
+ * seeded once at creation with the main instance's settings and credentials
+ * (see `member-home.ts`), so it reads only its own home at runtime and carries
+ * no `DSH_MAIN_HOME` — inheriting the main instance at runtime would break that
+ * independence. Custom members require `command` and may set `args`.
  *
  * @param config - the member configuration.
  * @returns the resolved spawn spec.
- * @throws when `kind: 'dsh'` is combined with `command`/`args`, or when a
- * custom member has no command.
+ * @throws when `kind: 'dsh'` is combined with `command`/`args`, when a custom
+ * member has no command, or when a preset is set on a member without a harness
+ * home to hold it.
  */
 export function resolveMemberSpec(config: MemberConfigInput): ResolvedMemberSpawnSpec {
   const hasCommand = config.command !== undefined && config.command.trim().length > 0
+  // A preset lives in the member's harness home; only `dsh` members have one,
+  // so a preset on any other kind is misconfiguration, not an ignored field.
+  if (config.preset !== undefined && config.kind !== 'dsh') {
+    throw new Error(`team: member "${config.id}" cannot set preset without kind:'dsh' — only dsh members have a home to hold it`)
+  }
   if (config.kind === 'dsh') {
     if (hasCommand) {
       throw new Error(`team: member "${config.id}" cannot set both kind:'dsh' and command`)
@@ -88,7 +98,6 @@ export function resolveMemberSpec(config: MemberConfigInput): ResolvedMemberSpaw
       args: [...removeInspectFlags(process.execArgv), script, '--profile', 'acp'],
       env: {
         DSH_HOME: memberHome,
-        DSH_MAIN_HOME: mainHome,
       },
     }
   }

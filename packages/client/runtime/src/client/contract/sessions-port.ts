@@ -47,4 +47,9 @@ export interface SessionsPort {
   open(id: SessionId): void
   /** Clear the current selection into the no-session view state. */
   clear(): void
+  /**
+   * Re-baseline the session list from the host, reusing an in-flight pull.
+   * @returns completion of the current or newly started baseline pull.
+   */
+  refresh(): Promise<void>
 }

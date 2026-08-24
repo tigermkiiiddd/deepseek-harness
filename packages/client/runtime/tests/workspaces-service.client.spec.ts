@@ -442,6 +442,67 @@ describe('WorkspaceRuntime', () => {
     expect(clear).toHaveBeenCalledOnce()
   })
 
+  it('routes New Session to a fresh member topic when a member session is current', async () => {
+    const ctx = new Context()
+    const api = new FakeApiClient()
+    const sessions = new SessionRuntime(ctx, api, fakeRemote())
+    const workspaces = new WorkspaceRuntime(ctx, api, sessions)
+    // The host list gains the new topic only after team.newSession settles —
+    // the same frame race the open retry absorbs in production.
+    let topics: string[] = ['topic-1']
+    api.onList = () => Promise.resolve(ok({ items: topics.map((topic) => ({
+      sessionId: sid(`member:architect:${topic}`), updatedAt: 1, running: false, blank: false,
+    })) as never[] }))
+    await sessions.refresh()
+    sessions.open(sid('member:architect:topic-1'))
+    api.onTeamNewSession = () => { topics.push('topic-fresh'); return Promise.resolve(ok({ sessionId: 'topic-fresh' })) }
+
+    workspaces.startSession()
+    await vi.waitFor(() => { expect(sessions.list.getSnapshot().current).toBe('member:architect:topic-fresh') })
+    expect(api.callsOf('team.newSession')).toEqual([{ memberId: 'architect' }])
+  })
+
+  it('warns and keeps the selection when the member new-session RPC fails', async () => {
+    const ctx = new Context()
+    const api = new FakeApiClient()
+    const sessions = new SessionRuntime(ctx, api, fakeRemote())
+    const workspaces = new WorkspaceRuntime(ctx, api, sessions)
+    api.onList = () => Promise.resolve(ok({ items: [
+      { sessionId: sid('member:architect:topic-1'), updatedAt: 1, running: false, blank: false },
+    ] as never[] }))
+    await sessions.refresh()
+    sessions.open(sid('member:architect:topic-1'))
+    api.onTeamNewSession = () => Promise.resolve(err({ code: 'internal', message: 'member offline', details: {} }))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    workspaces.startSession()
+    await vi.waitFor(() => { expect(api.callsOf('team.newSession')).toEqual([{ memberId: 'architect' }]) })
+    expect(sessions.list.getSnapshot().current).toBe('member:architect:topic-1')
+    expect(warn).toHaveBeenCalledWith('member new session failed:', expect.objectContaining({ code: 'internal', message: 'member offline' }))
+    warn.mockRestore()
+  })
+
+  it('warns when the re-baselined list still lacks the member topic', async () => {
+    const ctx = new Context()
+    const api = new FakeApiClient()
+    const sessions = new SessionRuntime(ctx, api, fakeRemote())
+    const workspaces = new WorkspaceRuntime(ctx, api, sessions)
+    // The member's list never gains the new topic (the member died between
+    // create and re-baseline): both opens miss.
+    api.onList = () => Promise.resolve(ok({ items: [
+      { sessionId: sid('member:architect:topic-1'), updatedAt: 1, running: false, blank: false },
+    ] as never[] }))
+    await sessions.refresh()
+    sessions.open(sid('member:architect:topic-1'))
+    api.onTeamNewSession = () => Promise.resolve(ok({ sessionId: 'topic-fresh' }))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    workspaces.startSession()
+    await vi.waitFor(() => { expect(warn).toHaveBeenCalledWith('member new session failed:', expect.any(Error)) })
+    expect(sessions.list.getSnapshot().current).toBe('member:architect:topic-1')
+    warn.mockRestore()
+  })
+
   it('archives a session, projects the set from the response, list, and frame, and clears only the current one', async () => {
     const ctx = new Context()
     const api = new FakeApiClient()

@@ -296,7 +296,7 @@ describe('AcpUpdateTranslator deduplicates echoed user messages', () => {
   it('drops an echoed user message identical to the minted turn text', () => {
     const translator = new AcpUpdateTranslator()
     const events = [
-      ...translator.startTurn('hello world'),
+      ...translator.startTurn([{ type: 'text', text: 'hello world' }]),
       ...translator.update(userChunk('hello world')),
       ...translator.update(agentChunk('answer')),
       ...translator.endTurn('end_turn'),
@@ -312,13 +312,31 @@ describe('AcpUpdateTranslator deduplicates echoed user messages', () => {
   it('keeps an echoed user message when the text differs from the minted turn', () => {
     const translator = new AcpUpdateTranslator()
     const events = [
-      ...translator.startTurn('hello world'),
+      ...translator.startTurn([{ type: 'text', text: 'hello world' }]),
       ...translator.update(userChunk('different prompt')),
       ...translator.update(agentChunk('answer')),
       ...translator.endTurn('end_turn'),
     ]
     const userMessages = events.filter(e => e.type === 'user/message')
     expect(userMessages).toHaveLength(2)
+  })
+
+  it('mints a user message carrying text and image attachment references', () => {
+    const translator = new AcpUpdateTranslator()
+    const attachment = { attachmentId: 'att-1' as never, mediaType: 'image/png' as const, bytes: 4, width: 2, height: 2 }
+    const events = [
+      ...translator.startTurn([
+        { type: 'text', text: 'look at this' },
+        { type: 'image', attachment },
+      ]),
+      ...translator.update(agentChunk('answer')),
+      ...translator.endTurn('end_turn'),
+    ]
+    const userMessage = events.find(e => e.type === 'user/message')?.data as { content: unknown[] } | undefined
+    expect(userMessage?.content).toEqual([
+      { type: 'text', text: 'look at this' },
+      { type: 'image', attachment },
+    ])
   })
 })
 

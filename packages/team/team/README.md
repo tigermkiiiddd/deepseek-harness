@@ -54,7 +54,7 @@ Each member is one process. Members are trusted peers: the child inherits the **
 
 ### First-class `dsh` members
 
-Set `kind: 'dsh'` to make the harness relaunch the current installation as the member process. In this mode `command` and `args` are omitted: the member runs `dsh --profile acp` with a per-member harness home and `DSH_MAIN_HOME` pointing back at the coordinator's home, so it inherits the user's settings and credentials while keeping its sessions isolated.
+Set `kind: 'dsh'` to make the harness relaunch the current installation as the member process. In this mode `command` and `args` are omitted: the member runs `dsh --profile acp` with a per-member harness home under the main instance's home (`members/<id>`). Before its first spawn the main instance seeds that home once — copying the user's settings and credentials documents — and after that the member is fully self-contained: it reads only its own home at runtime, so the member's own writes (e.g. a model switch through `member_model`) survive restarts and are never clobbered by a re-seed.
 
 ```yaml
 - id: team
@@ -65,8 +65,15 @@ Set `kind: 'dsh'` to make the harness relaunch the current installation as the m
         title: Helper
         description: a first-class dsh peer
         kind: dsh
+        preset: |
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              text: You are a terse architecture reviewer.
         autostart: true
 ```
+
+`preset` gives the member its own unique persona: a composition — a YAML top-level list of plugin rows (persona, tools, prompt sections) — written into the member home's preset root and made the member's default preset, so every session the member creates composes from it instead of the deployment default. The persona text is the member's system prompt: write it completely (role, responsibilities, working style, limits) — a placeholder label defeats the point of a unique member. The preset id is derived from the member id; a broken composition fails `addMember` loud; and once seeded it is fixed for that home's lifetime — a restart never re-seeds over the member's own edits. Only `dsh` members carry a preset: they are the members with a harness home to hold it.
 
 `kind` is optional; when omitted `command` is required and the member runs any ACP server you specify.
 
@@ -116,7 +123,7 @@ Members spawn through the [`dsh-subprocess`](../../subprocess/subprocess/README.
 
 #### What the model sees
 
-Through `dsh-tool-team` (`member_sessions` / `member_chat` / `member_*`), the calling agent sees the member roster, each member's topic ids, the member's committed replies, and — when the member advertises them — the session model config and advertised providers. The member's own system prompt, tools, and history stay in the member process; only user text crosses, and only committed assistant text returns.
+Through `dsh-tool-team` (`member_sessions` / `member_chat` / `member_*`), the calling agent sees the member roster, each member's topic ids, the member's committed replies, and — when the member advertises them — the session model config and advertised providers. The member's own system prompt, tools, and history stay in the member process; user text and admitted images cross, and only committed assistant text returns.
 
 #### Token effect
 
@@ -133,3 +140,5 @@ The caller's request prefix is untouched; member turns are independent requests.
 - **Local workspaces only** — the member process runs on the same machine; remote ACP agents would need their own workspace mapping.
 - **Remote tool calls are opaque** — the member executes its own tools inside its process; the harness sees the protocol stream only.
 - **No member-to-member direct messaging yet** — communication goes through the coordinating agent (or the user via the team view).
+- **Members cannot ask the user free-form questions** — ACP has no question primitive and the dsh bridge implements none, so the only interactive channel a member can open is `session/requestPermission`, which the Web client serves as an approval. An `ask_user`-style exchange needs either an ACP extension or a bridge-mapped question seam; deferred.
+- **Preset fixed at creation** — a `dsh` member's own preset is seeded into its home once and never re-seeded over the member's edits; changing it means editing the member home's preset file, or removing and re-adding the member.

@@ -46,6 +46,15 @@ export interface MemberConfig {
   readonly permission?: 'allow' | 'reject'
   /** Spawn and connect this member when the service loads (default `true`). */
   readonly autostart?: boolean
+  /**
+   * The member's own agent preset composition: a YAML top-level list of plugin
+   * rows (persona, tools, prompt sections) that makes this member unique.
+   * Only `kind: 'dsh'` members carry one — they are the members with a harness
+   * home to hold it. Seeded once at creation into the member home's preset
+   * root and made the member's default preset; a restart never re-seeds, so
+   * the composition is fixed for the member's lifetime in that home.
+   */
+  readonly preset?: string
 }
 
 /**
@@ -144,6 +153,15 @@ export interface SessionConfigSnapshot {
     readonly options: readonly SessionConfigValueInfo[]
   } | undefined
 }
+
+/**
+ * One user-role content block for a member prompt, in ACP wire form. Text is
+ * plain; images are base64 with their media type — the agent validates and
+ * routes them on its own side.
+ */
+export type MemberPromptBlock =
+  | { readonly type: 'text'; readonly text: string }
+  | { readonly type: 'image'; readonly data: string; readonly mimeType: string }
 
 /** A configurable provider as the member reports it via `providers/list`. */
 export interface MemberProviderInfo {

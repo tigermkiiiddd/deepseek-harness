@@ -32,4 +32,4 @@ provider 配置受成员在 `initialize` 中声明的 `providers` 能力（`Agen
 
 模型现在能与对话相同的工具里查看并修改成员的模型与 provider 配置，无需离开 harness，也无需触碰文件。代价是按会话 id 索引的每会话项缓存，以及让 `getConfig` 的缓存与 `session/config_option_update` 保持一致的持续义务——漏掉一次更新会留下陈旧的模型或选项集。
 
-本注延伸自 [ACP 虚拟团队](2026-08-16-acp-virtual-team.zh.md)，后者拥有成员生命周期与话题对话。
+本注延伸自 [ACP 虚拟团队](2026-08-16-acp-virtual-team.zh.md)，后者拥有成员生命周期与话题对话。读取本 seam 做 Web 会话域模型选择桥的决策记录在 [Web 成员对等接入](2026-08-24-web-member-parity-integration.zh.md)。

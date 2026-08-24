@@ -12,7 +12,6 @@ import { JsonStorageBackend } from '@deepseek-ai/dsh-storage-json'
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 import * as team from '../src/index.ts'
 import type { TeamService } from '../src/index.ts'
-import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { MemberConfig, MemberStatus } from '../src/types.ts'
 
 /**
@@ -430,6 +429,29 @@ describe('prompt turns', () => {
     expect(harness.turnEndEvents[0]?.[2]).toBe(promptId)
   })
 
+  it('promptContent carries image blocks to the agent and settles via turn-end', async () => {
+    const harness = await setup({ members: [mockMember({ env: { MOCK_SESSION_ID: 'topic-images', MOCK_ECHO_IMAGES: '1' } })] })
+    await harness.service.start('architect')
+    const { promptId } = await harness.service.promptContent('architect', 'topic-images', [
+      { type: 'text', text: 'look at this' },
+      { type: 'image', data: 'AQI=', mimeType: 'image/png' },
+    ])
+    expect(await nextTurnEnd(harness, 'architect', 'topic-images')).toBe('end_turn')
+    expect(harness.turnEndEvents[0]?.[2]).toBe(promptId)
+    // The agent echoes the block types it received — the image must have crossed the wire.
+    const chunkUpdate = harness.updateEvents
+      .map(([, , update]) => update)
+      .find(update => (update as { sessionUpdate: string }).sessionUpdate === 'agent_message_chunk')
+    expect((chunkUpdate as { content: { text: string } }).content.text).toBe('blocks:text+image')
+  })
+
+  it('rejects a blank-text promptContent loud', async () => {
+    const harness = await setup({ members: [mockMember({ env: { MOCK_SESSION_ID: 'topic-empty' } })] })
+    await harness.service.start('architect')
+    await expect(harness.service.promptContent('architect', 'topic-empty', [{ type: 'text', text: '   ' }]))
+      .rejects.toThrow(/empty prompt/)
+  })
+
   it('rejects a second prompt while one is in flight', async () => {
     const harness = await setup({ members: [mockMember({ env: { MOCK_SESSION_ID: 'topic-design', MOCK_HANG: '1' } })] })
     await harness.service.start('architect')
@@ -563,15 +585,15 @@ describe('environment inheritance', () => {
 })
 
 describe('dsh member resolution', () => {
-  it('resolves kind: dsh to the current installation with per-member home and main-home env', () => {
+  it('resolves kind: dsh to the current installation with a self-contained per-member home', () => {
     const spec = team.resolveMemberSpec({ id: 'helper', kind: 'dsh' })
     expect(spec.command).toBe(process.execPath)
     expect(spec.args).toEqual(expect.arrayContaining([process.argv[1], '--profile', 'acp']))
     expect(spec.args.at(-2)).toBe('--profile')
     expect(spec.args.at(-1)).toBe('acp')
     expect(spec.env.DSH_HOME).toMatch(/[\\/]members[\\/]helper$/)
-    expect(spec.env.DSH_MAIN_HOME).toBe(resolveDshHome())
-    expect(spec.env.DSH_HOME).not.toBe(spec.env.DSH_MAIN_HOME)
+    // The member is self-contained: no DSH_MAIN_HOME, so it reads only its home.
+    expect(spec.env.DSH_MAIN_HOME).toBeUndefined()
   })
 
   it('filters Node inspect flags from the relaunch argv', () => {

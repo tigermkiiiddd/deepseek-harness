@@ -101,7 +101,17 @@ describe('ACP session loading', () => {
       cwd: process.cwd(),
       mcpServers: [],
     })
-    expect(loaded).toEqual({})
+    // loadSession returns the model selector options the agent advertises.
+    expect(loaded).toEqual({
+      configOptions: [{
+        id: 'model',
+        name: 'Model',
+        category: 'model',
+        type: 'select',
+        currentValue: 'mock',
+        options: [{ value: 'mock', name: 'Mock' }],
+      }],
+    })
 
     const result = await harness.client.prompt({
       sessionId: 'topic-1',

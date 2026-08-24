@@ -100,7 +100,7 @@ import type { ClientResponse, RpcError, RpcReceipt, RpcRequest, RpcResponse } fr
 import { RpcId } from './api/rpc.ts'
 import { AcpUpdateTranslator } from '@deepseek-ai/dsh-team'
 import type { TranslatedSessionEvent } from '@deepseek-ai/dsh-team'
-import type { MemberSession } from '@deepseek-ai/dsh-team/types'
+import type { MemberPromptBlock, MemberSession, SessionConfigSnapshot } from '@deepseek-ai/dsh-team/types'
 import type { PermissionOption } from '@agentclientprotocol/sdk'
 import {
   isMemberSessionId,
@@ -1082,6 +1082,20 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
   const memberSeqs = new Map<SessionId, number>()
   /** Stable first-seen time for member topics (used for list sorting). */
   const memberTopicFirstSeenAt = new Map<SessionId, number>()
+  /**
+   * Image references admitted through a member prompt, keyed by virtual session id
+   * and then attachmentId. Member topics have no host log to authorize reads
+   * against, so the minted reference is the authorization record for this process's lifetime.
+   */
+  const memberAdmittedImages = new Map<SessionId, Map<string, ImageAttachmentRef>>()
+   /**
+    * Member topics that received at least one accepted user prompt in this
+    * process. A topic's blank bit is derived as "no evidence of content":
+    * neither a prompt accepted here nor the member's own reported activity or
+    * title — so a fresh topic lists as New Session exactly like a main-instance
+    * blank, and becomes a normal row from its first turn on.
+    */
+   const memberTopicsWithContent = new Set<SessionId>()
   const imageAdmissionChains = new WeakMap<Agent, Promise<void>>()
 
   /** Serialize image admission with model selection for one agent. */
@@ -1784,9 +1798,11 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
   }
 
   /**
-   * Accept one text prompt for a member topic, route it to the team service,
-   * then mint the opening `turn/start` + `user/message` so the main conversation
-   * UI shows the turn immediately. Rejects image/audio parts and steer mode loud.
+   * Accept one text or image prompt for a member topic, route it to the team
+   * service in ACP wire form, then mint the opening `turn/start` +
+   * `user/message` (core attachment references) so the main conversation UI
+   * shows the turn immediately. Image parts take the same admission as the
+   * main path before any bytes leave for the member; steer mode is rejected loud.
    * @param request - the prompt RPC request.
    * @returns the accepted response or a wire error.
    */
@@ -1809,17 +1825,32 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         details: {},
       })
     }
-    const nonText = content.find(part => part.type !== 'text')
-    if (nonText !== undefined) {
-      return err(request, {
-        code: 'attachment-error',
-        message: 'member sessions accept text content only',
-        details: { reason: 'MEMBER_NON_TEXT_PROMPT' },
-      })
+    const images = content.filter((part): part is Extract<PromptContentPart, { type: 'image' }> => part.type === 'image')
+    let imageRefs: readonly ImageAttachmentRef[] = []
+    if (images.length > 0) {
+      try {
+        // The same admission as the main path: canonical base64, count and
+        // byte limits, media types — before any bytes leave for the member.
+        imageRefs = await admitEncodedImages(ctx.attachments, images)
+      } catch (error: unknown) {
+        if (error instanceof AttachmentError) {
+          return err(request, {
+            code: 'attachment-error',
+            message: error.message,
+            details: { reason: error.code },
+          })
+        }
+        return teamError(request, error)
+      }
+      // Record the minted references: member topics have no host log, so this
+      // map is what authorizes their later image reads in this process.
+      const admitted = memberAdmittedImages.get(sessionId) ?? new Map<string, ImageAttachmentRef>()
+      for (const ref of imageRefs) admitted.set(String(ref.attachmentId), ref)
+      memberAdmittedImages.set(sessionId, admitted)
     }
     const text = content.filter((part): part is { type: 'text'; text: string } => part.type === 'text')
       .map(part => part.text).join('')
-    if (text.trim().length === 0) {
+    if (text.trim().length === 0 && images.length === 0) {
       return err(request, {
         code: 'agent-busy',
         message: 'empty prompt',
@@ -1828,15 +1859,29 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     }
     const team = teamService()
     if (team === undefined) return teamUnavailable(request)
+    // One block list per protocol: ACP wire form for the member process, core
+    // attachment references for the minted user/message.
+    const acpBlocks: MemberPromptBlock[] = []
+    const coreContent: ContentBlock[] = []
+    let imageIndex = 0
+    for (const part of content) {
+      if (part.type === 'text') {
+        acpBlocks.push({ type: 'text', text: part.text })
+        coreContent.push({ type: 'text', text: part.text })
+      } else {
+        acpBlocks.push({ type: 'image', data: part.data, mimeType: part.mediaType })
+        coreContent.push({ type: 'image', attachment: imageRefs[imageIndex++] as ImageAttachmentRef })
+      }
+    }
     try {
-      await team.prompt(parsed.memberId, parsed.topicId, text)
+      await team.promptContent(parsed.memberId, parsed.topicId, acpBlocks)
     } catch (error: unknown) {
       return teamError(request, error)
     }
     ensureMemberTopicSeen(parsed.memberId, parsed.topicId)
     broadcastHost({ type: 'host/session-status', sessionId, running: true })
     const translator = memberTranslatorFor(sessionId)
-    emitMemberEvents(sessionId, translator.startTurn(text))
+    emitMemberEvents(sessionId, translator.startTurn(coreContent))
     return ok(request, { accepted: true as const })
   }
 
@@ -1864,6 +1909,146 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       return teamError(request, error)
     }
     return ok(request, { accepted: true as const })
+  }
+
+  /**
+   * Mint one fresh topic on a member and publish it as a first-class session:
+   * first-seen bookkeeping, the `host/session-added` row broadcast (blank until
+   * its first prompt, carrying the owning agentId), and the mux re-baseline.
+   * The single creation path for member topics — `session.create` with an
+   * agentId routes here, so clients never speak the team domain to create one.
+   * @param request - any RPC request supplying the response envelope (rpcId).
+   * @param memberId - roster id of the member owning the new topic.
+   * @returns the accepted response carrying the full virtual session id, or a wire error.
+   */
+  async function createMemberTopic(
+    request: RpcRequest<unknown>,
+    memberId: string,
+  ): Promise<RpcResponse<{ sessionId: SessionId }>> {
+    const team = teamService()
+    if (team === undefined) return teamUnavailable(request)
+    let topicId: string
+    try {
+      topicId = await team.newSession(memberId)
+    } catch (error: unknown) {
+      return teamError(request, error)
+    }
+    const sessionId = makeMemberSessionId(memberId, topicId)
+    memberTopicFirstSeenAt.set(sessionId, Date.now())
+    memberSeqs.set(sessionId, 0)
+    // Find the new topic's cwd so the list row is complete on arrival.
+    let cwd: string | undefined
+    try {
+      cwd = (await team.listSessions(memberId))
+        .find(topic => topic.sessionId === topicId)?.cwd
+    } catch {
+      cwd = undefined // the member's list can transiently reject; the next pull re-derives it
+    }
+    broadcastHost({ type: 'host/session-added', sessionId, blank: true, ...(cwd === undefined ? {} : { cwd }), agentId: memberId })
+    broadcast({ type: 'session/subscribed', sessionId, lastSeq: -1 })
+    return ok(request, { sessionId })
+  }
+
+  /**
+   * Serve the member topic's model catalog synthesized from the ACP session
+   * config option its agent advertises: one host-owned group under the
+   * pseudo-provider `member`, with the option's select values as models.
+   * @param request - the models RPC request.
+   * @returns the synthesized catalog or a wire error.
+   */
+  async function memberModels(
+    request: RpcRequest<{ sessionId: SessionId }>,
+  ): Promise<RpcResponse<{
+    current: ModelSelection
+    routable: boolean
+    groups: ModelProviderGroup[]
+    failures: ModelCatalogFailure[]
+  }>> {
+    const parsed = parseMemberSessionId(request.payload.sessionId)
+    if (parsed === undefined) {
+      return err(request, {
+        code: 'session-not-found',
+        message: `invalid member session id "${request.payload.sessionId}"`,
+        details: { sessionId: request.payload.sessionId },
+      })
+    }
+    const team = teamService()
+    if (team === undefined) return teamUnavailable(request)
+    let snapshot: SessionConfigSnapshot
+    try {
+      snapshot = await team.getConfig(parsed.memberId, parsed.topicId)
+    } catch (error: unknown) {
+      return teamError(request, error)
+    }
+    const model = snapshot.model
+    if (model === undefined || model.options.length === 0) {
+      return err(request, {
+        code: 'model-unavailable',
+        message: `member "${parsed.memberId}" does not expose a model selection`,
+        details: { provider: 'member', model: '' },
+      })
+    }
+    const title = team.list().find(member => member.id === parsed.memberId)?.title ?? parsed.memberId
+    return ok(request, {
+      current: { provider: 'member', model: model.currentValue },
+      routable: true,
+      groups: [{
+        id: 'member',
+        name: title,
+        models: model.options.map(option => ({
+          id: option.value,
+          name: option.name,
+          ...(option.description === undefined ? {} : { description: option.description }),
+        })),
+      }],
+      failures: [],
+    })
+  }
+
+  /**
+   * Select one model for a member topic through the ACP session config
+   * option. The value is validated against the advertised options before the
+   * agent call; the agent validates it again on its side.
+   * @param request - the selectModel RPC request.
+   * @returns the acknowledged selection or a wire error.
+   */
+  async function memberSelectModel(
+    request: RpcRequest<{ sessionId: SessionId; provider: string; model: string; reasoningEffort?: string }>,
+  ): Promise<RpcResponse<{ selected: ModelSelection }>> {
+    const parsed = parseMemberSessionId(request.payload.sessionId)
+    if (parsed === undefined) {
+      return err(request, {
+        code: 'session-not-found',
+        message: `invalid member session id "${request.payload.sessionId}"`,
+        details: { sessionId: request.payload.sessionId },
+      })
+    }
+    const team = teamService()
+    if (team === undefined) return teamUnavailable(request)
+    let snapshot: SessionConfigSnapshot
+    try {
+      snapshot = await team.getConfig(parsed.memberId, parsed.topicId)
+    } catch (error: unknown) {
+      return teamError(request, error)
+    }
+    const model = snapshot.model
+    if (model === undefined || !model.options.some(option => option.value === request.payload.model)) {
+      return err(request, {
+        code: 'model-unavailable',
+        message: `member "${parsed.memberId}" does not offer model "${request.payload.model}"`,
+        details: { provider: 'member', model: request.payload.model },
+      })
+    }
+    try {
+      await team.setConfig(parsed.memberId, parsed.topicId, 'model', request.payload.model)
+    } catch (error: unknown) {
+      return err(request, {
+        code: 'model-unavailable',
+        message: String(error),
+        details: { provider: 'member', model: request.payload.model },
+      })
+    }
+    return ok(request, { selected: { provider: 'member', model: request.payload.model } })
   }
 
   /**
@@ -2130,7 +2315,10 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     isTurnInFlight(memberId: string, sessionId: string): boolean
     newSession(memberId: string): Promise<string>
     prompt(memberId: string, sessionId: string, text: string): Promise<{ promptId: string }>
+    promptContent(memberId: string, sessionId: string, content: readonly MemberPromptBlock[]): Promise<{ promptId: string }>
     cancel(memberId: string, sessionId: string): Promise<void>
+    getConfig(memberId: string, sessionId: string): Promise<SessionConfigSnapshot>
+    setConfig(memberId: string, sessionId: string, configId: string, value: string): Promise<SessionConfigSnapshot>
     permission(
       memberId: string,
       requestId: string,
@@ -2504,6 +2692,12 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       },
 
       async create(request) {
+        // agentId routes the create to that member's process: one session-domain
+        // call for every agent, the host owns the routing (the client never
+        // speaks the team domain to mint a conversation).
+        if (request.payload.agentId !== undefined) {
+          return createMemberTopic(request, request.payload.agentId)
+        }
         const sessionId = request.payload.sessionId ?? `session-${randomUUID()}` as SessionId
         let workspace: Workspace | undefined
         if (request.payload.workspaceId !== undefined) {
@@ -2618,6 +2812,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       async models(request) {
         const { sessionId } = request.payload
+        if (isMemberSessionId(sessionId)) return memberModels(request)
         const found = await agentFor(sessionId)
         if ('error' in found) return err(request, found.error)
         const current = selectionFor(found.agent).current
@@ -2627,7 +2822,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       },
 
       async selectModel(request) {
-        const { sessionId, provider, model, reasoningEffort } = request.payload
+        const { sessionId } = request.payload
+        if (isMemberSessionId(sessionId)) return memberSelectModel(request)
+        const { provider, model, reasoningEffort } = request.payload
         const found = await agentFor(sessionId)
         if ('error' in found) return err(request, found.error)
         return serializeImageAdmission(found.agent, async () => {
@@ -2797,7 +2994,12 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       async rerun(request) {
         const { sessionId, atSeq } = request.payload
-        if (isMemberSessionId(sessionId)) return memberUnsupported(request, 'rerun')
+        if (isMemberSessionId(sessionId)) {
+          // A member topic cannot truncate its own log: a re-run is simply the
+          // caller's follow-up prompt as a new turn on the same topic (the Web
+          // client always queues one after an accepted rerun).
+          return ok(request, { accepted: true as const })
+        }
         let source: SessionReadState
         try {
           source = await readSessionState(sessionId)
@@ -2939,7 +3141,39 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       async attachment(request) {
         const { sessionId, attachmentId } = request.payload
-        if (isMemberSessionId(sessionId)) return memberUnsupported(request, 'attachment')
+        if (isMemberSessionId(sessionId)) {
+          // Member topics have no host log to authorize against; serve the
+          // image only when this process admitted it through the member's
+          // prompt (single-user local trust boundary).
+          const ref = memberAdmittedImages.get(sessionId)?.get(String(attachmentId))
+          if (ref === undefined) {
+            return err(request, {
+              code: 'attachment-error',
+              message: 'Image was not admitted for this member session.',
+              details: { reason: 'ATTACHMENT_NOT_ADMITTED' },
+            })
+          }
+          try {
+            const stored = await ctx.attachments.readImage(ref)
+            return ok(request, {
+              attachment: stored.ref,
+              data: Buffer.from(stored.data).toString('base64'),
+            })
+          } catch (error: unknown) {
+            if (error instanceof AttachmentError) {
+              return err(request, {
+                code: 'attachment-error',
+                message: error.message,
+                details: { reason: error.code },
+              })
+            }
+            return err(request, {
+              code: 'internal',
+              message: 'Unable to read image attachment.',
+              details: {},
+            })
+          }
+        }
         let state: SessionReadState
         try {
           state = await readSessionState(sessionId)
@@ -2989,6 +3223,11 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       updateQueue(request) {
         const { sessionId, itemId, action } = request.payload
+        // Member topics have no local agent inbox; a refusal here would only
+        // masquerade as "queued item is no longer pending".
+        if (isMemberSessionId(sessionId)) {
+          return Promise.resolve(memberUnsupported(request, 'queue updates'))
+        }
         if (action.kind === 'edit' && action.content.some(block => block.type !== 'text')) {
           return Promise.resolve(err(request, {
             code: 'attachment-error',

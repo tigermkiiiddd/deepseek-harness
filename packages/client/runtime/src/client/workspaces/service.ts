@@ -5,6 +5,7 @@ import type {
   DirectoryListing, IApiClient, RpcError,
   SessionId, WorkspaceId, WorkspaceView,
 } from '@deepseek-ai/dsh-api-remotes/client'
+import { makeMemberSessionId, memberSessionOwner } from '@deepseek-ai/dsh-host-apiproxy/src/team-sessions.ts'
 import type { SnapshotStore } from '../contract/store.ts'
 import { createSnapshotStore } from '../contract/store.ts'
 import type { SessionsPort, SessionsPortList } from '../contract/sessions-port.ts'
@@ -166,17 +167,36 @@ export class WorkspaceRuntime implements IWorkspaces {
 
   /**
    * The shared New Session action behind the shell entry points (sidebar
-   * button, workspace browser): resolve the target Workspace — explicit wins,
-   * then the current Session's Workspace, then the recent-Workspace
-   * projection — connect its blank session and navigate there; with no
-   * Workspace at all, clear the selection into the New Session view state.
-   * Connect failures are non-fatal (console diagnostics; the current view
-   * stays usable).
+   * button, workspace browser): when the current session is a member topic,
+   * mint a fresh topic on that member and open it instead; otherwise resolve
+   * the target Workspace — explicit wins, then the current Session's
+   * Workspace, then the recent-Workspace projection — connect its blank
+   * session and navigate there; with no Workspace at all, clear the selection
+   * into the New Session view state. Connect failures are non-fatal (console
+   * diagnostics; the current view stays usable).
    * @param workspaceId - explicit target Workspace for scoped actions.
    */
   startSession(workspaceId?: WorkspaceId): void {
-    const workspace = this.list.getSnapshot()
+    // A member session is current: "new conversation" means a fresh topic for
+    // that member, not a main-instance session — the member's own process owns
+    // its topics, and minting a main session here bounces the view back to the
+    // main agent.
     const current = this.sessions.list.getSnapshot().current
+    const owner = current === undefined ? undefined : memberSessionOwner(current)
+    if (owner !== undefined) {
+      void this.api.team.newSession({ memberId: owner }).then(
+        (response) => {
+          if (!response.result.ok) {
+            console.warn('member new session failed:', response.result.error)
+            return
+          }
+          this.openMemberTopic(owner, response.result.value.sessionId)
+        },
+        (reason: unknown) => { console.warn('member new session failed:', reason) },
+      )
+      return
+    }
+    const workspace = this.list.getSnapshot()
     const currentWorkspaceId = current === undefined
       ? undefined
       : workspace.items.find(item => item.sessionIds.includes(current))?.workspaceId
@@ -189,6 +209,25 @@ export class WorkspaceRuntime implements IWorkspaces {
       (sessionId) => { this.sessions.open(sessionId) },
       (reason: unknown) => { console.warn('new session failed:', reason) },
     )
+  }
+
+  /**
+   * Open one member topic as the current session. The host broadcasts the
+   * topic's list row alongside the newSession response, and that frame can
+   * still be in flight when this runs — a select that misses it re-baselines
+   * the list once and retries before failing.
+   * @param memberId - the member owning the topic.
+   * @param topicId - the topic id inside the member's own session store.
+   */
+  private openMemberTopic(memberId: string, topicId: string): void {
+    const sessionId = makeMemberSessionId(memberId, topicId)
+    try {
+      this.sessions.open(sessionId)
+    } catch {
+      void this.sessions.refresh().then(() => {
+        this.sessions.open(sessionId)
+      }).catch((reason: unknown) => { console.warn('member new session failed:', reason) })
+    }
   }
 
   /**

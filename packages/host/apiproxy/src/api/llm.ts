@@ -58,6 +58,10 @@ export interface LlmApi {
    * describes that route answers from its own registry, with better metadata
    * and no network call, and needs no endpoint. A route it does not describe is
    * asked over the wire, which is what `baseURL`, `api`, and `apiKey` are for.
+   * `preferEndpoint` asks for the endpoint's current list even when the
+   * adapter's installed catalog describes the route: that catalog is a version
+   * cache, and upstream models it has not caught up with appear only over the
+   * wire.
    *
    * Nothing is written — the reply is candidates, and only a later
    * `settings.mutate` decides what a route serves. `apiKey` is accepted here
@@ -71,6 +75,7 @@ export interface LlmApi {
       baseURL?: string
       api?: string
       apiKey?: string
+      preferEndpoint?: boolean
     }>,
     signal?: AbortSignal,
   ): Promise<RpcResponse<{ models: DiscoveredModelView[] }>>
@@ -86,4 +91,6 @@ export interface DiscoveredModelView {
   contextWindow?: number
   /** Maximum output tokens, when disclosed. */
   maxTokens?: number
+  /** Wire protocol the model speaks, when the answerer knows it. */
+  api?: string
 }

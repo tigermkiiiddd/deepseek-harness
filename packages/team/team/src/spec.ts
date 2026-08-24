@@ -24,6 +24,7 @@ export const teamRosterRecord = z.object({
   env: z.record(z.string(), z.string()).default({}),
   permission: z.union([z.literal('allow'), z.literal('reject')]).optional(),
   autostart: z.boolean().optional(),
+  preset: z.string().optional(),
 })
 
 /** One stored roster record, inferred from {@link teamRosterRecord}. */

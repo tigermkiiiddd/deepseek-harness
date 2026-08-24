@@ -94,6 +94,8 @@ export class AcpUpdateTranslator {
   private stepOpen = false
   /** Accumulated user-chunk text awaiting the turn's `user/message`. */
   private userParts: string[] = []
+  /** Image blocks (attachment references) awaiting the turn's `user/message`. */
+  private userImages: ContentBlock[] = []
   /** Next content-block index within the open step. */
   private nextBlock = 0
   /** The open step's text block index, once its first chunk arrived. */
@@ -147,17 +149,22 @@ export class AcpUpdateTranslator {
   /**
    * Open a new turn with a user message (the live bridge path: ACP servers may
    * not emit a `user_message_chunk` before agent output). Closes any previous
-   * open turn as completed, then emits `turn/start` and `user/message`.
-   * @param text - the user text that opens the turn.
+   * open turn as completed, then emits `turn/start` and `user/message`. Text
+   * and image blocks both land in the minted message; text-only echoes from
+   * the agent still deduplicate against the minted text.
+   * @param content - the user-role core content blocks (text and image references) that open the turn.
    * @returns the opening events in append order.
    */
-  startTurn(text: string): TranslatedSessionEvent[] {
+  startTurn(content: readonly ContentBlock[]): TranslatedSessionEvent[] {
     const events = this.turnOpen ? this.closeTurn({ kind: 'completed' }) : []
-    this.userParts.push(text)
+    for (const block of content) {
+      if (block.type === 'text') this.userParts.push(block.text)
+      else if (block.type === 'image') this.userImages.push(block)
+    }
     events.push(...this.openTurn())
     // Record after openTurn flushes, so an agent echo of this exact text can
     // be deduplicated against it while the minted user/message is kept.
-    this.lastMintedTurnText = text
+    this.lastMintedTurnText = content.map(block => block.type === 'text' ? block.text : '').join('')
     return events
   }
 
@@ -283,23 +290,27 @@ export class AcpUpdateTranslator {
     this.step = 0
     this.turnOpen = true
     const events: TranslatedSessionEvent[] = [{ type: 'turn/start', data: { turn: this.turn } }]
-    if (this.userParts.length > 0) {
+    if (this.userParts.length > 0 || this.userImages.length > 0) {
       const text = this.userParts.join('')
-      if (text === this.lastMintedTurnText) {
+      if (text === this.lastMintedTurnText && this.userImages.length === 0) {
         // The agent echoed the user message already minted by the live bridge
         // for this turn; drop the duplicate rather than emit a second user/message.
         this.userParts = []
         this.lastMintedTurnText = undefined
       } else {
+        const content: ContentBlock[] = []
+        if (text.length > 0) content.push({ type: 'text', text })
+        content.push(...this.userImages)
         events.push({
           type: 'user/message',
           data: createUserMessage({
-            content: [{ type: 'text', text }],
+            content,
             source: { kind: 'user' },
           }),
           surfaceOp: 'append',
         })
         this.userParts = []
+        this.userImages = []
         this.lastMintedTurnText = undefined
       }
     }
@@ -324,7 +335,7 @@ export class AcpUpdateTranslator {
 
   /** Flush any pending user message, then close the open step and turn. */
   private closeTurn(reason: TurnEndReason): TranslatedSessionEvent[] {
-    if (!this.turnOpen && this.userParts.length === 0) return []
+    if (!this.turnOpen && this.userParts.length === 0 && this.userImages.length === 0) return []
     // A stream tail of user input the member never answered still records its
     // lone-input turn (turn/start + user/message + turn/end, no step bracket:
     // a turn with no entered step has no step events).

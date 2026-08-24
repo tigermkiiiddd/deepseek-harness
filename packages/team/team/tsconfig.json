@@ -13,6 +13,7 @@
     { "path": "../../../packages/util/home-paths" },
     { "path": "../../../packages/util/timeout" },
     { "path": "../../../packages/llm/llm" },
+    { "path": "../../../packages/preset/agent-presets" },
     { "path": "../../../packages/core/session" }
   ]
 }

@@ -32,6 +32,7 @@ function sessionsDouble(current?: SessionId) {
     refreshSubagents: vi.fn(),
     noteAgentPreset: vi.fn(),
     clear: vi.fn(),
+    refresh: vi.fn(async () => {}),
     search: vi.fn(),
     fork: vi.fn(),
     rerun: vi.fn(),
@@ -90,6 +91,37 @@ describe('TeamController', () => {
     })
     await vi.waitFor(() => {
       expect(sessions.open).toHaveBeenCalledWith('member:architect:topic-fresh' as SessionId)
+    })
+  })
+
+  it('re-baselines the list once when open misses a topic newer than the baseline', async () => {
+    const sessions = sessionsDouble()
+    // First select throws (the topic is not in this client's list yet); the
+    // retry after refresh lands.
+    let firstOpen = true
+    sessions.open.mockImplementation(() => {
+      if (firstOpen) {
+        firstOpen = false
+        throw new Error('sessions.select: unknown session member:architect:topic-a')
+      }
+    })
+    const api = facade({ sessions: vi.fn(async () => [{ sessionId: 'topic-a', cwd: '' }]) })
+    const controller = new TeamController(api, sessions)
+    controller.openMember('architect')
+    await vi.waitFor(() => { expect(sessions.refresh).toHaveBeenCalledOnce() })
+    await vi.waitFor(() => { expect(sessions.open).toHaveBeenCalledTimes(2) })
+    expect(controller.store.getSnapshot().error).toBeUndefined()
+  })
+
+  it('surfaces the error when the retry open still misses', async () => {
+    const sessions = sessionsDouble()
+    sessions.open.mockImplementation(() => { throw new Error('sessions.select: unknown session member:architect:topic-a') })
+    const api = facade({ sessions: vi.fn(async () => [{ sessionId: 'topic-a', cwd: '' }]) })
+    const controller = new TeamController(api, sessions)
+    controller.openMember('architect')
+    await vi.waitFor(() => { expect(sessions.refresh).toHaveBeenCalledOnce() })
+    await vi.waitFor(() => {
+      expect(controller.store.getSnapshot().error).toBe('sessions.select: unknown session member:architect:topic-a')
     })
   })
 

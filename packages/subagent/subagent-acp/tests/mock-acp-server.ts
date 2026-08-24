@@ -30,6 +30,10 @@
  *                        handler is in flight (it has streamed its chunk). A test
  *                        polls for this file to cancel on a CONDITION rather than
  *                        an arbitrary timeout (subprocess cold-start is variable).
+ * - `MOCK_ECHO_IMAGES`  — if `1`, stream the received prompt block types as
+ *                        `blocks:<type>[+<type>…]` instead of MOCK_TEXT, so a
+ *                        test can assert exactly which content blocks reached
+ *                        the agent (text/image pass-through).
  * - `MOCK_MISSING_SESSION_ID` — if `1`, return a malformed empty `session/new`
  *                        response to exercise startup rollback.
  * - `MOCK_FLUSH_ON_EOF` — if set, on stdin EOF the agent takes an async beat
@@ -114,9 +118,10 @@ const NEWSESSION_GATE = process.env.MOCK_NEWSESSION_READY !== undefined && proce
 // loadSession, and answer session/set_config_option.
 const WANT_PROVIDERS = process.env.MOCK_PROVIDERS === '1'
 const WANT_CONFIG = process.env.MOCK_CONFIG_OPTIONS === '1'
+const ECHO_IMAGES = process.env.MOCK_ECHO_IMAGES === '1'
 const MODEL = process.env.MOCK_MODEL ?? 'mock-model-1'
 
-/** The canned model selector the mock advertises when config options are on. */
+/** The canned selectors the mock advertises when config options are on. */
 function buildConfigOptions(currentModel: string): SessionConfigOption[] {
   return [{
     id: 'model',
@@ -281,12 +286,14 @@ function makeAgent(conn: AgentSideConnection): Agent {
         })
       }
       // Stream the canned assistant text as one chunk (or, under MOCK_ECHO_CWD,
-      // the observable process cwd + announced session cwd).
+      // the observable process cwd + announced session cwd; or, under
+      // MOCK_ECHO_IMAGES, the received prompt block types).
+      const echoImages = ECHO_IMAGES ? `blocks:${params.prompt.map(part => part.type).join('+')}` : undefined
       await conn.sessionUpdate({
         sessionId: params.sessionId,
         update: {
           sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text: ECHO_CWD ? `${process.cwd()}\n${sessionCwd ?? ''}` : TEXT },
+          content: { type: 'text', text: ECHO_CWD ? `${process.cwd()}\n${sessionCwd ?? ''}` : echoImages ?? TEXT },
         },
       })
       // Signal "prompt is in flight" by touching the readiness file, so a test

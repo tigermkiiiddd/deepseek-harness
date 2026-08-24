@@ -32,4 +32,4 @@ Real-subprocess combination tests pin both seams through the ACP wire. `member_m
 
 The model can now see and change a member's model and provider configuration through the same tools it chats with, without leaving the harness or touching a file. The cost is a per-session option cache keyed by session id and the standing obligation to keep `getConfig`'s cache in step with `session/config_option_update` — a missed update would leave a stale model or option set.
 
-This note extends the [ACP virtual team](2026-08-16-acp-virtual-team.md), which owns the member lifecycle and topic chat.
+This note extends the [ACP virtual team](2026-08-16-acp-virtual-team.md), which owns the member lifecycle and topic chat. The Web session-domain bridge that reads this seam for model selection is recorded in the [Web member parity integration](2026-08-24-web-member-parity-integration.md).

@@ -214,6 +214,17 @@ describe('member_add', () => {
     const member = (ctx.get('team') as team.TeamService).list().find(candidate => candidate.id === 'writer')
     expect(member?.status).toBe('offline')
   })
+
+  it('passes a preset through to the service, which refuses it for a non-dsh member', async () => {
+    const ctx = await setup()
+    const result = await execute(ctx, 'member_add', {
+      member_id: 'writer',
+      command: process.execPath,
+      args: [mockServer],
+      preset: '- id: persona\n  name: some-persona-plugin\n',
+    })
+    expect(text(result)).toMatch(/cannot set preset without kind/)
+  })
 })
 
 describe('member_remove', () => {

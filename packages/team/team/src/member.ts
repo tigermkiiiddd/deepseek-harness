@@ -46,6 +46,7 @@ import type {
   MemberProviderConfigInput,
   MemberProviderInfo,
   MemberHistoryEntry,
+  MemberPromptBlock,
   MemberSession,
   MemberSnapshot,
   MemberStatus,
@@ -91,7 +92,7 @@ interface PendingPermission {
  * The member process's environment: the full parent environment minus the
  * harness-managed `DSH_*` namespace (keyed case-insensitively, matching the
  * subprocess seam's scrub), with `config.env` layered over it, then any
- * explicit per-member entries such as the `DSH_HOME` / `DSH_MAIN_HOME` pair
+ * explicit per-member entries such as the `DSH_HOME` entry
  * for `kind: 'dsh'` members. The DSH_* strip applies only to blind inheritance;
  * explicit entries are added last so they always win.
  * @param overlay - the member's configured `env` increments.
@@ -561,19 +562,35 @@ export class MemberConnection {
   }
 
   /**
-   * Accept one prompt turn against one of the member's sessions and return
-   * immediately; the turn's chunks stream as member-update events and its
-   * settlement arrives as a turn-end event. One turn per session at a time.
-   * @param sessionId - the member's session (topic) id.
+   * Accept one text prompt turn and return immediately; chunks stream as
+   * `team/member-update` events and settlement as `team/turn-end`. One turn per session at a time.
+   * @param sessionId - the member topic to prompt in.
    * @param text - the user-role message.
    * @returns the locally minted prompt id, for turn-end correlation.
    */
   prompt(sessionId: string, text: string): Promise<{ promptId: string }> {
+    return this.promptContent(sessionId, [{ type: 'text', text }])
+  }
+
+  /**
+   * Accept one prompt turn carrying text and image blocks (ACP wire form) and
+   * return immediately; chunks stream as `team/member-update` events and
+   * settlement as `team/turn-end`. One turn per session at a time. The agent
+   * validates the blocks on its own side — an unsupported image is a protocol
+   * error that fails the turn, not a silent drop.
+   * @param sessionId - the member topic to prompt in.
+   * @param content - the user-role blocks in order; at least one non-blank text or one image.
+   * @returns the prompt id assigned to this turn.
+   */
+  promptContent(sessionId: string, content: readonly MemberPromptBlock[]): Promise<{ promptId: string }> {
     const conn = this.requireRunning()
     if (this.inflight.has(sessionId)) {
       return Promise.reject(new Error(`team: a prompt is already in flight for session "${sessionId}"`))
     }
-    if (text.trim().length === 0) return Promise.reject(new Error('team: empty prompt'))
+    const hasText = content.some(block => block.type === 'text' && block.text.trim().length > 0)
+    if (!hasText && !content.some(block => block.type === 'image')) {
+      return Promise.reject(new Error('team: empty prompt'))
+    }
     const promptId = `team-${this.config.id}-${++this.turnCounter}`
     let settle!: (reason: StopReason) => void
     let fail!: (error: Error) => void
@@ -587,7 +604,7 @@ export class MemberConnection {
     // A turn in flight is the public `running` status (chat turns included —
     // chat drives its turn through this method).
     this.setStatus('running')
-    void conn.prompt({ sessionId, prompt: [{ type: 'text', text }] })
+    void conn.prompt({ sessionId, prompt: [...content] })
       .then((response) => { this.settleTurn(sessionId, response.stopReason) })
       .catch((error: unknown) => {
         if (error instanceof RequestError) {
@@ -867,9 +884,10 @@ export class MemberConnection {
       // explicit opt-in is the documented way to forward a credential. The
       // one exclusion is the harness's own DSH_* namespace: those keys
       // configure THIS harness instance and must never leak into a member.
-      // For `kind: 'dsh'` members, DSH_HOME and DSH_MAIN_HOME are explicit
-      // per-member entries merged after config.env so the member gets its own
-      // home while still reading the main instance's settings/credentials.
+      // For `kind: 'dsh'` members, DSH_HOME is an explicit per-member entry
+      // merged after config.env, so the member gets its own self-contained
+      // home; it reads only that home (seeded once at creation by
+      // `member-home.ts`), never the main instance's settings/credentials.
       env: inheritedMemberEnv(this.config.env, spec.env),
       graceMs: 3_000,
     }

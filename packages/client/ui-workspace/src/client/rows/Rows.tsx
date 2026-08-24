@@ -14,6 +14,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
 import { abbreviateHomePath } from '@deepseek-ai/dsh-client-runtime/client'
+import { memberSessionOwner } from '@deepseek-ai/dsh-host-apiproxy/src/team-sessions.ts'
 import type { WorkspaceBrowserProps } from '../contract/slots.ts'
 import type { GroupNode, SearchResultNode, SessionNode } from '../tree.ts'
 import { relativeTime } from '../tree.ts'
@@ -383,12 +384,14 @@ export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork
   const primaryStatus = statuses[0]
   const showStatus = primaryStatus.state !== 'done' || row.completed
   const [menuOpen, setMenuOpen] = useState(false)
-  // Archive hides the row through the registry-global archive set and never
-  // touches the session log, so it is not styled as destructive and needs no
-  // confirmation dialog.
+  // Member topics cannot be renamed or forked through the dsh ACP bridge —
+  // hide those row verbs rather than offer actions that always fail. Archive
+  // hides the row through the registry-global archive set and never touches
+  // the session log, so it stays available (not destructive, no dialog).
+  const member = memberSessionOwner(node.id) !== undefined
   const sessionMenuItems = [
-    { id: 'rename', label: t('rename'), icon: <IconEditOutline16 /> },
-    { id: 'fork', label: t('menu.fork'), icon: <IconBranchOutline16 /> },
+    ...(member ? [] : [{ id: 'rename', label: t('rename'), icon: <IconEditOutline16 /> }]),
+    ...(member ? [] : [{ id: 'fork', label: t('menu.fork'), icon: <IconBranchOutline16 /> }]),
     // 20-native glyph in the menu's 16px icon slot (Menu.module.css .itemIcon).
     { id: 'archive', label: t('menu.archiveSession'), icon: <IconArchiveOutline20 size={16} /> },
   ]

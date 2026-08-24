@@ -8,7 +8,7 @@
 
 - `member_sessions` —— 列出每个成员（或指定 `member_id`）及其状态与能力，外加每个成员自己的话题 id（经 ACP `session/list`）。未运行的成员会报告如何启动它。从这里开始选择要续接的话题。
 - `member_chat` —— 向成员发送 `text`。传已有 `topic` id 续接该对话，或 `new_topic: true` 在成员上开新话题。返回成员落定的回复（非 `end_turn`/`max_tokens` 时附带 stop reason）。工具取消信号经 ACP 取消成员的轮次。
-- `member_add` —— 在运行时派生成员进程、写入持久名册并加入团队。接受完整成员配置：`command`、`args`、`cwd`、`env`（叠加在完整父环境上）、`permission`（`allow` / `reject` 回落策略）、`autostart`。
+- `member_add` —— 在运行时派生成员进程、写入持久名册并加入团队。接受完整成员配置：`kind`、`command`、`args`、`cwd`、`env`（叠加在完整父环境上）、`permission`（`allow` / `reject` 回落策略）、`autostart`，以及——对 `kind: "dsh"` 成员——`preset`：创建时写入成员私有 home 的独一无二 agent preset composition，并成为其默认。
 - `member_remove` —— 停止成员、移出名册并尝试从持久化删除。删除失败会记录日志，且该记录可能在重启后复现；同时声明在部署配置里的成员会在下次重启时重现。
 - `member_start` —— 启动已停止或失败的成员（派生 + 握手）。幂等。
 - `member_stop` —— 停止成员并回到 `idle`；其自己的会话留在成员侧。

@@ -80,20 +80,34 @@ export class TeamController {
       draft.currentAgentId = memberId
       draft.error = undefined
     })
-    void this.team.sessions(memberId).then((sessions) => {
+    void this.team.sessions(memberId).then(async (sessions) => {
       const now = this.store.getSnapshot()
       if (now.currentAgentId !== memberId) return
-      if (sessions.length === 0) {
-        return this.team.newSession(memberId).then((sessionId) => {
-          if (this.store.getSnapshot().currentAgentId !== memberId) return
-          this.sessions.open(memberSessionId(memberId, sessionId))
-        })
-      }
-      const latest = sessions[sessions.length - 1]
-      if (latest !== undefined) {
-        this.sessions.open(memberSessionId(memberId, latest.sessionId))
-      }
+      const topicId = sessions.length === 0
+        ? await this.team.newSession(memberId)
+        : sessions[sessions.length - 1]?.sessionId
+      if (topicId === undefined) return
+      if (this.store.getSnapshot().currentAgentId !== memberId) return
+      this.openMemberTopic(memberId, topicId)
     }).catch((error: unknown) => { this.setError(error) })
+  }
+
+  /**
+   * Open one member topic as the current session. The topic can be newer than
+   * this client's list baseline (created after the page loaded), and a select
+   * that misses it re-baselines the list once and retries before surfacing
+   * the failure.
+   * @param memberId - the member owning the topic.
+   * @param topicId - the topic id inside the member's own session store.
+   */
+  private openMemberTopic(memberId: string, topicId: string): void {
+    const sessionId = memberSessionId(memberId, topicId)
+    try {
+      this.sessions.open(sessionId)
+    } catch {
+      void this.sessions.refresh().then(() => { this.sessions.open(sessionId) })
+        .catch((error: unknown) => { this.setError(error) })
+    }
   }
 
   /**

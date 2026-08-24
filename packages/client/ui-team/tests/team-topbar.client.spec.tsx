@@ -51,6 +51,7 @@ function sessionsDouble(current?: SessionId) {
     refreshSubagents: vi.fn(),
     noteAgentPreset: vi.fn(),
     clear: vi.fn(),
+    refresh: vi.fn(async () => {}),
     search: vi.fn(),
     fork: vi.fn(),
     rerun: vi.fn(),

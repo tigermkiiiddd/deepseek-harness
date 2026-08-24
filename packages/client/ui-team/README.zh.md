@@ -7,7 +7,7 @@ Web 团队视图：框架顶部一条**全局可视化栏**（`shell.topbar`）�
 ## 架构
 
 - **Host 半边**（`src/index.ts`）：空 apply，让插件对 Loader 可见。`team` 域由 host API-proxy 提供（`team.*` RPC 方法，由 `@deepseek-ai/dsh-team` 实现）。
-- **浏览器半边**（`src/client/index.ts`）：状态推送桥订阅转发的 `team/status` 远程事件，折叠进一个 `TeamController` store（经 inject `hooks` 舱以 `useTeamLive` 暴露）；全局栏（`TeamTopbar`，SVG 节点图）读取该 store，并经正式 host API（`@deepseek-ai/dsh-client-connection`）驱动 `api.team.*`。点击成员节点会解析该成员最新话题（`team.sessions`）并通过 `ctx.sessions.open` 选择 `member:<memberId>:<topicId>` 会话；若成员尚无话题，控制器会先新建一个（`team.newSession`）再选择。点击主实例节点则返回主对话视图（`ctx.sessions.clear`）。从不轮询。
+- **浏览器半边**（`src/client/index.ts`）：状态推送桥订阅转发的 `team/status` 远程事件，折叠进一个 `TeamController` store（经 inject `hooks` 舱以 `useTeamLive` 暴露）；全局栏（`TeamTopbar`，SVG 节点图）读取该 store，并经正式 host API（`@deepseek-ai/dsh-client-connection`）驱动 `api.team.*`。点击成员节点会解析该成员最新话题（`team.sessions`）并通过 `ctx.sessions.open` 选择 `member:<memberId>:<topicId>` 会话；若成员尚无话题，控制器会先新建一个（`team.newSession`）再选择。话题可能比本客户端的列表基线更新（页面加载后创建），select 若错过它，会先重拉一次会话列表（`sessions.refresh`）再重试，仍失败才显示错误。点击主实例节点则返回主对话视图（`ctx.sessions.clear`）。从不轮询。
 - **框架**（`@deepseek-ai/dsh-client-ui-layout`）：在三列之上声明并渲染 `shell.topbar` 栏。
 
 ## 数据归属

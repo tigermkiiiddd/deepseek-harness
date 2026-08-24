@@ -33,12 +33,17 @@ import {
   type NewSessionResponse,
   type PromptRequest,
   type PromptResponse,
+  type SessionConfigOption,
+  type SessionCapabilities,
   type SessionInfo,
   type SessionNotification,
+  type SetSessionConfigOptionRequest,
+  type SetSessionConfigOptionResponse,
   type StopReason,
   type Stream,
 } from '@agentclientprotocol/sdk'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import { installModelSelection, type Agent, type ModelSelection, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { LlmModelInfo } from '@deepseek-ai/dsh-llm'
 import { SessionId, type SessionEvent, type SessionHeader, type TurnEndReason } from '@deepseek-ai/dsh-session'
 // Side-effect type import: declaration-merges the approval waterfall answered below.
 import type {} from '@deepseek-ai/dsh-user-approval'
@@ -61,6 +66,33 @@ interface ContinuableDrain {
    * continuable descendants child-first.
    */
   drainContinuableDescendants(parents: readonly Agent[]): Promise<void>
+}
+
+/**
+ * The llm catalog seam the bridge reads to build the model selector. Declared
+ * structurally so this package does not hard-depend on the llm Service.
+ */
+interface LlmCatalog {
+  /** The models registered on one provider route, in display order. */
+  listModels(provider: string): Promise<readonly LlmModelInfo[]>
+}
+
+/**
+ * The default-model seam the bridge reads for each agent's initial model.
+ * Declared structurally so this package does not hard-depend on the Service.
+ */
+interface AgentDefaultModel {
+  /** The default model selection for agents created without one. */
+  currentSelection(): ModelSelection
+}
+
+/**
+ * The preset roster seam the bridge reads to compose an agent's persona.
+ * Declared structurally so this package does not hard-depend on the Service.
+ */
+interface PresetsRoster {
+  /** Compose one agent from its preset (the default when `id` is omitted). */
+  mount(agentCtx: Context, id?: string): Promise<{ readonly id: string }>
 }
 
 /** Preserve invalid-parameter detail in the SDK wire error message. */
@@ -95,6 +127,19 @@ interface SessionRecord {
   dispose: () => Promise<void>
   /** Ordered assistant-output delivery; every task contains its own failure. */
   outputTail: Promise<void>
+  /**
+   * The mutable model selection installed on this agent's scope. A
+   * `session/set_config_option` for `"model"` rewrites `current`, and the next
+   * step's prompt assembly applies it. Always present: `buildModelState`
+   * minted one at session creation.
+   */
+  modelRef: ModelSelectionRef
+  /** The model selector options advertised to the client on session creation. */
+  modelOptions: SessionConfigOption[]
+  /** The provider route the model selector lists, when known. */
+  modelProvider: string | undefined
+  /** The catalog the model selector validates a new value against, when known. */
+  modelCatalog: readonly LlmModelInfo[]
   /** In-flight admission/turn/output lifecycle for exact settlement. */
   inflight: {
     resolve: (reason: StopReason) => void
@@ -342,6 +387,22 @@ export function apply(ctx: Context, config: AcpConfig): void {
 
   const makeAgent = (connection: AgentSideConnection): AcpAgent => {
     conn = connection
+    /**
+     * Compose one created agent's scoped world: the mutable model selection,
+     * and the standing preset it runs on (its persona and tools). Called
+     * during `agents.create` so the agent's own context owns them and unwinds
+     * with it. The roster is optional: a tree without it still composes the
+     * agent, just without a preset persona. A member that carries its own
+     * preset resolves it through the roster's default — its seeded settings
+     * point there — so the same mount gives every agent its own composition.
+     * @param agentCtx - the created agent's scoped context.
+     * @param model - the agent's model selection state.
+     */
+    const composeAgent = async (agentCtx: Context, model: ModelState): Promise<void> => {
+      installModelSelection(agentCtx, model.ref)
+      const presets = ctx.get('agentPresets') as PresetsRoster | undefined
+      if (presets !== undefined) await presets.mount(agentCtx)
+    }
     return {
       async initialize(_params: InitializeRequest): Promise<InitializeResponse> {
         // Single-version agent: the spec's "same version if supported, else
@@ -352,6 +413,12 @@ export function apply(ctx: Context, config: AcpConfig): void {
           agentInfo: { name: 'deepseek-harness-acp', version: '0.0.1' },
           agentCapabilities: {
             promptCapabilities: { image: imagePromptEnabled, audio: false, embeddedContext: false },
+            // The bridge implements session/load, so it advertises loadSession and
+            // the model selector the client gates setSessionConfigOption on.
+            loadSession: true,
+            // The pinned SDK's SessionListCapabilities predates this
+            // experimental flag, so the object is cast to the capability shape.
+            sessionCapabilities: { list: { setSessionConfigOption: {} } } as SessionCapabilities,
           },
           authMethods: [],
         }
@@ -359,6 +426,25 @@ export function apply(ctx: Context, config: AcpConfig): void {
 
       authenticate(_params: AuthenticateRequest): Promise<void> {
         return Promise.resolve()
+      },
+
+      /**
+       * Change one session config option. The bridge supports the `"model"`
+       * selector (rewriting the agent's mutable selection) and returns the
+       * updated selector; every other option id is refused.
+       * @param params - the session and option to change.
+       * @returns the updated config options.
+       */
+      // oxlint-disable-next-line typescript/require-await -- async keeps the guard rejections a rejection, not a synchronous throw
+      async setSessionConfigOption(
+        params: SetSessionConfigOptionRequest,
+      ): Promise<SetSessionConfigOptionResponse> {
+        assertOpen()
+        const record = requireSession(SessionId(params.sessionId))
+        if (params.configId === 'model') {
+          return changeModel(record, params)
+        }
+        throw invalidParams(`unsupported config option: ${params.configId}`)
       },
 
       async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
@@ -398,11 +484,13 @@ export function apply(ctx: Context, config: AcpConfig): void {
         } catch {
           throw invalidParams(`unknown session: ${sessionId}`)
         }
+        const model = await buildModelState(ctx, config)
         const handle = await agents.create({
           sessionId,
           meta: { cwd: params.cwd },
           agentOptions: agentOptions(config),
           seed: events,
+          setup: agentCtx => composeAgent(agentCtx, model),
         })
         /* v8 ignore next 4 -- a real stdio close can race an in-flight load. */
         if (closed) {
@@ -414,6 +502,10 @@ export function apply(ctx: Context, config: AcpConfig): void {
           dispose: () => handle.dispose(),
           outputTail: Promise.resolve(),
           inflight: undefined,
+          modelRef: model.ref,
+          modelOptions: model.options,
+          modelProvider: model.provider,
+          modelCatalog: model.catalog,
         }
         sessions.set(sessionId, record)
         // The loadSession contract streams the session's history back to the
@@ -436,21 +528,25 @@ export function apply(ctx: Context, config: AcpConfig): void {
             }
           }
         }
-        return {}
+        return { configOptions: [...model.options] }
       },
 
       async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
         assertOpen()
         validateSessionParams(params)
         const sessionId = SessionId(randomUUID())
-        // No preset composition: the ACP bundle keeps the model-facing rows in
-        // the host plane, so this agent reads them from the global layer. A
-        // deployment that configures a roster has to join one here first
-        // (@deepseek-ai/dsh-agent-presets README, "Composing a child agent").
+        // The agent composes its persona from its standing preset (its own when
+        // the member carries one, through the roster's seeded default) and reads
+        // its model from the shared agent-default-model service; the model is
+        // exposed as a session config option so the member tool can query and
+        // change it. `composeAgent` installs both (model here, persona in the
+        // preset composition).
+        const model = await buildModelState(ctx, config)
         const handle = await agents.create({
           sessionId,
           meta: { cwd: params.cwd },
           agentOptions: agentOptions(config),
+          setup: agentCtx => composeAgent(agentCtx, model),
         })
         /* v8 ignore next 4 -- a real stdio close can race an in-flight create. */
         if (closed) {
@@ -462,8 +558,12 @@ export function apply(ctx: Context, config: AcpConfig): void {
           dispose: () => handle.dispose(),
           outputTail: Promise.resolve(),
           inflight: undefined,
+          modelRef: model.ref,
+          modelOptions: model.options,
+          modelProvider: model.provider,
+          modelCatalog: model.catalog,
         })
-        return { sessionId }
+        return { sessionId, configOptions: [...model.options] }
       },
 
       async prompt(params: PromptRequest): Promise<PromptResponse> {
@@ -667,6 +767,137 @@ function agentOptions(config: AcpConfig): { provider?: string; model?: string } 
     ...config.provider !== undefined ? { provider: config.provider } : {},
     ...config.model !== undefined ? { model: config.model } : {},
   }
+}
+
+/**
+ * Resolve the initial model selection for one agent: the default-model
+ * selection when the seam is present, otherwise the plugin-config selection,
+ * otherwise none (the agent keeps its own default).
+ * @param ctx - the bridge context.
+ * @param config - ACP provider/model configuration.
+ * @returns the initial selection, or `undefined` when neither seam provides one.
+ */
+function initialSelection(ctx: Context, config: AcpConfig): ModelSelection | undefined {
+  const defaultModel = ctx.get('agentDefaultModel') as AgentDefaultModel | undefined
+  if (defaultModel !== undefined) return defaultModel.currentSelection()
+  if (config.provider === undefined || config.model === undefined) return undefined
+  return { provider: config.provider, model: config.model }
+}
+
+/**
+ * Build the model selection state for one agent: the mutable selection
+ * installed on the agent scope, plus the `"model"` selector options and the
+ * catalog it validates against. The catalog is read best-effort — a missing
+ * llm seam or a failed read yields an empty catalog, so the agent still runs,
+ * just without a model selector.
+ * @param ctx - the bridge context.
+ * @param config - ACP provider/model configuration.
+ * @returns the resolved model state.
+ */
+async function buildModelState(ctx: Context, config: AcpConfig): Promise<ModelState> {
+  const selection = initialSelection(ctx, config)
+  const provider = selection?.provider
+  const ref: ModelSelectionRef = { current: selection, assembled: undefined }
+  const catalog = await readCatalog(ctx, provider)
+  const currentModel = selection?.model ?? catalog[0]?.id
+  const options = provider === undefined || catalog.length === 0 || currentModel === undefined
+    ? []
+    : [modelSelector(catalog, currentModel)]
+  return { ref, options, provider, catalog }
+}
+
+/**
+ * Read the llm catalog for one provider, best-effort.
+ * @param ctx - the bridge context.
+ * @param provider - the provider route, or `undefined` to skip.
+ * @returns the models, or an empty array on a missing seam or read failure.
+ */
+async function readCatalog(ctx: Context, provider: string | undefined): Promise<readonly LlmModelInfo[]> {
+  if (provider === undefined) return []
+  const catalog = ctx.get('llm') as LlmCatalog | undefined
+  if (catalog === undefined) return []
+  try {
+    return await catalog.listModels(provider)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Build the `"model"` select option from a catalog, pinning the current model.
+ * @param models - the catalog, in display order; non-empty when this builds.
+ * @param current - the current model id, always defined by the caller.
+ * @returns the model selector option.
+ */
+function modelSelector(
+  models: readonly LlmModelInfo[],
+  current: string,
+): SessionConfigOption {
+  return {
+    id: 'model',
+    name: 'Model',
+    category: 'model',
+    type: 'select',
+    currentValue: current,
+    options: models.map(model => ({
+      value: model.id,
+      name: model.name,
+      ...(model.description !== undefined ? { description: model.description } : {}),
+    })),
+  }
+}
+
+/**
+ * Apply a `"model"` selector change: validate the value against the catalog
+ * when known, rewrite the agent's mutable selection so the next step applies
+ * it, and rebuild the selector options.
+ * @param record - the session whose agent selection to rewrite.
+ * @param params - the session and option value.
+ * @returns the updated model selector options.
+ */
+function changeModel(
+  record: SessionRecord,
+  params: SetSessionConfigOptionRequest,
+): SetSessionConfigOptionResponse {
+  if (typeof params.value !== 'string' || params.value.length === 0) {
+    throw invalidParams('config option "model" must be a non-empty string')
+  }
+  const value = params.value
+  // Validate against the catalog when known, so a client cannot set an
+  // unknown model id; an empty catalog accepts any non-empty value.
+  if (record.modelCatalog.length > 0 && !record.modelCatalog.some(model => model.id === value)) {
+    throw invalidParams(`unknown model: ${value}`)
+  }
+  const current = record.modelRef.current
+  const provider = current?.provider ?? record.modelProvider
+  if (provider === undefined) {
+    throw internalError('setting a model requires a provider route')
+  }
+  record.modelRef.current = {
+    provider,
+    model: value,
+    ...(current?.reasoningEffort !== undefined
+      ? { reasoningEffort: current.reasoningEffort }
+      : {}),
+  }
+  record.modelOptions = record.modelCatalog.length === 0
+    ? []
+    : [modelSelector(record.modelCatalog, value)]
+  return { configOptions: record.modelOptions }
+}
+
+/**
+ * One agent's model selection plus the model selector options built for it.
+ */
+interface ModelState {
+  /** Mutable selection installed on the agent scope. */
+  readonly ref: ModelSelectionRef
+  /** The model selector options advertised to the client. */
+  readonly options: SessionConfigOption[]
+  /** The provider route the selector lists, when known. */
+  readonly provider: string | undefined
+  /** The catalog the selector validates a new value against, when known. */
+  readonly catalog: readonly LlmModelInfo[]
 }
 
 /** Workspace fields shared by session creation and loading. */

@@ -42,6 +42,7 @@ export const discoveredModelViewSchema = z.object({
   name: z.string().min(1).optional(),
   contextWindow: z.number().int().positive().optional(),
   maxTokens: z.number().int().positive().optional(),
+  api: z.string().min(1).optional(),
 }) satisfies z.ZodType<Wire<DiscoveredModelView>>
 
 /** llm.discoverModels request payload. */
@@ -50,6 +51,7 @@ export const llmDiscoverModelsRequestSchema = z.object({
   provider: z.string().min(1).optional(),
   baseURL: z.string().min(1).optional(),
   api: z.string().min(1).optional(),
+  preferEndpoint: z.boolean().optional(),
   // Write-only at the host: used for this one interrogation, never stored and
   // never returned. It does ride the client's outgoing envelope like every
   // other secret-bearing payload (`credentials.set`, `settings.update`), which

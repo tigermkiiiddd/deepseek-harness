@@ -5,10 +5,11 @@
  * first-class sessions under virtual ids `member:<memberId>:<topicId>`.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fileURLToPath } from 'node:url'
 import type { Fiber } from '@deepseek-ai/cordis'
 import { Context } from '@deepseek-ai/cordis'
+import AttachmentStore from '@deepseek-ai/dsh-attachment'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import * as Team from '@deepseek-ai/dsh-team'
@@ -79,7 +80,7 @@ afterEach(async () => {
   const pending = fibers.splice(0)
   await Promise.allSettled(pending.reverse().map(async fiber => fiber.dispose()))
   // Reset mock-server env so later tests do not inherit scripted behavior.
-  for (const key of ['MOCK_TEXT', 'MOCK_SESSION_ID', 'MOCK_HISTORY_RICH', 'MOCK_PERMISSION']) {
+  for (const key of ['MOCK_TEXT', 'MOCK_SESSION_ID', 'MOCK_HISTORY_RICH', 'MOCK_PERMISSION', 'MOCK_CONFIG_OPTIONS', 'MOCK_ECHO_IMAGES']) {
     Reflect.deleteProperty(process.env, key)
   }
 })
@@ -275,16 +276,31 @@ describe('member session bridge', () => {
     }))
   })
 
-  it('rejects fork and rerun for member session ids loud', async () => {
+  it('rejects fork loud but accepts rerun as a no-op for member session ids', async () => {
     const ctx = await harness()
     const api = createApiProxy(ctx, DEFAULTS)
     const sessionId = SessionId('member:architect:some-topic')
+    // A member topic cannot truncate its own log; the caller's follow-up prompt
+    // is the re-run. Fork has no ACP inverse in the dsh bridge — stays rejected.
     const fork = expectErr(await api.sessions.fork(request({ sessionId })))
     expect(fork.code).toBe('internal')
     expect(fork.message).toContain('not supported for member sessions')
-    const rerun = expectErr(await api.sessions.rerun(request({ sessionId, atSeq: 5 })))
-    expect(rerun.code).toBe('internal')
-    expect(rerun.message).toContain('not supported for member sessions')
+    const rerun = expectOk(await api.sessions.rerun(request({ sessionId, atSeq: 5 })))
+    expect(rerun.accepted).toBe(true)
+  })
+
+  it('refuses queue updates for member session ids loud', async () => {
+    const ctx = await harness()
+    const api = createApiProxy(ctx, DEFAULTS)
+    // Member topics have no local agent inbox; the refusal must not masquerade
+    // as "queued item is no longer pending".
+    const error = expectErr(await api.sessions.updateQueue(request({
+      sessionId: SessionId('member:architect:some-topic'),
+      itemId: 'q-1' as never,
+      action: { kind: 'remove' },
+    })))
+    expect(error.code).toBe('internal')
+    expect(error.message).toContain('not supported for member sessions')
   })
 
   it('carries a composed title projection in session.list', async () => {
@@ -333,5 +349,194 @@ describe('member session bridge', () => {
     expect(offlinePage.events.map(entry => entry.event.type)).toEqual(
       onlinePage.events.map(entry => entry.event.type),
     )
+  })
+
+  it('serves the member model catalog synthesized from its config options', async () => {
+    setMockEnv({ MOCK_CONFIG_OPTIONS: '1', MOCK_SESSION_ID: 'models-topic' })
+    const ctx = await harness()
+    const api = createApiProxy(ctx, DEFAULTS)
+    await api.team.start(request({ memberId: 'architect' }))
+    const { sessionId: topicId } = expectOk(await api.team.newSession(request({ memberId: 'architect' })))
+    const value = expectOk(await api.sessions.models(request({ sessionId: SessionId(`member:architect:${topicId}`) })))
+    expect(value.current).toEqual({ provider: 'member', model: 'mock-model-1' })
+    expect(value.routable).toBe(true)
+    expect(value.failures).toEqual([])
+    expect(value.groups).toEqual([
+      {
+        id: 'member',
+        name: 'architect',
+        models: [
+          { id: 'mock-model-1', name: 'Mock Model 1', description: 'Fast mock model' },
+          { id: 'mock-model-2', name: 'Mock Model 2', description: 'Powerful mock model' },
+        ],
+      },
+    ])
+  })
+
+  it('selects a member model through the config option and reflects it on re-read', async () => {
+    setMockEnv({ MOCK_CONFIG_OPTIONS: '1', MOCK_SESSION_ID: 'select-topic' })
+    const ctx = await harness()
+    const api = createApiProxy(ctx, DEFAULTS)
+    await api.team.start(request({ memberId: 'architect' }))
+    const { sessionId: topicId } = expectOk(await api.team.newSession(request({ memberId: 'architect' })))
+    const sessionId = SessionId(`member:architect:${topicId}`)
+    const selected = expectOk(await api.sessions.selectModel(request({
+      sessionId,
+      provider: 'member',
+      model: 'mock-model-2',
+    })))
+    expect(selected.selected).toEqual({ provider: 'member', model: 'mock-model-2' })
+    const after = expectOk(await api.sessions.models(request({ sessionId })))
+    expect(after.current).toEqual({ provider: 'member', model: 'mock-model-2' })
+  })
+
+  it('rejects a member model selection the agent does not offer loud', async () => {
+    setMockEnv({ MOCK_CONFIG_OPTIONS: '1', MOCK_SESSION_ID: 'bad-select-topic' })
+    const ctx = await harness()
+    const api = createApiProxy(ctx, DEFAULTS)
+    await api.team.start(request({ memberId: 'architect' }))
+    const { sessionId: topicId } = expectOk(await api.team.newSession(request({ memberId: 'architect' })))
+    const error = expectErr(await api.sessions.selectModel(request({
+      sessionId: SessionId(`member:architect:${topicId}`),
+      provider: 'member',
+      model: 'not-offered',
+    })))
+    expect(error.code).toBe('model-unavailable')
+    expect(error.message).toContain('does not offer model "not-offered"')
+  })
+
+  it('forwards a member prompt with images and mints them as attachment references', async () => {
+    setMockEnv({ MOCK_ECHO_IMAGES: '1', MOCK_SESSION_ID: 'image-topic' })
+    const ctx = await harness()
+    // The member image path takes the same admission as the main path.
+    const saveImage = vi.fn((input: { data: Uint8Array; mediaType: string }) => Promise.resolve({
+      attachmentId: `att-${String(input.data[0])}`,
+      mediaType: input.mediaType,
+      bytes: input.data.byteLength,
+      width: 1,
+      height: 1,
+    }))
+    const attachments = {
+      imageLimits: {
+        maxImageBytes: 4,
+        maxImagesPerMessage: 2,
+        maxMessageImageBytes: 8,
+        maxImagePixels: 4,
+        maxImageDimension: 2000,
+        mediaTypes: ['image/png'],
+      },
+      validateImage: vi.fn(() => Promise.resolve()),
+      saveImage,
+    }
+    ctx.provide('attachments', Object.setPrototypeOf(attachments, AttachmentStore.prototype) as never)
+    const api = createApiProxy(ctx, DEFAULTS)
+    await api.team.start(request({ memberId: 'architect' }))
+    const { sessionId: topicId } = expectOk(await api.team.newSession(request({ memberId: 'architect' })))
+    const sessionId = SessionId(`member:architect:${topicId}`)
+    // The agent echoes the block types it received, proving the image crossed the wire.
+    const framesPromise = collectMux(api, ['session/event'], 8, async () => {
+      expectOk(await api.sessions.prompt(request({
+        sessionId,
+        mode: 'queue',
+        content: [
+          { type: 'text', text: 'look at this' },
+          { type: 'image', mediaType: 'image/png', data: 'AQ==' },
+        ],
+      })))
+      await waitForStatus(api, 'architect', 'idle')
+    })
+    const frames = await framesPromise
+    const events = frames.filter((frame): frame is Extract<typeof frame, { type: 'session/event' }> => frame.type === 'session/event')
+      .map(frame => frame.event)
+    expect(events.map(event => event.type)).toEqual([
+      'turn/start', 'user/message', 'step/start', 'assistant/chunk', 'assistant/chunk', 'assistant/message', 'step/end', 'turn/end',
+    ])
+    const userMessage = events.find(event => event.type === 'user/message')?.data as { content: unknown[] } | undefined
+    expect(userMessage?.content).toEqual([
+      { type: 'text', text: 'look at this' },
+      { type: 'image', attachment: { attachmentId: 'att-1', mediaType: 'image/png', bytes: 1, width: 1, height: 1 } },
+    ])
+    const assistant = events.find(event => event.type === 'assistant/message')?.data as { message: { content: { type: string; text?: string }[] } } | undefined
+    expect(assistant?.message.content).toEqual([{ type: 'text', text: 'blocks:text+image' }])
+  })
+
+  it('serves an admitted member image back through session.attachment', async () => {
+    setMockEnv({ MOCK_SESSION_ID: 'image-read-topic' })
+    const ctx = await harness()
+    const ref = { attachmentId: 'att-1', mediaType: 'image/png', bytes: 1, width: 1, height: 1 } as never
+    const saveImage = vi.fn(() => Promise.resolve(ref))
+    const readImage = vi.fn((storedRef: typeof ref) => Promise.resolve({ ref: storedRef, data: Uint8Array.of(1) }))
+    const attachments = {
+      imageLimits: {
+        maxImageBytes: 4,
+        maxImagesPerMessage: 2,
+        maxMessageImageBytes: 8,
+        maxImagePixels: 4,
+        maxImageDimension: 2000,
+        mediaTypes: ['image/png'],
+      },
+      validateImage: vi.fn(() => Promise.resolve()),
+      saveImage,
+      readImage,
+    }
+    ctx.provide('attachments', Object.setPrototypeOf(attachments, AttachmentStore.prototype) as never)
+    const api = createApiProxy(ctx, DEFAULTS)
+    await api.team.start(request({ memberId: 'architect' }))
+    const { sessionId: topicId } = expectOk(await api.team.newSession(request({ memberId: 'architect' })))
+    const sessionId = SessionId(`member:architect:${topicId}`)
+    expectOk(await api.sessions.prompt(request({
+      sessionId,
+      mode: 'queue',
+      content: [{ type: 'image', mediaType: 'image/png', data: 'AQ==' }],
+    })))
+    await waitForStatus(api, 'architect', 'idle')
+    // The user bubble resolves its image through the session-authorized read;
+    // member topics have no host log, so admission is the authorization.
+    const served = expectOk(await api.sessions.attachment(request({ sessionId, attachmentId: 'att-1' as never })))
+    expect(served).toEqual({ attachment: ref, data: 'AQ==' })
+    expect(readImage).toHaveBeenCalledOnce()
+    // An id this process never admitted stays refused.
+    const denied = await api.sessions.attachment(request({ sessionId, attachmentId: 'att-9' as never }))
+    expect(denied.result).toMatchObject({
+      ok: false,
+      error: { code: 'attachment-error', details: { reason: 'ATTACHMENT_NOT_ADMITTED' } },
+    })
+  })
+
+  it('denies an over-limit member image batch before the turn opens', async () => {
+    setMockEnv({ MOCK_SESSION_ID: 'limit-topic' })
+    const ctx = await harness()
+    const saveImage = vi.fn(() => Promise.resolve({
+      attachmentId: 'att-1', mediaType: 'image/png', bytes: 1, width: 1, height: 1,
+    }))
+    const attachments = {
+      imageLimits: {
+        maxImageBytes: 4,
+        maxImagesPerMessage: 1,
+        maxMessageImageBytes: 8,
+        maxImagePixels: 4,
+        maxImageDimension: 2000,
+        mediaTypes: ['image/png'],
+      },
+      validateImage: vi.fn(() => Promise.resolve()),
+      saveImage,
+    }
+    ctx.provide('attachments', Object.setPrototypeOf(attachments, AttachmentStore.prototype) as never)
+    const api = createApiProxy(ctx, DEFAULTS)
+    await api.team.start(request({ memberId: 'architect' }))
+    const { sessionId: topicId } = expectOk(await api.team.newSession(request({ memberId: 'architect' })))
+    const denied = await api.sessions.prompt(request({
+      sessionId: SessionId(`member:architect:${topicId}`),
+      mode: 'queue',
+      content: [
+        { type: 'image', mediaType: 'image/png', data: 'AQ==' },
+        { type: 'image', mediaType: 'image/png', data: 'Ag==' },
+      ],
+    }))
+    expect(denied.result).toMatchObject({
+      ok: false,
+      error: { code: 'attachment-error', details: { reason: 'TOO_MANY_IMAGES' } },
+    })
+    expect(saveImage).not.toHaveBeenCalled()
   })
 })

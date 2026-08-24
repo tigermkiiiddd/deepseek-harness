@@ -155,7 +155,7 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'member_add',
-    description: 'Add a new team member at runtime: spawn its ACP agent process, persist it in the team roster, and join it to the team. The member is re-spawned automatically after a host restart (unless autostart is false). Use member_remove to tear it down and forget it.',
+    description: 'Add a new team member at runtime: spawn its ACP agent process, persist it in the team roster, and join it to the team. The member is re-spawned automatically after a host restart (unless autostart is false). For kind "dsh" members, pass preset to give the member its own unique persona: a preset composition written into its private home at creation, which it runs on for every session. Use member_remove to tear it down and forget it.',
     parameters: {
       member_id: {
         type: 'string',
@@ -202,6 +202,10 @@ export function apply(ctx: Context): void {
         type: 'boolean',
         description: 'Start the member now and on every host restart (default true).',
       },
+      preset: {
+        type: 'string',
+        description: 'Only for kind "dsh" members. The member\'s own unique agent preset composition, as YAML: a top-level list of plugin rows. At minimum give it a persona row — and write its text as a complete system prompt (role, what it owns, how it works, limits), not a placeholder label; each member is meant to be genuinely distinct:\n- id: persona\n  name: \'@deepseek-ai/dsh-persona\'\n  config:\n    text: You are a terse architecture reviewer on a small engineering team. Your job is to challenge design decisions before they are built: read the code first, question assumptions about data flow and failure modes, and state trade-offs concretely — cost, complexity, blast radius. Be direct; when you disagree, propose the alternative you would take instead.\nTo add or configure tools, read an existing agent preset composition for the exact rows — find one with glob \'\*\*/agent.cordis.yml\' (the standard preset shipped with the installation is a working reference) and copy the rows the member should have. Each row is id/name plus optional config, e.g.:\n- id: tool-web\n  name: \'@deepseek-ai/dsh-tool-web\'\n  config:\n    fetch: false\nWritten into the member\'s private home at creation, it becomes its default preset for every session.',
+      },
     },
     output: {
       schema: { type: 'string' },
@@ -220,6 +224,7 @@ export function apply(ctx: Context): void {
       env?: Record<string, unknown>
       permission?: 'allow' | 'reject'
       autostart?: boolean
+      preset?: string
     }) {
       if (args.env !== undefined) {
         for (const [key, value] of Object.entries(args.env)) {
@@ -239,6 +244,7 @@ export function apply(ctx: Context): void {
         ...env === undefined ? {} : { env },
         ...args.permission === undefined ? {} : { permission: args.permission },
         ...args.autostart === undefined ? {} : { autostart: args.autostart },
+        ...args.preset === undefined ? {} : { preset: args.preset },
         args: args.args ?? [],
       })
       return `Member ${snapshot.id} (${snapshot.title}) joined the team; connection status: ${snapshot.status}. Use member_sessions to see its topics and member_chat to talk to it.`

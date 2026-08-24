@@ -25,7 +25,7 @@ describe('automation-only ACP bridge', () => {
       agentCapabilities: {
         promptCapabilities: { image: false, audio: false, embeddedContext: false },
         loadSession: true,
-        sessionCapabilities: { list: {} },
+        sessionCapabilities: { list: { setSessionConfigOption: {} } },
       },
       authMethods: [],
     })
