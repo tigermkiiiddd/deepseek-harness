@@ -118,6 +118,65 @@ function internalError(detail: string): RequestError {
   return RequestError.internalError(undefined, detail)
 }
 
+/** Upper bound on one history page; callers asking for more receive this many. */
+const HISTORY_PAGE_MAX = 200
+
+/**
+ * Serve `dsh/session/historyPage`: a window of the session's persisted events
+ * ending just below `before` (an exclusive 0-based log index; absent means
+ * "through the latest event"). This is the paginated read the host uses for
+ * member conversations, replacing whole-log replay reads.
+ * @param ctx - the bridge context carrying the persistence seam.
+ * @param raw - the extension parameters: `sessionId`, optional `before`, and
+ *   `limit` (a positive integer, clamped to {@link HISTORY_PAGE_MAX}).
+ * @returns `{ events, total, nextBefore? }` where `nextBefore` is absent once
+ *   the oldest event has been served.
+ * @throws invalid-parameter errors for malformed input or an unknown session,
+ *   and an internal error when no persistence seam is mounted.
+ */
+async function dshHistoryPage(ctx: Context, raw: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const sessionId = raw['sessionId']
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
+    throw invalidParams('sessionId must be a non-empty string')
+  }
+  const beforeRaw = raw['before']
+  if (beforeRaw !== undefined && (typeof beforeRaw !== 'number' || !Number.isInteger(beforeRaw) || beforeRaw < 0)) {
+    throw invalidParams('before must be a non-negative integer log index')
+  }
+  const limitRaw = raw['limit']
+  if (typeof limitRaw !== 'number' || !Number.isInteger(limitRaw) || limitRaw <= 0) {
+    throw invalidParams('limit must be a positive integer')
+  }
+  const persistence = ctx.get('sessionPersistence') as SessionPersistenceReader | undefined
+  if (persistence === undefined) {
+    throw internalError('history paging requires session persistence')
+  }
+  let events: SessionEvent[]
+  try {
+    ({ events } = await persistence.load(SessionId(sessionId)))
+  } catch {
+    throw invalidParams(`unknown session: ${sessionId}`)
+  }
+  const end = typeof beforeRaw === 'number' ? Math.min(beforeRaw, events.length) : events.length
+  const start = Math.max(0, end - Math.min(limitRaw, HISTORY_PAGE_MAX))
+  return {
+    events: events.slice(start, end),
+    total: events.length,
+    ...(start > 0 ? { nextBefore: start } : {}),
+  }
+}
+
+/**
+ * The dsh extension methods this bridge serves over ACP `extMethod`, keyed by
+ * wire method name. The initialize capability advertisement lists exactly
+ * these keys, so a client can drive every surface data-driven.
+ */
+function dshExtensions(ctx: Context): Record<string, (params: Record<string, unknown>) => Promise<Record<string, unknown>>> {
+  return {
+    'dsh/session/historyPage': params => dshHistoryPage(ctx, params),
+  }
+}
+
 /** Plugin config: the provider/model selection used for each ACP-created agent. */
 export interface AcpConfig {
   /** Provider route for created agents. */
@@ -419,6 +478,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
         // Single-version agent: the spec's "same version if supported, else
         // the latest supported" both resolve to this server's one version.
         imagePromptEnabled = await supportsAcpImagePrompts(ctx, config.provider, config.model)
+        const extensions = dshExtensions(ctx)
         return {
           protocolVersion: PROTOCOL_VERSION,
           agentInfo: { name: 'deepseek-harness-acp', version: '0.0.1' },
@@ -430,6 +490,10 @@ export function apply(ctx: Context, config: AcpConfig): void {
             // The pinned SDK's SessionListCapabilities predates this
             // experimental flag, so the object is cast to the capability shape.
             sessionCapabilities: { list: { setSessionConfigOption: {} } } as SessionCapabilities,
+            // The dsh extension surface rides the protocol's extMethod
+            // transport; this advertisement is what lets a host light its UI
+            // per negotiated capability instead of probing.
+            _meta: { dsh: { extensions: Object.keys(extensions) } },
           },
           authMethods: [],
         }
@@ -456,6 +520,23 @@ export function apply(ctx: Context, config: AcpConfig): void {
           return changeModel(record, params)
         }
         throw invalidParams(`unsupported config option: ${params.configId}`)
+      },
+
+      /**
+       * Serve the dsh extension surface over the protocol's extMethod
+       * transport. Unknown method names fail loud so a stale host cannot
+       * silently misdrive a newer (or older) bridge.
+       * @param method - the extension wire name, e.g. `dsh/session/historyPage`.
+       * @param params - the extension's parameter object.
+       * @returns the extension's response object.
+       */
+      async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+        assertOpen()
+        const handler = dshExtensions(ctx)[method]
+        if (handler === undefined) {
+          throw invalidParams(`unsupported dsh extension: ${method}`)
+        }
+        return handler(params)
       },
 
       async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
