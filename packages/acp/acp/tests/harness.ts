@@ -284,9 +284,8 @@ export async function makeBridgeHarness(options: {
       },
     })
   }
-  let compactedWith: unknown[] | undefined
+  const compactedWith: unknown[] = []
   if (options.compaction === 'ok') {
-    compactedWith = []
     ctx.provide('compaction', {
       compactNow: (agent: unknown) => {
         compactedWith.push(agent)
@@ -331,7 +330,7 @@ export async function makeBridgeHarness(options: {
     permissionRequests,
     onPermission: () => ({ outcome: { outcome: 'cancelled' } }),
     onSessionUpdateError: undefined,
-    compactedWith: compactedWith ?? [],
+    compactedWith,
     onQuestion: options.onQuestion,
     client: undefined as unknown as ClientSideConnection,
     acpFiber: undefined as unknown as BridgeHarness['acpFiber'],

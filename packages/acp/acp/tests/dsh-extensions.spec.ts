@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { makeBridgeHarness, textResponse, type BridgeHarness } from './harness.ts'
 
@@ -443,7 +444,7 @@ describe('dsh extension surface', () => {
       })
       // Seed the durable media object the artifact references (content-addressed).
       harness.attachments?.objects.set(attachmentId, {
-        ref: { attachmentId, mediaType: 'image/png', bytes: PNG_1PX.byteLength, width: 1, height: 1 },
+        ref: { attachmentId: AttachmentId(attachmentId), mediaType: 'image/png', bytes: PNG_1PX.byteLength, width: 1, height: 1 },
         data: Uint8Array.from(PNG_1PX),
       })
       await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
