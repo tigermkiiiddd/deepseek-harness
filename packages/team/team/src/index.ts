@@ -486,12 +486,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // roster has been merged, so a restart re-raises every member. Awaiting the
   // roster here means `ctx.plugin(team)` settles with the full roster visible.
   await ensureRoster()
-  // Seed every dsh member's home before any of them spawns. Runtime additions
-  // already seeded in addMember (idempotent per home, so this is a no-op for
-  // them); config and roster members seed here, which also restores a member's
-  // own preset from its roster record when the home was deleted out from under
-  // it. A load-time seed failure warns rather than aborts boot: the member
-  // still joins, and its spawn or first session surfaces the problem.
+  // Seed every dsh member's home before any of them spawns, backfilling any
+  // missing artifact (per-file idempotent, so this is a no-op for complete
+  // homes and repairs homes created before seeding existed or damaged out
+  // from under the member). A load-time seed failure warns rather than aborts
+  // boot: the member still joins, and its spawn or first session surfaces the
+  // problem.
   for (const [id, member] of memberConfigs) {
     if (member.kind !== 'dsh') continue
     try {

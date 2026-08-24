@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { seedMemberHome } from '../src/member-home.ts'
@@ -48,6 +48,27 @@ describe('seedMemberHome()', () => {
     await writeFile(join(member, 'settings.yaml'), 'member-wrote-this\n')
     await seedMemberHome({ id: 'm1', kind: 'dsh' }, { mainHome: home })
     expect(await readFile(join(member, 'settings.yaml'), 'utf8')).toBe('member-wrote-this\n')
+  })
+
+  it('backfills a home whose directory predates seeding entirely', async () => {
+    // Homes created before per-artifact seeding shipped hold neither document;
+    // the directory-exists gate of that era skipped them forever.
+    const home = await tempMainHome({ 'settings.yaml': 'agent-default-model:\n  model: deepseek-chat\n', '.credentials.yaml': 'api-key: secret\n' })
+    await mkdir(join(home, 'members', 'legacy'), { recursive: true })
+    await seedMemberHome({ id: 'legacy', kind: 'dsh' }, { mainHome: home })
+    const member = join(home, 'members', 'legacy')
+    expect(await readFile(join(member, 'settings.yaml'), 'utf8')).toContain('deepseek-chat')
+    expect(await readFile(join(member, '.credentials.yaml'), 'utf8')).toBe('api-key: secret\n')
+  })
+
+  it('backfills only the artifacts a partial home is missing', async () => {
+    const home = await tempMainHome({ 'settings.yaml': 'main-settings\n', '.credentials.yaml': 'k: main\n' })
+    const member = join(home, 'members', 'partial')
+    await mkdir(member, { recursive: true })
+    await writeFile(join(member, '.credentials.yaml'), 'k: member-own\n', { mode: 0o600 })
+    await seedMemberHome({ id: 'partial', kind: 'dsh' }, { mainHome: home })
+    expect(await readFile(join(member, 'settings.yaml'), 'utf8')).toBe('main-settings\n')
+    expect(await readFile(join(member, '.credentials.yaml'), 'utf8')).toBe('k: member-own\n')
   })
 
   it('skips a missing source file and still seeds the present one', async () => {

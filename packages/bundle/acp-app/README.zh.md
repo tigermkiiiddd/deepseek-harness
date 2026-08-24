@@ -2,9 +2,9 @@
 
 [English](README.md) | 中文
 
-dsh ACP 服务器组合包。[`cordis.patch.yml`](cordis.patch.yml) 叠加在 [`dsh-base`](../base/README.zh.md) 之上：挂载自动化专用的 [`dsh-acp`](../../acp/acp/README.zh.md) 插件，把 `settings-file` 与 `credentials-local` 的文档路径重定向到**主实例的 harness home**（`DSH_MAIN_HOME`），并禁用 HMR（热模块替换）以让 stdout 专用于 ACP JSON-RPC。它不挂载任何 Host、HTTP server、Web runtime 或浏览器插件。
+dsh ACP 服务器组合包。[`cordis.patch.yml`](cordis.patch.yml) 叠加在 [`dsh-base`](../base/README.zh.md) 之上：挂载自动化专用的 [`dsh-acp`](../../acp/acp/README.zh.md) 插件与预设名册，并禁用 HMR（热模块替换）以让 stdout 专用于 ACP JSON-RPC。它不挂载任何 Host、HTTP server、Web runtime 或浏览器插件。
 
-该组合包是一等 `dsh` 团队成员使用的 profile：以 `dsh --profile acp` 启动的成员进程与协调器运行同一 harness 安装，读取同一份 `settings.yaml` 与 `.credentials.yaml`，但拥有独立的 `DSH_HOME`，从而让其会话存储与附件与主实例隔离。
+该组合包是一等 `dsh` 团队成员使用的 profile：以 `dsh --profile acp` 启动的成员进程与协调器运行同一 harness 安装，但拥有自包含的独立 `DSH_HOME`——成员的 settings、凭证与可选自有预设由主实例在创建时一次性播种进该 home（按文件幂等；见 `@deepseek-ai/dsh-team/member-home`），因此会话相互隔离，且成员在运行时不继承主实例的任何状态。
 
 ## 模型体验
 
@@ -17,4 +17,4 @@ dsh ACP 服务器组合包。[`cordis.patch.yml`](cordis.patch.yml) 叠加在 [`
 ## 已知限制与暂缓事项
 
 - **仅自动化**——无人 facing 的 surface；成员完全通过 ACP wire 被驱动。
-- **继承模型设置**——成员使用主实例保存的模型选择与凭证，不自带默认值。
+- **播种式设置**——成员的模型默认值与凭证来自主实例文档的播种副本；播种完成后成员独立管理自己的取值。

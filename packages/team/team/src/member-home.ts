@@ -1,20 +1,23 @@
 /**
- * Seed one `kind:'dsh'` member's harness home from the main instance, once, at
- * creation. A member is self-contained: it reads only its own `DSH_HOME` at
- * runtime, so before its first spawn the main instance copies the settings and
- * credentials documents into the member's home — and, when the member carries
- * its own preset composition, installs that preset under the member's user
- * preset root and makes it the member's default. After the seed the member and
- * the main instance are decoupled — a restart never re-seeds, so the member's
- * own runtime writes (e.g. a model switch persisted through `member_model`)
- * survive.
+ * Seed one `kind:'dsh'` member's harness home from the main instance. A member
+ * is self-contained: it reads only its own `DSH_HOME` at runtime, so its home
+ * must carry copies of the settings and credentials documents — and, when the
+ * member carries its own preset composition, that preset under its user preset
+ * root with the member's default pointing at it.
  *
  * The copy is a verbatim file copy, not a service round-trip: the member is a
  * fresh `dsh --profile acp` process whose settings and credentials providers
  * read these same files from their own home, so reproducing the bytes is the
- * faithful way to hand the member the main instance's state. A missing source
- * file is skipped (the member simply has no entry for it); a copy error is
- * thrown so a member starts only when its home is truly seeded.
+ * faithful way to hand the member the main instance's state.
+ *
+ * Idempotency is per artifact, not per home: each document is copied only
+ * while the member's own copy is missing. A restart therefore repairs a
+ * partially seeded or damaged home (one created before seeding existed, or
+ * cleared out from under the member) without ever clobbering the member's own
+ * runtime writes — a model switch the member persisted into its settings, for
+ * example, survives every re-seed. A missing source file is skipped (the
+ * member simply has no entry for it); a copy error is thrown so the failure
+ * surfaces at the caller instead of silently leaving the member unseeded.
  *
  * @module @deepseek-ai/dsh-team/member-home
  */
@@ -35,14 +38,16 @@ const CREDENTIALS_FILENAME = '.credentials.yaml'
 const SETTINGS_EXTENSIONS = ['.yaml', '.yml', '.json']
 
 /**
- * Seed one `kind:'dsh'` member's home from the main instance.
+ * Seed one `kind:'dsh'` member's home from the main instance, backfilling any
+ * missing artifact.
  *
  * @param config - the member to seed. Non-`dsh` members manage their own
  *   environment and are skipped.
  * @param options - test/override seam. `mainHome` defaults to the current
  *   process's harness home (`resolveDshHome()`); the member home is
  *   `<mainHome>/members/<id>`.
- * @returns fulfillment after the home is seeded, or when it already exists.
+ * @returns fulfillment once every missing artifact is in place; existing
+ *   member files are never touched.
  */
 export async function seedMemberHome(
   config: MemberConfig,
@@ -51,38 +56,48 @@ export async function seedMemberHome(
   if (config.kind !== 'dsh') return
   const mainHome = options.mainHome ?? resolveDshHome()
   const memberHome = join(mainHome, 'members', config.id)
-  // Idempotent gate: a home that already exists was seeded at creation. A
-  // restart must not re-seed, or it would clobber the member's own writes.
-  try {
-    await stat(memberHome)
-    return
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-  }
   await mkdir(memberHome, { recursive: true, mode: 0o700 })
-  // settings.yaml/.json: copy verbatim so the member's providers read the same
-  // namespaces (agent-default-model, agent-presets, ...) the main instance had.
-  const settingsPath = await findSettingsFile(mainHome)
-  if (settingsPath !== undefined) {
-    const contents = await readFile(settingsPath, 'utf8')
-    await writeFile(join(memberHome, basename(settingsPath)), contents, { mode: 0o600 })
+  // settings: copy verbatim so the member's providers read the same namespaces
+  // (agent-default-model, agent-presets, ...) the main instance had — only
+  // while the member has no settings document of its own.
+  const mainSettingsPath = await findSettingsFile(mainHome)
+  if (mainSettingsPath !== undefined && (await findSettingsFile(memberHome)) === undefined) {
+    const contents = await readFile(mainSettingsPath, 'utf8')
+    await writeFile(join(memberHome, basename(mainSettingsPath)), contents, { mode: 0o600 })
   }
   // credentials: copy verbatim; the member's local provider reads them live.
-  const credentialsPath = join(mainHome, CREDENTIALS_FILENAME)
+  const memberCredentialsPath = join(memberHome, CREDENTIALS_FILENAME)
   try {
-    const contents = await readFile(credentialsPath, 'utf8')
-    await writeFile(join(memberHome, CREDENTIALS_FILENAME), contents, { mode: 0o600 })
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    await stat(memberCredentialsPath)
+  } catch {
+    try {
+      const contents = await readFile(join(mainHome, CREDENTIALS_FILENAME), 'utf8')
+      await writeFile(memberCredentialsPath, contents, { mode: 0o600 })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
   }
-  // The member's own preset, when it carries one: composition under its user
-  // preset root plus a settings default pointing at it, so every session the
-  // member creates composes from this member's unique preset instead of the
-  // deployment default. Runs inside the idempotency gate: a restart must not
-  // rewrite a preset the member already runs on.
+  // The member's own preset, when it carries one: installed only while its
+  // composition is absent, so a restart repairs a lost preset without
+  // rewriting one the member already runs on.
   const preset = config.preset
-  if (preset !== undefined) {
+  if (preset !== undefined && !(await memberPresetInstalled(memberHome, config.id))) {
     await seedMemberPreset(config.id, preset, memberHome)
+  }
+}
+
+/**
+ * Whether the member's own preset composition already exists in its home.
+ * @param memberHome - the member home to inspect.
+ * @param memberId - the member whose derived preset id locates the composition.
+ * @returns true when the composition file is present.
+ */
+async function memberPresetInstalled(memberHome: string, memberId: string): Promise<boolean> {
+  try {
+    await stat(join(memberHome, USER_PRESET_DIR, presetIdFor(memberId), COMPOSITION_FILE))
+    return true
+  } catch {
+    return false
   }
 }
 
