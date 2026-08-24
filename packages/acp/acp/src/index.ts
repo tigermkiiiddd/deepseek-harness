@@ -73,8 +73,21 @@ interface ContinuableDrain {
  * structurally so this package does not hard-depend on the llm Service.
  */
 interface LlmCatalog {
+  /** The provider routes with a registered adapter, in registration order. */
+  listProviders(): readonly { id: string }[]
   /** The models registered on one provider route, in display order. */
   listModels(provider: string): Promise<readonly LlmModelInfo[]>
+}
+
+/** One selectable catalog entry: the route that serves it plus its model info. */
+interface CatalogEntry {
+  provider: string
+  model: LlmModelInfo
+}
+
+/** The wire value for one catalog entry; unique because both parts are non-empty. */
+function compositeModelValue(provider: string, modelId: string): string {
+  return `${provider}/${modelId}`
 }
 
 /**
@@ -136,10 +149,8 @@ interface SessionRecord {
   modelRef: ModelSelectionRef
   /** The model selector options advertised to the client on session creation. */
   modelOptions: SessionConfigOption[]
-  /** The provider route the model selector lists, when known. */
-  modelProvider: string | undefined
-  /** The catalog the model selector validates a new value against, when known. */
-  modelCatalog: readonly LlmModelInfo[]
+  /** The full multi-route catalog the model selector validates a value against. */
+  modelCatalog: readonly CatalogEntry[]
   /** In-flight admission/turn/output lifecycle for exact settlement. */
   inflight: {
     resolve: (reason: StopReason) => void
@@ -504,7 +515,6 @@ export function apply(ctx: Context, config: AcpConfig): void {
           inflight: undefined,
           modelRef: model.ref,
           modelOptions: model.options,
-          modelProvider: model.provider,
           modelCatalog: model.catalog,
         }
         sessions.set(sessionId, record)
@@ -560,7 +570,6 @@ export function apply(ctx: Context, config: AcpConfig): void {
           inflight: undefined,
           modelRef: model.ref,
           modelOptions: model.options,
-          modelProvider: model.provider,
           modelCatalog: model.catalog,
         })
         return { sessionId, configOptions: [...model.options] }
@@ -785,52 +794,63 @@ function initialSelection(ctx: Context, config: AcpConfig): ModelSelection | und
 }
 
 /**
+ * Read the full multi-route llm catalog, best-effort per route.
+ * @param ctx - the bridge context.
+ * @returns every entry across all registered routes, in registration order;
+ *   a route whose listing fails is skipped, and a missing seam yields none.
+ */
+async function readCatalog(ctx: Context): Promise<readonly CatalogEntry[]> {
+  const catalog = ctx.get('llm') as LlmCatalog | undefined
+  if (catalog === undefined) return []
+  const entries: CatalogEntry[] = []
+  for (const { id: provider } of catalog.listProviders()) {
+    try {
+      for (const model of await catalog.listModels(provider)) {
+        entries.push({ provider, model })
+      }
+    } catch {
+      // One unreadable route must not blank the selector for the others.
+    }
+  }
+  return entries
+}
+
+/**
  * Build the model selection state for one agent: the mutable selection
- * installed on the agent scope, plus the `"model"` selector options and the
- * catalog it validates against. The catalog is read best-effort — a missing
- * llm seam or a failed read yields an empty catalog, so the agent still runs,
- * just without a model selector.
+ * installed on the agent scope, plus the `"model"` selector built from the
+ * full multi-route catalog. The initial selection only pins the advertised
+ * current value — it is not a condition for advertising. Any non-empty
+ * catalog offers the whole directory (the main instance's picker breadth),
+ * falling back to the first entry when no initial selection exists.
  * @param ctx - the bridge context.
  * @param config - ACP provider/model configuration.
  * @returns the resolved model state.
  */
 async function buildModelState(ctx: Context, config: AcpConfig): Promise<ModelState> {
   const selection = initialSelection(ctx, config)
-  const provider = selection?.provider
   const ref: ModelSelectionRef = { current: selection, assembled: undefined }
-  const catalog = await readCatalog(ctx, provider)
-  const currentModel = selection?.model ?? catalog[0]?.id
-  const options = provider === undefined || catalog.length === 0 || currentModel === undefined
+  const catalog = await readCatalog(ctx)
+  const first = catalog[0]
+  const currentValue = selection !== undefined
+    ? compositeModelValue(selection.provider, selection.model)
+    : first !== undefined
+      ? compositeModelValue(first.provider, first.model.id)
+      : undefined
+  const options = catalog.length === 0 || currentValue === undefined
     ? []
-    : [modelSelector(catalog, currentModel)]
-  return { ref, options, provider, catalog }
+    : [modelSelector(catalog, currentValue)]
+  return { ref, options, catalog }
 }
 
 /**
- * Read the llm catalog for one provider, best-effort.
- * @param ctx - the bridge context.
- * @param provider - the provider route, or `undefined` to skip.
- * @returns the models, or an empty array on a missing seam or read failure.
- */
-async function readCatalog(ctx: Context, provider: string | undefined): Promise<readonly LlmModelInfo[]> {
-  if (provider === undefined) return []
-  const catalog = ctx.get('llm') as LlmCatalog | undefined
-  if (catalog === undefined) return []
-  try {
-    return await catalog.listModels(provider)
-  } catch {
-    return []
-  }
-}
-
-/**
- * Build the `"model"` select option from a catalog, pinning the current model.
- * @param models - the catalog, in display order; non-empty when this builds.
- * @param current - the current model id, always defined by the caller.
+ * Build the `"model"` select option from the full catalog, pinning the current
+ * composite value.
+ * @param models - every route's entries, in registration order; non-empty when this builds.
+ * @param current - the current entry's composite value, always defined by the caller.
  * @returns the model selector option.
  */
 function modelSelector(
-  models: readonly LlmModelInfo[],
+  models: readonly CatalogEntry[],
   current: string,
 ): SessionConfigOption {
   return {
@@ -839,8 +859,8 @@ function modelSelector(
     category: 'model',
     type: 'select',
     currentValue: current,
-    options: models.map(model => ({
-      value: model.id,
+    options: models.map(({ provider, model }) => ({
+      value: compositeModelValue(provider, model.id),
       name: model.name,
       ...(model.description !== undefined ? { description: model.description } : {}),
     })),
@@ -848,9 +868,9 @@ function modelSelector(
 }
 
 /**
- * Apply a `"model"` selector change: validate the value against the catalog
- * when known, rewrite the agent's mutable selection so the next step applies
- * it, and rebuild the selector options.
+ * Apply a `"model"` selector change: match the composite value against the
+ * full catalog, rewrite the agent's mutable selection so the next step applies
+ * it (including a cross-provider switch), and rebuild the selector options.
  * @param record - the session whose agent selection to rewrite.
  * @param params - the session and option value.
  * @returns the updated model selector options.
@@ -863,26 +883,23 @@ function changeModel(
     throw invalidParams('config option "model" must be a non-empty string')
   }
   const value = params.value
-  // Validate against the catalog when known, so a client cannot set an
-  // unknown model id; an empty catalog accepts any non-empty value.
-  if (record.modelCatalog.length > 0 && !record.modelCatalog.some(model => model.id === value)) {
+  // Decode by whole-string match against enumerated entries, never by
+  // splitting: a model id containing "/" stays unambiguous because both the
+  // advertisement and this lookup derive values from the same entries.
+  const matched = record.modelCatalog.find(entry => compositeModelValue(entry.provider, entry.model.id) === value)
+  if (matched === undefined) {
     throw invalidParams(`unknown model: ${value}`)
   }
-  const current = record.modelRef.current
-  const provider = current?.provider ?? record.modelProvider
-  if (provider === undefined) {
-    throw internalError('setting a model requires a provider route')
-  }
+  const previous = record.modelRef.current
+  const sameRoute = previous?.provider === matched.provider && previous?.model === matched.model.id
   record.modelRef.current = {
-    provider,
-    model: value,
-    ...(current?.reasoningEffort !== undefined
-      ? { reasoningEffort: current.reasoningEffort }
+    provider: matched.provider,
+    model: matched.model.id,
+    ...(sameRoute && previous?.reasoningEffort !== undefined
+      ? { reasoningEffort: previous.reasoningEffort }
       : {}),
   }
-  record.modelOptions = record.modelCatalog.length === 0
-    ? []
-    : [modelSelector(record.modelCatalog, value)]
+  record.modelOptions = [modelSelector(record.modelCatalog, value)]
   return { configOptions: record.modelOptions }
 }
 
@@ -894,10 +911,8 @@ interface ModelState {
   readonly ref: ModelSelectionRef
   /** The model selector options advertised to the client. */
   readonly options: SessionConfigOption[]
-  /** The provider route the selector lists, when known. */
-  readonly provider: string | undefined
-  /** The catalog the selector validates a new value against, when known. */
-  readonly catalog: readonly LlmModelInfo[]
+  /** The full multi-route catalog the selector validates values against. */
+  readonly catalog: readonly CatalogEntry[]
 }
 
 /** Workspace fields shared by session creation and loading. */

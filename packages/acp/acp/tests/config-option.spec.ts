@@ -31,7 +31,7 @@ describe('ACP model selector', () => {
     expect(list?.setSessionConfigOption).toEqual({})
   })
 
-  it('returns the model selector on newSession', async () => {
+  it('returns the full multi-route model selector on newSession', async () => {
     harness = await makeBridgeHarness()
     const { configOptions } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
     expect(configOptions).toEqual([
@@ -40,8 +40,11 @@ describe('ACP model selector', () => {
         name: 'Model',
         category: 'model',
         type: 'select',
-        currentValue: 'mock',
-        options: [{ value: 'mock', name: 'Mock' }],
+        currentValue: 'mock/mock',
+        options: [
+          { value: 'mock/mock', name: 'Mock' },
+          { value: 'mock-alt/alt-model', name: 'Alt Model' },
+        ],
       },
     ])
   })
@@ -53,7 +56,7 @@ describe('ACP model selector', () => {
     const updated = await harness.client.setSessionConfigOption({
       sessionId,
       configId: 'model',
-      value: 'mock',
+      value: 'mock/mock',
     })
     expect(updated.configOptions).toEqual([
       {
@@ -61,8 +64,11 @@ describe('ACP model selector', () => {
         name: 'Model',
         category: 'model',
         type: 'select',
-        currentValue: 'mock',
-        options: [{ value: 'mock', name: 'Mock' }],
+        currentValue: 'mock/mock',
+        options: [
+          { value: 'mock/mock', name: 'Mock' },
+          { value: 'mock-alt/alt-model', name: 'Alt Model' },
+        ],
       },
     ])
 
@@ -75,6 +81,27 @@ describe('ACP model selector', () => {
     expect(request).toBeDefined()
     expect(request!.provider).toBe('mock')
     expect(request!.model).toBe('mock')
+  })
+
+  it('switches provider routes through the composite value', async () => {
+    harness = await makeBridgeHarness({ script: [textResponse('ok')] })
+    const { sessionId } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+
+    const updated = await harness.client.setSessionConfigOption({
+      sessionId,
+      configId: 'model',
+      value: 'mock-alt/alt-model',
+    })
+    expect(updated.configOptions[0]?.currentValue).toBe('mock-alt/alt-model')
+
+    await harness.client.prompt({
+      sessionId,
+      prompt: [{ type: 'text', text: 'go' }],
+    })
+    const request = harness.adapter.requests[0]
+    expect(request).toBeDefined()
+    expect(request!.provider).toBe('mock-alt')
+    expect(request!.model).toBe('alt-model')
   })
 
   it('rejects a value not in the provider catalog', async () => {

@@ -34,17 +34,28 @@ class MockAdapter extends LlmAdapter {
   }
 
   override providerInfo(provider: string) {
-    if (provider !== 'mock') throw new Error(`MockAdapter: unknown provider ${provider}`)
-    return { id: 'mock', name: 'Mock' }
+    if (provider !== 'mock' && provider !== 'mock-alt') throw new Error(`MockAdapter: unknown provider ${provider}`)
+    return { id: provider, name: provider === 'mock' ? 'Mock' : 'Alt Model' }
   }
 
   override listModels(provider: string) {
-    return Promise.resolve(provider === 'mock' ? [{
-      provider: 'mock',
-      id: 'mock',
-      name: 'Mock',
-      inputModalities: this.imageCapable ? ['text', 'image'] as const : ['text'] as const,
-    }] : [])
+    if (provider === 'mock') {
+      return Promise.resolve([{
+        provider: 'mock',
+        id: 'mock',
+        name: 'Mock',
+        inputModalities: this.imageCapable ? ['text', 'image'] as const : ['text'] as const,
+      }])
+    }
+    if (provider === 'mock-alt') {
+      return Promise.resolve([{
+        provider: 'mock-alt',
+        id: 'alt-model',
+        name: 'Alt Model',
+        inputModalities: this.imageCapable ? ['text', 'image'] as const : ['text'] as const,
+      }])
+    }
+    return Promise.resolve([])
   }
 
   override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
@@ -222,7 +233,7 @@ export async function makeBridgeHarness(options: {
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: options.persona ?? '' } })
   if (options.attachments !== false) await ctx.plugin(MemoryAttachmentStore)
   const loopFiber = await ctx.plugin(AgentLoop, { agents: [] })
-  ctx.llm.registerAdapter(['mock'], adapter)
+  ctx.llm.registerAdapter(['mock', 'mock-alt'], adapter)
 
   if (options.persistence !== undefined) {
     const fixture = options.persistence

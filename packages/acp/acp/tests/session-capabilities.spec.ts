@@ -108,8 +108,11 @@ describe('ACP session loading', () => {
         name: 'Model',
         category: 'model',
         type: 'select',
-        currentValue: 'mock',
-        options: [{ value: 'mock', name: 'Mock' }],
+        currentValue: 'mock/mock',
+        options: [
+          { value: 'mock/mock', name: 'Mock' },
+          { value: 'mock-alt/alt-model', name: 'Alt Model' },
+        ],
       }],
     })
 
