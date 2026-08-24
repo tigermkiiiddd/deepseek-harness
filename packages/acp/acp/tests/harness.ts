@@ -218,6 +218,8 @@ type AcpConfigOverrides = { [K in keyof AcpConfig]?: AcpConfig[K] | undefined }
 export interface PersistenceFixture {
   headers: { id: string; cwd: string }[]
   eventsBySession: Record<string, SessionEvent[]>
+  /** Verbatim stored artifacts for export reads, keyed by session id. */
+  rawArtifacts?: Record<string, { filename: string; content: string }>
 }
 
 /** Build the bridge and a connected SDK client over cross-wired byte streams. */
@@ -302,6 +304,7 @@ export async function makeBridgeHarness(options: {
         if (events === undefined) throw new Error(`missing session ${String(id)}`)
         return { events }
       },
+      readRaw: async (id: SessionId) => fixture.rawArtifacts?.[String(id)],
     })
   }
 

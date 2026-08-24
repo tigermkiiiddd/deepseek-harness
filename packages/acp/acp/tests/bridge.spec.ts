@@ -36,6 +36,7 @@ describe('automation-only ACP bridge', () => {
               'dsh/session/search',
               'dsh/session/state',
               'dsh/session/compact',
+              'dsh/session/export',
             ],
           },
         },

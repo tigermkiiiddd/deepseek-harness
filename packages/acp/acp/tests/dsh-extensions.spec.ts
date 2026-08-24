@@ -410,4 +410,70 @@ describe('dsh extension surface', () => {
       })).rejects.toThrow(/Internal error/)
     })
   })
+
+  describe('dsh/session/export', () => {
+    let harness: BridgeHarness | undefined
+
+    afterEach(async () => {
+      await harness?.dispose()
+      harness = undefined
+    })
+
+    it('exports the raw artifact and its referenced media as one zip', async () => {
+      const { createHash } = await import('node:crypto')
+      const PNG_1PX = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+        'base64',
+      )
+      const attachmentId = `sha256:${createHash('sha256').update(PNG_1PX).digest('hex')}`
+      const artifactContent = `${JSON.stringify({
+        type: 'user/message',
+        data: { content: [{ type: 'image', attachment: {
+          attachmentId, mediaType: 'image/png', bytes: PNG_1PX.byteLength, width: 1, height: 1,
+        } }] },
+      })}\n`
+
+      harness = await makeBridgeHarness({
+        imageCapable: true,
+        persistence: {
+          headers: [{ id: 'topic', cwd: process.cwd() }],
+          eventsBySession: {},
+          rawArtifacts: { topic: { filename: 'session.jsonl', content: artifactContent } },
+        },
+      })
+      // Seed the durable media object the artifact references (content-addressed).
+      harness.attachments?.objects.set(attachmentId, {
+        ref: { attachmentId, mediaType: 'image/png', bytes: PNG_1PX.byteLength, width: 1, height: 1 },
+        data: Uint8Array.from(PNG_1PX),
+      })
+      await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+
+      const result = await harness.client.extMethod('dsh/session/export', {
+        sessionId: 'topic',
+      }) as { filename: string; mediaType: string; data: string }
+      expect(result.filename).toBe('dsh-session-topic.zip')
+      expect(result.mediaType).toBe('application/zip')
+
+      const { unzipSync } = await import('fflate')
+      const files = unzipSync(Buffer.from(result.data, 'base64'))
+      expect(Object.keys(files).sort()).toEqual([
+        `media/${attachmentId}.png`,
+        'session.jsonl',
+      ])
+      expect(Buffer.from(files['session.jsonl']!).toString('utf8')).toBe(artifactContent)
+      expect(Buffer.from(files[`media/${attachmentId}.png`]!).equals(PNG_1PX)).toBe(true)
+    })
+
+    it('rejects an unknown session and a persistence seam without raw reads', async () => {
+      harness = await makeBridgeHarness({
+        persistence: { headers: [], eventsBySession: {} },
+      })
+      await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+
+      await expect(harness.client.extMethod('dsh/session/export', { sessionId: 'missing' }))
+        .rejects.toThrow(/unknown session/)
+      await expect(harness.client.extMethod('dsh/session/export', {}))
+        .rejects.toThrow(/sessionId must be a non-empty string/)
+    })
+  })
 })

@@ -17,6 +17,7 @@ import Schema from '@deepseek-ai/schemastery'
 import { createUserMessage, deepFreeze, errorChain } from '@deepseek-ai/dsh-llm'
 import { SessionTitleInvalidError } from '@deepseek-ai/dsh-session-title'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
+import { buildExportArchive } from './export.ts'
 import {
   AgentSideConnection,
   ndJsonStream,
@@ -491,6 +492,31 @@ async function dshCompact(
 }
 
 /**
+ * Serve `dsh/session/export`: the session's log export archive (raw artifact
+ * plus every referenced media object) as base64 over the wire. The member
+ * topic's log is bounded by the same spill and compaction policies as any
+ * other session, so one in-memory archive is safe.
+ * @param ctx - the bridge context carrying the persistence and attachment seams.
+ * @param raw - the extension parameters: `sessionId`.
+ * @returns `{ filename, mediaType, data }` with base64 zip bytes.
+ */
+async function dshExport(ctx: Context, raw: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const sessionId = raw['sessionId']
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
+    throw invalidParams('sessionId must be a non-empty string')
+  }
+  try {
+    const { filename, zip } = await buildExportArchive(ctx, SessionId(sessionId), new AbortController().signal)
+    return { filename, mediaType: 'application/zip', data: Buffer.from(zip).toString('base64') }
+  } catch (error) {
+    if ((error as { message?: string }).message?.startsWith('unknown session:')) {
+      throw invalidParams((error as Error).message)
+    }
+    throw internalError(`session export failed: ${String(error)}`)
+  }
+}
+
+/**
  * The dsh extension methods this bridge serves over ACP `extMethod`, keyed by
  * wire method name. The initialize capability advertisement lists exactly
  * these keys, so a client can drive every surface data-driven.
@@ -507,6 +533,7 @@ function dshExtensions(
     'dsh/session/search': params => dshSearch(ctx, params),
     'dsh/session/state': params => dshState(ctx, params),
     'dsh/session/compact': params => dshCompact(ctx, sessions, params),
+    'dsh/session/export': params => dshExport(ctx, params),
   }
 }
 
