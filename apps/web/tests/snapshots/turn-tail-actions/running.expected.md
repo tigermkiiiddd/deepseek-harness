@@ -13,6 +13,10 @@
 - button "Copy":
   - img
 - tooltip "Copy"
+- button "Re-run":
+  - img
+- button "Re-edit":
+  - img
 - button "Context injection @deepseek-ai/dsh-system-prompt":
   - img
   - img
@@ -22,10 +26,9 @@
   - img
   - text: Think The user wants me to begin with "Reading the workspace now." and call bash with "echo alpha" in the same message. Then after the tool result, reply with the single word DONE and stop.
 - paragraph: Reading the workspace now.
-- button "Bash Print alpha to stdout":
+- 'button "Failed Bash Error: unknown tool \"bash\""':
   - img
-  - img
-  - text: Bash Print alpha to stdout
+  - text: "Failed Bash Error: unknown tool \"bash\""
 - paragraph: partial
 - status: Deep diving...
 - textbox "Message the agent"

@@ -149,7 +149,9 @@ describe('jsonrpc-agent keyless smoke', () => {
         'bash',
         'edit',
         'read',
+        'set_cwd',
         'subagent',
+        'todo_read',
         'todo_write',
         'write',
       ])

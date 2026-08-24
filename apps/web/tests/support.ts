@@ -59,11 +59,12 @@ export function probeFreePort(): Promise<number> {
  * until the live composer unlocks. A fresh world has no Workspace, so the boot
  * lands in the Workspace-trigger view state (startup auto-selection has nothing to
  * select); every scenario that types into the composer must connect one
- * first. With nothing to list, activating the textarea raises the dialog directly —
- * adding a workspace is the picker's only entry. The directory is staged here
- * and adopted through the path editor, which is idempotent across the repeated
- * connects a scenario may make; creating a folder from inside the dialog (the
- * product's other half of the same route) is covered by
+ * first. Activating the textarea opens the picker menu — with the free-session
+ * choice composed alongside, "Add workspace" is a menu entry rather than the
+ * only action, so the scenario selects it and raises the dialog. The directory
+ * is staged here and adopted through the path editor, which is idempotent across
+ * the repeated connects a scenario may make; creating a folder from inside the
+ * dialog (the product's other half of the same route) is covered by
  * workspace-management.e2e.ts. The default name 'workspace' keeps the session
  * header cwd at <root>/workspace, the materialization proof several scenarios
  * assert.
@@ -74,6 +75,7 @@ export function probeFreePort(): Promise<number> {
 export async function connectFreshWorkspace(page: Page, root: string, name = 'workspace'): Promise<void> {
   mkdirSync(join(root, name), { recursive: true })
   await page.getByRole('textbox', { name: 'Choose workspace' }).click()
+  await page.getByRole('menuitem', { name: 'Add workspace…' }).click()
   const dialog = page.getByRole('dialog', { name: 'Select Workspace Directory' })
   await dialog.waitFor({ timeout: 10_000 })
   await dialog.getByRole('button', { name: 'Edit path' }).click()
@@ -99,6 +101,7 @@ export async function connectFreshWorkspace(page: Page, root: string, name = 'wo
 export async function connectFreshWorkspaceZh(page: Page, root: string, name = 'workspace'): Promise<void> {
   mkdirSync(join(root, name), { recursive: true })
   await page.getByRole('textbox', { name: '选择工作区' }).click()
+  await page.getByRole('menuitem', { name: '添加工作区…' }).click()
   const dialog = page.getByRole('dialog', { name: '选择工作区目录' })
   await dialog.waitFor({ timeout: 10_000 })
   await dialog.getByRole('button', { name: '编辑路径' }).click()

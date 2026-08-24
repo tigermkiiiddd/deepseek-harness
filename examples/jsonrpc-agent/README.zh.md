@@ -9,7 +9,7 @@
 - `bash`，仅前台
 - `read`、`write` 和 `edit`
 - `subagent`，使用一个在进程内以前台方式运行的 spawn 提供方
-- `todo_write`
+- `todo_read` 和 `todo_write`
 
 周边运行时还加载 JSONL 会话持久化和自动上下文压缩（context compaction）。`maxTokensAsSuccess` 将受 token 上限限制的模型轮次保留为已接受的评估结果，同时保留其 `max-tokens` 原因。
 

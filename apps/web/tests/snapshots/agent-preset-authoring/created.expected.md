@@ -61,6 +61,14 @@
       - 'button "复制: 创造模式"':
         - img
         - text: 复制
+    - listitem:
+      - 'button "加载失败: lazy-tools" [disabled]':
+        - text: lazy-tools 加载失败 内置 暂无描述。
+        - alert: the composition file agent.cordis.yml is missing — the directory still occupies the id; delete it or restore the file
+        - code: lazy-tools
+      - 'button "复制: lazy-tools" [disabled]':
+        - img
+        - text: 预设加载失败，不能复制
   - heading "自定义" [level=3]
   - list:
     - listitem:
@@ -78,7 +86,7 @@
         - text: 删除
       - paragraph:
         - text: 预设文件：
-        - code: {{presetRoot}}/my-agent
+        - code: C:\Users\shinobi\AppData\Local\Temp\dsh-web-e2e-presets-5q5X2z\my-agent
   - button "用「创造模式」创作自定义预设":
     - img
     - text: 用「创造模式」创作自定义预设

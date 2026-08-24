@@ -239,12 +239,28 @@ describe('the shipped Web composition', () => {
       expect(toolNames(ctx, handle.agent).filter(name => name !== 'glob' && name !== 'grep')).toEqual([
         'ask_user_question', 'bash', 'create_goal', 'edit', 'exit_plan_mode',
         'get_goal', 'interrupt_agent', 'job_kill', 'job_list', 'job_output', 'list_agents', 'ralph', 'read', 'read_image', 'send_message', 'skill',
-        'subagent', 'subagent_fork', 'todo_write', 'update_goal', 'web_search',
+        'subagent', 'subagent_fork', 'todo_read', 'todo_write', 'update_goal', 'web_search',
         'workflow', 'write',
       ])
       expect((await ctx.systemPrompt.assemble({ scope: handle.agent })).sections
         .find(section => section.name === 'deployment:persona')?.text)
         .toContain(LANGUAGE_POLICY)
+    } finally {
+      await handle.dispose()
+    }
+  })
+
+  it('applies lazy schema disclosure as a standard-preset configuration item', async () => {
+    const handle = await ctx.agents.create({
+      sessionId: SessionId('preset-standard-lazy-disclosure'),
+      setup: agentCtx => ctx.agentPresets.mount(agentCtx, 'standard').then(() => undefined),
+    })
+    try {
+      const before = await ctx.systemPrompt.assemble({ scope: handle.agent })
+      expect(before.tools.map(tool => tool.name)).toEqual(['tool_call', 'tool_describe', 'tool_search'])
+      expect(before.sections.find(section => section.name === 'tools:lazy-catalog')?.text).toContain('web_search')
+      expect(toolNames(ctx, handle.agent)).toContain('web_search')
+      expect(await ctx.systemPrompt.assemble({ scope: handle.agent })).toEqual(before)
     } finally {
       await handle.dispose()
     }
@@ -771,7 +787,7 @@ describe('a launcher that configures no writable root', () => {
       setup: agentCtx => derivedCtx.agentPresets.mount(agentCtx, 'derived-mine').then(() => undefined),
     })
     try {
-      expect(toolNames(derivedCtx, handle.agent)).toContain('todo_write')
+      expect(toolNames(derivedCtx, handle.agent)).toEqual(expect.arrayContaining(['todo_read', 'todo_write']))
     } finally {
       await handle.dispose()
     }

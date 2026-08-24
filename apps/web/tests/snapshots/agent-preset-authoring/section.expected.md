@@ -61,6 +61,14 @@
       - 'button "复制: 创造模式"':
         - img
         - text: 复制
+    - listitem:
+      - 'button "加载失败: lazy-tools" [disabled]':
+        - text: lazy-tools 加载失败 内置 暂无描述。
+        - alert: the composition file agent.cordis.yml is missing — the directory still occupies the id; delete it or restore the file
+        - code: lazy-tools
+      - 'button "复制: lazy-tools" [disabled]':
+        - img
+        - text: 预设加载失败，不能复制
   - heading "自定义" [level=3]
   - button "用「创造模式」创作自定义预设":
     - img
