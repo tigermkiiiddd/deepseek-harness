@@ -456,12 +456,39 @@ export class MemberConnection {
   }
 
   /**
-   * Fold one topic's replayed ACP stream through {@link AcpUpdateTranslator}
-   * and return the translated events.
+   * Fold one topic's history into translated events. When the topic's config
+   * cache is warm (it was opened or chatted at least once in this process),
+   * the authoritative persisted log is pulled through the paginated
+   * `dsh/session/historyPage` extension — no replay stream crosses the wire.
+   * A cold topic falls back to one `loadSession` replay (which also seeds the
+   * config cache); subsequent reads take the paged path.
    * @param sessionId - the member's session (topic) id.
-   * @returns the translated session events, with the translator's tail flush.
+   * @returns the translated session events, with the translator's tail flush on the replay path.
    */
   private async collectHistoryEvents(sessionId: string): Promise<TranslatedSessionEvent[]> {
+    if (this.configBySession.has(sessionId)) {
+      const conn = this.requireRunning()
+      const events: TranslatedSessionEvent[] = []
+      let before: number | undefined
+      do {
+        const page = await conn.extMethod('dsh/session/historyPage', {
+          sessionId,
+          limit: 200,
+          ...(before === undefined ? {} : { before }),
+        }) as { events?: unknown; nextBefore?: number }
+        if (page === null || typeof page !== 'object' || !Array.isArray(page.events)) {
+          throw new Error(`team: member "${this.config.id}" returned a malformed history page`)
+        }
+        events.push(...page.events as TranslatedSessionEvent[])
+        before = page.nextBefore
+      } while (before !== undefined)
+      return events
+    }
+    return await this.collectHistoryEventsByReplay(sessionId)
+  }
+
+  /** The original replay-based read; also seeds the per-topic config cache. */
+  private async collectHistoryEventsByReplay(sessionId: string): Promise<TranslatedSessionEvent[]> {
     const conn = this.requireRunning()
     const events: TranslatedSessionEvent[] = []
     const translator = new AcpUpdateTranslator()
