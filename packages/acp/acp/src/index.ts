@@ -14,7 +14,7 @@ import { randomUUID } from 'node:crypto'
 import { isAbsolute } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import Schema from '@deepseek-ai/schemastery'
-import { createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, deepFreeze, errorChain } from '@deepseek-ai/dsh-llm'
 import { SessionTitleInvalidError } from '@deepseek-ai/dsh-session-title'
 import {
   AgentSideConnection,
@@ -46,7 +46,8 @@ import {
   type Stream,
 } from '@agentclientprotocol/sdk'
 import { installModelSelection, type Agent, type ModelSelection, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
-import type { LlmModelInfo } from '@deepseek-ai/dsh-llm'
+import type { LlmModelInfo, UserMessage } from '@deepseek-ai/dsh-llm'
+import { MessageId } from '@deepseek-ai/dsh-llm'
 import { SessionId, type SessionEvent, type SessionHeader, type TurnEndReason } from '@deepseek-ai/dsh-session'
 // Side-effect type import: declaration-merges the approval waterfall answered below.
 import type {} from '@deepseek-ai/dsh-user-approval'
@@ -223,6 +224,97 @@ async function dshRename(
 }
 
 /**
+ * Serve `dsh/session/queue`: the pending-prompt surface over the live agent's
+ * own inbox — list, enqueue, edit, remove, and steer, with the same semantics
+ * the main instance's queue dock drives.
+ * @param sessions - the bridge's live-session records.
+ * @param raw - the extension parameters: `sessionId`, `op`, plus per-op fields
+ *   (`text` for enqueue/edit, `itemId` for remove/edit/steer).
+ * @returns `{ items }` for `list`, `{ itemId }` for `enqueue`, `{ accepted: true }`
+ *   for the mutations.
+ */
+async function dshQueue(
+  sessions: Map<SessionId, SessionRecord>,
+  raw: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const sessionId = raw['sessionId']
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
+    throw invalidParams('sessionId must be a non-empty string')
+  }
+  const record = sessions.get(SessionId(sessionId))
+  if (record === undefined) {
+    throw invalidParams(`unknown session: ${sessionId}`)
+  }
+  const op = raw['op']
+  if (typeof op !== 'string' || !(['list', 'enqueue', 'remove', 'edit', 'steer'] as const).includes(op as 'list')) {
+    throw invalidParams(`unsupported queue op: ${String(op)}`)
+  }
+  const inbox = record.agent.inbox
+  const textOf = (content: readonly { type: string; text?: string }[]): string =>
+    content.filter(block => block.type === 'text').map(block => block.text ?? '').join('')
+  const findPending = (itemId: string): { slot: 'next-turn' | 'next-step'; message: UserMessage } | undefined => {
+    const nextTurn = inbox.nextTurn.find(message => message.id === itemId)
+    if (nextTurn !== undefined) return { slot: 'next-turn', message: nextTurn }
+    const nextStep = inbox.nextStep.find(message => message.id === itemId)
+    if (nextStep !== undefined) return { slot: 'next-step', message: nextStep }
+    return undefined
+  }
+
+  if (op === 'list') {
+    const items = [
+      ...inbox.nextTurn.map(message => ({ id: message.id, slot: 'next-turn' as const, text: textOf(message.content) })),
+      ...inbox.nextStep.map(message => ({ id: message.id, slot: 'next-step' as const, text: textOf(message.content) })),
+    ]
+    return { items }
+  }
+  if (op === 'enqueue') {
+    const text = raw['text']
+    if (typeof text !== 'string' || text.length === 0) {
+      throw invalidParams('text must be a non-empty string')
+    }
+    const message = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
+    inbox.append('next-turn', deepFreeze(message))
+    return { itemId: message.id }
+  }
+  const itemId = raw['itemId']
+  if (typeof itemId !== 'string' || itemId.length === 0) {
+    throw invalidParams('itemId must be a non-empty string')
+  }
+  const pendingId = MessageId(itemId)
+  if (op === 'remove') {
+    if (!inbox.remove(pendingId)) {
+      throw invalidParams('queued item is no longer pending')
+    }
+    return { accepted: true }
+  }
+  if (op === 'edit') {
+    const text = raw['text']
+    if (typeof text !== 'string' || text.length === 0) {
+      throw invalidParams('text must be a non-empty string')
+    }
+    const found = findPending(pendingId)
+    if (found === undefined) {
+      throw invalidParams('queued item is no longer pending')
+    }
+    inbox.replace(pendingId, deepFreeze({ ...found.message, content: [{ type: 'text', text }] }))
+    return { accepted: true }
+  }
+  if (op === 'steer') {
+    const found = findPending(pendingId)
+    if (found === undefined) {
+      throw invalidParams('queued item is no longer pending')
+    }
+    if (found.slot !== 'next-turn' || record.agent.status !== 'running') {
+      throw invalidParams('current turn no longer accepts steering')
+    }
+    inbox.remove(pendingId)
+    record.agent.steer(found.message)
+    return { accepted: true }
+  }
+  throw invalidParams(`unsupported queue op: ${String(op)}`)
+}
+
+/**
  * The dsh extension methods this bridge serves over ACP `extMethod`, keyed by
  * wire method name. The initialize capability advertisement lists exactly
  * these keys, so a client can drive every surface data-driven.
@@ -234,6 +326,7 @@ function dshExtensions(
   return {
     'dsh/session/historyPage': params => dshHistoryPage(ctx, params),
     'dsh/session/rename': params => dshRename(ctx, sessions, params),
+    'dsh/session/queue': params => dshQueue(sessions, params),
   }
 }
 

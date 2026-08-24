@@ -90,7 +90,7 @@ describe('dsh extension surface', () => {
   it('rejects an unsupported extension method', async () => {
     harness = await harnessWithHistory()
     await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
-    await expect(harness.client.extMethod('dsh/session/queue', {
+    await expect(harness.client.extMethod('dsh/session/nonexistent', {
       sessionId: 'topic',
     })).rejects.toThrow(/unsupported dsh extension/)
   })
@@ -158,5 +158,63 @@ describe('dsh extension surface', () => {
       sessionId,
       title: 'Any',
     })).rejects.toThrow(/requires a session-title service/)
+  })
+
+  describe('dsh/session/queue', () => {
+    let harness: BridgeHarness | undefined
+    let sessionId: string | undefined
+
+    afterEach(async () => {
+      await harness?.dispose()
+      harness = undefined
+      sessionId = undefined
+    })
+
+    /** Mount a live session for queue operations. */
+    async function liveSession(): Promise<string> {
+      harness = await makeBridgeHarness()
+      await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+      const created = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+      sessionId = created.sessionId
+      return sessionId
+    }
+
+    const queue = (payload: Record<string, unknown>): Promise<unknown> =>
+      harness!.client.extMethod('dsh/session/queue', payload)
+
+    it('enqueues, lists, edits, and removes a pending item', async () => {
+      const id = await liveSession()
+
+      expect(await queue({ sessionId: id, op: 'list' })).toEqual({ items: [] })
+
+      const enqueued = await queue({ sessionId: id, op: 'enqueue', text: 'later question' }) as { itemId: string }
+      expect(enqueued.itemId).toBeDefined()
+
+      let listed = await queue({ sessionId: id, op: 'list' }) as { items: { id: string; slot: string; text: string }[] }
+      expect(listed.items).toEqual([{ id: enqueued.itemId, slot: 'next-turn', text: 'later question' }])
+
+      await queue({ sessionId: id, op: 'edit', itemId: enqueued.itemId, text: 'edited question' })
+      listed = await queue({ sessionId: id, op: 'list' }) as { items: { id: string; slot: string; text: string }[] }
+      expect(listed.items[0]?.text).toBe('edited question')
+
+      await queue({ sessionId: id, op: 'remove', itemId: enqueued.itemId })
+      expect(await queue({ sessionId: id, op: 'list' })).toEqual({ items: [] })
+
+      await expect(queue({ sessionId: id, op: 'remove', itemId: enqueued.itemId }))
+        .rejects.toThrow(/no longer pending/)
+    })
+
+    it('refuses steering an idle session and fails loud on bad input', async () => {
+      const id = await liveSession()
+      const enqueued = await queue({ sessionId: id, op: 'enqueue', text: 'hold' }) as { itemId: string }
+
+      // An idle session has no turn in flight, so steering is refused.
+      await expect(queue({ sessionId: id, op: 'steer', itemId: enqueued.itemId }))
+        .rejects.toThrow(/no longer accepts steering/)
+
+      await expect(queue({ sessionId: id, op: 'enqueue', text: '' })).rejects.toThrow(/non-empty string/)
+      await expect(queue({ sessionId: id, op: 'wat' })).rejects.toThrow(/unsupported queue op/)
+      await expect(queue({ sessionId: 'missing', op: 'list' })).rejects.toThrow(/unknown session/)
+    })
   })
 })
