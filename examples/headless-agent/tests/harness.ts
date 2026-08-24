@@ -18,7 +18,7 @@ import type { BasicCompactionConfig } from '@deepseek-ai/dsh-compaction-basic'
 
 /**
  * Shared harness for the headless-agent e2e suites: the full plugin stack
- * with the real DeepSeek adapter and the real bash + todo_write tools. Lives
+ * with the real DeepSeek adapter and the real bash + todo tools. Lives
  * outside the *.e2e.ts pattern so importing it never re-registers another
  * file's tests.
  */
@@ -27,9 +27,10 @@ export const SYSTEM_PROMPT = 'You are a coding agent. Use bash for file operatio
   + 'with cat/grep/heredocs; check [exit code: N] markers, '
   + 'and report results briefly.'
 
-/** System prompt for the todo_write e2e: nudges the model to plan with the tool. */
+/** System prompt for the todo e2e: nudges the model to plan with the tools. */
 export const TODO_SYSTEM_PROMPT = 'You are a coding agent. For multi-step work, '
-  + 'use the todo_write tool to track a task list: send the WHOLE list each call, '
+  + 'use todo_write to add tasks and update or remove them by index; never resend '
+  + 'the whole list. Use todo_read when the latest indexed list is not visible. '
   + 'mark every task being actively worked on in_progress (several at once when '
   + 'work runs in parallel, at least one while work remains), and mark a task '
   + 'completed as soon as it is done.'

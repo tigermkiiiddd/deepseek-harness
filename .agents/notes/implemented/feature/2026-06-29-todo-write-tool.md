@@ -10,11 +10,11 @@ The harness gives the model bash and subagent tools but no way to record a struc
 
 ## Decision
 
-Add a model-facing `todo_write(todos: [{ content, status }])` tool whose whole-list state lives on the event-sourced session log as a new `todo/write` `SessionEventMap` variant. Interactive hosts render from the durable event: the TUI folds it directly, the web client projects it into `ConversationSnapshot.todos` ([web todo display](2026-07-23-web-todo-display.md)), while the [automation-only ACP bridge](../simplification/2026-07-23-acp-automation-only-protocol.md) deliberately omits todo presentation.
+Add model-facing `todo_read` and `todo_write` tools whose whole-list state lives on the event-sourced session log as a new `todo/write` `SessionEventMap` variant. Interactive hosts render from the durable event: the TUI folds it directly, the web client projects it into `ConversationSnapshot.todos` ([web todo display](2026-07-23-web-todo-display.md)), while the [automation-only ACP bridge](../simplification/2026-07-23-acp-automation-only-protocol.md) deliberately omits todo presentation. Writes use [index-addressed deltas](../bug-fix/2026-08-23-todo-index-addressed-deltas.md); durable events remain complete snapshots.
 
-### Whole-list replace, three-state status
+### Whole-list snapshot, three-state status
 
-The model sends the entire list every call; the new list replaces the old (last-write-wins on replay). This is the shape claude-code V1, opencode, and codex `update_plan` all use, and the shape the model is most trained on — no per-item ids, no delta protocol. `status` is exactly `pending | in_progress | completed`, the same triple as codex `update_plan`; it also matched the ACP `PlanEntryStatus` 1:1 while the bridge projected todo lists as `plan` updates, a mapping retired with the [automation-only ACP contract](../simplification/2026-07-23-acp-automation-only-protocol.md).
+Each successful write appends the complete resulting list, and the latest event replaces the prior state on replay. Session-local `add`, `update`, `remove`, and `clear` operations calculate another complete snapshot before append; `todo_read` returns that state with operation indices without appending. `status` is exactly `pending | in_progress | completed`, the same triple as codex `update_plan`; it also matched the ACP `PlanEntryStatus` 1:1 while the bridge projected todo lists as `plan` updates, a mapping retired with the [automation-only ACP contract](../simplification/2026-07-23-acp-automation-only-protocol.md).
 
 ### State on the session log, not a service
 
@@ -26,11 +26,11 @@ The list is appended as a `todo/write` event carrying the full `{ todos }` snaps
 
 ### Dropped vs claude-code V1: `activeForm`, id, priority
 
-claude-code V1's item is `{ content, status, activeForm }`; later (V2) it grew ids, dependencies, and ownership — but only to support agent *swarms* (disk-backed, lock-guarded, per-item mutation). This tool keeps the item at the minimum: `{ content, status }`. No `activeForm` (the present-continuous label) — the UI shows `content`; no id — whole-list replace needs no stable identity; no priority — that was only ever an ACP `PlanEntry` wire requirement, synthesized as a constant at the bridge boundary rather than modeled, and it left with that projection. Each dropped field is one less thing the model must produce on every call.
+claude-code V1's item is `{ content, status, activeForm }`; later (V2) it grew ids, dependencies, and ownership — but only to support agent *swarms* (disk-backed, lock-guarded, per-item mutation). This tool keeps the item at the minimum: `{ content, status }`. No `activeForm` (the present-continuous label) — the UI shows `content`; no id — single-owner deltas address the current ordered list by index and durable writes remain complete snapshots; no priority — that was only ever an ACP `PlanEntry` wire requirement, synthesized as a constant at the bridge boundary rather than modeled, and it left with that projection. Each dropped field is one less thing the model must produce.
 
 ### Single owner — no swarm machinery (YAGNI)
 
-Each list belongs to the calling agent session, and non-agent calls are rejected. There is no shared scope, resolver, or delta protocol. Cross-agent lists would require per-item log deltas and explicit scope selection, so they remain a separate future design.
+Each list belongs to the calling agent session, and non-agent calls are rejected. There is no shared scope or resolver. Index-addressed deltas operate only on that session's latest complete snapshot; cross-agent lists would require stable item identity, concurrency control, and explicit scope selection, so they remain a separate future design.
 
 ### Validation: the cheap middle
 
@@ -43,18 +43,18 @@ The schema enforces type/required/enum. Beyond that, `execute` rejects empty or 
 ## Testing
 
 Four tiers:
-- **Unit** — the session event (append/snapshot-clone/last-write-wins/not-on-surface); the tool (schema shape, arg validation via the real `ctx.tools.execute`, value validation, the event append + replacement, no-agent rejection, `presentCall`, HMR-safety); and TUI folding.
+- **Unit** — the session event (append/snapshot-clone/last-write-wins/not-on-surface); the tools (schema fields, argument validation through the real `ctx.tools.execute`, value validation, indexed read/write results, no-agent rejection, `presentCall`, HMR-safety); and TUI folding.
 - **Real-Loader path** — the plugin run through `Loader.unwrapExports`, asserting the namespace export shape survives (it HAS `inject`, so a stray default would crash at load — postmortem/0001).
-- **Full-loop integration** — a scripted mock model calls `todo_write` through the real agent loop; the `todo/write` event lands and a second call replaces it.
+- **Full-loop integration** — a scripted mock model calls `todo_write` through the real agent loop; the `todo/write` event lands and an index update renames one entry without duplicating it.
 - **Resume/replay** — a persisted `todo/write` folds back into the current task list.
 - **With-key e2e + snapshots** — a real prompt induces `todo_write`; assembled snapshots pin the log event and interactive rendering.
 
 ## Alternatives considered
 
 - **In-memory `ctx.todos` service** — would reinvent durability, replay, and resume reconstruction the log gives for free.
-- **Per-item delta protocol** — only needed for a shared multi-owner list, which is out of scope; whole-list replace is simpler and matches the references.
+- **Content-addressed per-item deltas** — initially avoided, then briefly added; editable content cannot serve as identity because a renamed task becomes an implicit addition. The accepted single-owner delta uses ordered indices and separates `add` from `update` ([decision](../bug-fix/2026-08-23-todo-index-addressed-deltas.md)).
 - **Tool in `core/`** — `todo_write` is an extension tool registering on `ctx.tools`, not part of the spine; it lives in its own `packages/todo/` group like other tool families.
 
 ## Consequences
 
-The todo list is durable, replayable session state: an interactive host re-derives it from the latest persisted `todo/write`, and the log — not plugin memory — is the single source of truth. Whole-list replace means one tool call per update with last-write-wins; there is no delta protocol to reconcile. The event stays off the model surface, so a todo update never perturbs derived model history — the model sees only its own tool call and result.
+The todo list is durable, replayable session state: an interactive host re-derives it from the latest persisted `todo/write`, and the log — not plugin memory — is the single source of truth. Mutation actions calculate a complete last-write-wins snapshot; their indices do not enter the event format. The event stays off the model surface, so a todo update never perturbs derived model history — the model sees only its own tool call and result.

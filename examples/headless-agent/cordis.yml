@@ -146,7 +146,7 @@
 - id: tool-ralph
   name: '@deepseek-ai/dsh-tool-ralph'
 
-# `todo_write` replaces the logged whole list.
+# `todo_read` exposes operation indices; `todo_write` records indexed deltas.
 - id: tool-todo
   name: '@deepseek-ai/dsh-tool-todo'
   config:

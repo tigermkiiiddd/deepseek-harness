@@ -46,25 +46,72 @@ function callTodo(ctx: Context, args: unknown, over: { agent?: Agent | undefined
   })
 }
 
+function readTodos(ctx: Context, agent: Agent) {
+  return ctx.tools.execute({
+    signal: testToolSignal,
+    callId: CallId(`call-${++callCounter}`),
+    name: 'todo_read',
+    arguments: {},
+    agent,
+  })
+}
+
 function text(result: { content: { type: string; text?: string }[] }): string {
   return result.content.filter(b => b.type === 'text').map(b => b.text).join('')
 }
 
 describe('dsh-tool-todo', () => {
-  it('registers a `todo_write` tool whose schema is an array of {content,status}', async () => {
+  it('keeps current indices model-visible and removes whole-list replacement', async () => {
+    const ctx = await setup(true)
+    const schema = ctx.tools.schemas().find(entry => entry.name === 'todo_write')!
+    const parameters = schema.parameters as { required?: string[]; properties?: Record<string, unknown> }
+    const action = parameters.properties?.action as { enum?: string[] }
+    expect(parameters.required).toContain('action')
+    expect(action.enum).toEqual(['add', 'update', 'remove', 'clear'])
+    expect(ctx.tools.schemas().some(entry => entry.name === 'todo_read')).toBe(true)
+
+    const agent = agentWithSession('model-visible-indices')
+    const added = await callTodo(ctx, {
+      action: 'add',
+      todos: [
+        { content: 'plan', status: 'in_progress' },
+        { content: 'build', status: 'pending' },
+      ],
+    }, { agent })
+    expect(text(added)).toContain('0 [in_progress] "plan"')
+    expect(text(added)).toContain('1 [pending] "build"')
+
+    const read = await readTodos(ctx, agent)
+    expect(read.isError).toBe(false)
+    expect(text(read)).toContain('0 [in_progress] "plan"')
+    expect(text(read)).toContain('1 [pending] "build"')
+
+    const replace = await callTodo(ctx, {
+      action: 'replace',
+      todos: [{ content: 'replacement', status: 'in_progress' }],
+    }, { agent })
+    expect(replace.isError).toBe(true)
+  })
+
+  it('registers index-addressed todo actions and their argument collections', async () => {
     const ctx = await setup(true)
     const schema = ctx.tools.schemas().find(s => s.name === 'todo_write')
     expect(schema).toBeDefined()
     const props = (schema!.parameters as { properties?: Record<string, unknown> }).properties ?? {}
-    expect(Object.keys(props)).toEqual(['action', 'todos'])
+    expect(Object.keys(props)).toEqual(['action', 'todos', 'updates', 'indices'])
     const action = props.action as { type?: string; enum?: unknown[] }
     expect(action.type).toBe('string')
-    expect(action.enum).toEqual(['replace', 'clear', 'merge', 'remove'])
+    expect(action.enum).toEqual(['add', 'update', 'remove', 'clear'])
     const todos = props.todos as { type: string; items?: { properties?: Record<string, { type: string; enum?: string[] }> } }
     expect(todos.type).toBe('array')
     const itemProps = todos.items?.properties ?? {}
     expect(Object.keys(itemProps).sort()).toEqual(['content', 'status'])
     expect(itemProps.status?.enum).toEqual(['pending', 'in_progress', 'completed'])
+    const updates = props.updates as { items?: { properties?: Record<string, { type: string; enum?: string[] }> } }
+    expect(Object.keys(updates.items?.properties ?? {}).sort()).toEqual(['content', 'index', 'status'])
+    expect(updates.items?.properties?.index?.type).toBe('integer')
+    const indices = props.indices as { items?: { type?: string } }
+    expect(indices.items?.type).toBe('integer')
   })
 
   it('appends a todo/write event carrying the whole list to the calling session', async () => {
@@ -74,7 +121,7 @@ describe('dsh-tool-todo', () => {
       { content: 'plan', status: 'in_progress' },
       { content: 'build', status: 'pending' },
     ]
-    const result = await callTodo(ctx, { todos }, { agent })
+    const result = await callTodo(ctx, { action: 'add', todos }, { agent })
     expect(result.isError).toBe(false)
     if (result.isError) throw new Error('expected todo_write success')
     expect(result.value).toEqual({
@@ -90,19 +137,18 @@ describe('dsh-tool-todo', () => {
   it('stores the trimmed content (the dedupe/length key), not the raw input', async () => {
     const ctx = await setup(true)
     const agent = agentWithSession('trim')
-    const result = await callTodo(ctx, { todos: [{ content: '  plan the work  ', status: 'pending' }] }, { agent })
+    const result = await callTodo(ctx, { action: 'add', todos: [{ content: '  plan the work  ', status: 'pending' }] }, { agent })
     expect(result.isError).toBe(false)
 
     const event = agent.session.events.findLast(e => e.type === 'todo/write')!
     expect(event.data.todos).toEqual([{ content: 'plan the work', status: 'pending' }])
   })
 
-  it('replaces the list on a second call (last-write-wins on the log)', async () => {
+  it('appends a second batch and logs the complete resulting snapshot', async () => {
     const ctx = await setup(true)
     const agent = agentWithSession('writer-2')
-    await callTodo(ctx, { todos: [{ content: 'a', status: 'pending' }] }, { agent })
-    await callTodo(ctx, { todos: [
-      { content: 'a', status: 'completed' },
+    await callTodo(ctx, { action: 'add', todos: [{ content: 'a', status: 'completed' }] }, { agent })
+    await callTodo(ctx, { action: 'add', todos: [
       { content: 'b', status: 'in_progress' },
     ] }, { agent })
 
@@ -113,15 +159,34 @@ describe('dsh-tool-todo', () => {
     ])
   })
 
+  it('starts from an empty list after the next turn begins', async () => {
+    const ctx = await setup(true)
+    const agent = agentWithSession('next-turn')
+    await callTodo(ctx, { action: 'add', todos: [
+      { content: 'old turn', status: 'completed' },
+    ] }, { agent })
+    agent.session.append('turn/start', { turn: 1 })
+
+    const read = await readTodos(ctx, agent)
+    expect(read).toMatchObject({ isError: false, value: { todos: [] } })
+    await callTodo(ctx, { action: 'add', todos: [
+      { content: 'new turn', status: 'in_progress' },
+    ] }, { agent })
+
+    expect(agent.session.events.findLast(event => event.type === 'todo/write')?.data.todos).toEqual([
+      { content: 'new turn', status: 'in_progress' },
+    ])
+  })
+
   it('rejects a malformed status before execute runs (registry arg-validation)', async () => {
     const ctx = await setup(true)
-    const result = await callTodo(ctx, { todos: [{ content: 'x', status: 'doing' }] })
+    const result = await callTodo(ctx, { action: 'add', todos: [{ content: 'x', status: 'doing' }] })
     expect(result.isError).toBe(true)
   })
 
   it('rejects a non-array todos argument', async () => {
     const ctx = await setup(true)
-    const result = await callTodo(ctx, { todos: 'nope' })
+    const result = await callTodo(ctx, { action: 'add', todos: 'nope' })
     expect(result.isError).toBe(true)
   })
 
@@ -133,7 +198,7 @@ describe('dsh-tool-todo', () => {
       { content: 'run subagent b', status: 'in_progress' },
       { content: 'merge results', status: 'pending' },
     ]
-    const result = await callTodo(ctx, { todos }, { agent })
+    const result = await callTodo(ctx, { action: 'add', todos }, { agent })
     expect(result.isError).toBe(false)
     if (result.isError) throw new Error('expected todo_write success')
     expect(result.value).toEqual({
@@ -152,7 +217,7 @@ describe('dsh-tool-todo', () => {
     it('false rejects a call marking several items in_progress', async () => {
       const ctx = await setup(false)
       const agent = agentWithSession('single-active')
-      const result = await callTodo(ctx, { todos: parallel }, { agent })
+      const result = await callTodo(ctx, { action: 'add', todos: parallel }, { agent })
       expect(result.isError).toBe(true)
       expect(text(result)).toContain('at most one task may be in_progress')
       // A rejected call must not reach the durable log.
@@ -165,13 +230,13 @@ describe('dsh-tool-todo', () => {
         { content: 'run subagent a', status: 'in_progress' },
         { content: 'run subagent b', status: 'pending' },
       ]
-      const result = await callTodo(ctx, { todos })
+      const result = await callTodo(ctx, { action: 'add', todos })
       expect(result.isError).toBe(false)
     })
 
     it('true accepts the very list false rejects', async () => {
       const ctx = await setup(true)
-      const result = await callTodo(ctx, { todos: parallel })
+      const result = await callTodo(ctx, { action: 'add', todos: parallel })
       expect(result.isError).toBe(false)
     })
 
@@ -188,11 +253,31 @@ describe('dsh-tool-todo', () => {
   })
 
   describe('delta actions', () => {
-    it('describes delta-first updates and reserves full replace for a significant directional change', async () => {
+    it('updates a task by index without duplicating it when its content changes', async () => {
+      const ctx = await setup(true)
+      const agent = agentWithSession('update-by-index')
+      await callTodo(ctx, { action: 'add', todos: [
+        { content: 'write member-home tests', status: 'in_progress' },
+        { content: 'run regression tests', status: 'pending' },
+      ] }, { agent })
+
+      const result = await callTodo(ctx, {
+        action: 'update',
+        updates: [{ index: 0, content: 'finish member-home tests (92 passing)', status: 'completed' }],
+      }, { agent })
+
+      expect(result.isError).toBe(false)
+      expect(agent.session.events.findLast(e => e.type === 'todo/write')!.data.todos).toEqual([
+        { content: 'finish member-home tests (92 passing)', status: 'completed' },
+        { content: 'run regression tests', status: 'pending' },
+      ])
+    })
+
+    it('describes index-addressed deltas and makes update non-appending', async () => {
       const desc = (await setup(true)).tools.schemas().find(s => s.name === 'todo_write')!.description
-      expect(desc).toContain('delta')
-      expect(desc).toContain('task direction changes')
-      expect(desc).toContain('ONLY')
+      expect(desc).toContain('zero-based `updates[].index`')
+      expect(desc).toContain('`update` never adds a task')
+      expect(desc).toContain('fails instead of appending')
     })
 
     it('clear empties the list, even before the first write', async () => {
@@ -207,94 +292,128 @@ describe('dsh-tool-todo', () => {
       expect(agent.session.events.findLast(e => e.type === 'todo/write')!.data.todos).toEqual([])
     })
 
-    it('replace (explicit) still overwrites the whole list', async () => {
+    it('add appends new tasks without resending the whole list', async () => {
       const ctx = await setup(true)
-      const agent = agentWithSession('explicit-replace')
-      await callTodo(ctx, { todos: [{ content: 'a', status: 'pending' }] }, { agent })
-      await callTodo(ctx, { action: 'replace', todos: [{ content: 'b', status: 'in_progress' }] }, { agent })
-      expect(agent.session.events.findLast(e => e.type === 'todo/write')!.data.todos).toEqual([{ content: 'b', status: 'in_progress' }])
-    })
-
-    it('merge adds a new task without resending the whole list', async () => {
-      const ctx = await setup(true)
-      const agent = agentWithSession('merge-add')
-      await callTodo(ctx, { todos: [{ content: 'plan', status: 'in_progress' }] }, { agent })
-      await callTodo(ctx, { action: 'merge', todos: [{ content: 'build', status: 'pending' }] }, { agent })
+      const agent = agentWithSession('add')
+      await callTodo(ctx, { action: 'add', todos: [{ content: 'plan', status: 'in_progress' }] }, { agent })
+      await callTodo(ctx, { action: 'add', todos: [{ content: 'build', status: 'pending' }] }, { agent })
       expect(agent.session.events.findLast(e => e.type === 'todo/write')!.data.todos).toEqual([
         { content: 'plan', status: 'in_progress' },
         { content: 'build', status: 'pending' },
       ])
     })
 
-    it('merge updates the status of an existing task by content, preserving order and other entries', async () => {
+    it('updates only the supplied fields at each index', async () => {
       const ctx = await setup(true)
-      const agent = agentWithSession('merge-update')
-      await callTodo(ctx, { todos: [
+      const agent = agentWithSession('partial-update')
+      await callTodo(ctx, { action: 'add', todos: [
         { content: 'plan', status: 'in_progress' },
         { content: 'build', status: 'pending' },
       ] }, { agent })
-      await callTodo(ctx, { action: 'merge', todos: [{ content: 'plan', status: 'completed' }] }, { agent })
+      await callTodo(ctx, { action: 'update', updates: [
+        { index: 0, status: 'completed' },
+        { index: 1, content: 'build and verify' },
+      ] }, { agent })
       expect(agent.session.events.findLast(e => e.type === 'todo/write')!.data.todos).toEqual([
         { content: 'plan', status: 'completed' },
-        { content: 'build', status: 'pending' },
+        { content: 'build and verify', status: 'pending' },
       ])
     })
 
-    it('merge with no prior todo/write starts from an empty list', async () => {
+    it('add with no prior todo/write starts from an empty list', async () => {
       const ctx = await setup(true)
-      const agent = agentWithSession('merge-none')
-      const result = await callTodo(ctx, { action: 'merge', todos: [{ content: 'first', status: 'in_progress' }] }, { agent })
+      const agent = agentWithSession('add-none')
+      const result = await callTodo(ctx, { action: 'add', todos: [{ content: 'first', status: 'in_progress' }] }, { agent })
       expect(result.isError).toBe(false)
-      if (result.isError) throw new Error('expected merge to succeed')
-      const merged = result.value as unknown as { todos: TodoItem[] }
-      expect(merged.todos).toEqual([{ content: 'first', status: 'in_progress' }])
+      if (result.isError) throw new Error('expected add to succeed')
+      const added = result.value as unknown as { todos: TodoItem[] }
+      expect(added.todos).toEqual([{ content: 'first', status: 'in_progress' }])
     })
 
-    it('remove deletes listed content and preserves the rest', async () => {
+    it('remove deletes pre-action indices and preserves the remaining order', async () => {
       const ctx = await setup(true)
       const agent = agentWithSession('remove')
-      await callTodo(ctx, { todos: [
+      await callTodo(ctx, { action: 'add', todos: [
         { content: 'a', status: 'completed' },
         { content: 'b', status: 'in_progress' },
         { content: 'c', status: 'pending' },
+        { content: 'd', status: 'pending' },
       ] }, { agent })
-      await callTodo(ctx, { action: 'remove', todos: [{ content: 'b', status: 'in_progress' }] }, { agent })
+      await callTodo(ctx, { action: 'remove', indices: [1, 3] }, { agent })
       expect(agent.session.events.findLast(e => e.type === 'todo/write')!.data.todos).toEqual([
         { content: 'a', status: 'completed' },
         { content: 'c', status: 'pending' },
       ])
     })
 
-    it('remove of an unknown content is a no-op', async () => {
-      const ctx = await setup(true)
-      const agent = agentWithSession('remove-unknown')
-      await callTodo(ctx, { todos: [{ content: 'a', status: 'pending' }] }, { agent })
-      await callTodo(ctx, { action: 'remove', todos: [{ content: 'x', status: 'pending' }] }, { agent })
-      expect(agent.session.events.findLast(e => e.type === 'todo/write')!.data.todos).toEqual([{ content: 'a', status: 'pending' }])
-    })
-
-    it('asserts the single-active rule on the merged result when not allowParallel', async () => {
+    it('asserts the single-active rule on an added result when not allowParallel', async () => {
       const ctx = await setup(false)
-      const agent = agentWithSession('merge-single-active')
-      await callTodo(ctx, { todos: [{ content: 'a', status: 'in_progress' }] }, { agent })
-      const result = await callTodo(ctx, { action: 'merge', todos: [{ content: 'b', status: 'in_progress' }] }, { agent })
+      const agent = agentWithSession('add-single-active')
+      await callTodo(ctx, { action: 'add', todos: [{ content: 'a', status: 'in_progress' }] }, { agent })
+      const result = await callTodo(ctx, { action: 'add', todos: [{ content: 'b', status: 'in_progress' }] }, { agent })
       expect(result.isError).toBe(true)
       expect(text(result)).toContain('at most one task may be in_progress')
-      // A rejected merge must not change the durable list.
+      // A rejected delta must not change the durable list.
       expect(agent.session.events.findLast(e => e.type === 'todo/write')!.data.todos).toEqual([{ content: 'a', status: 'in_progress' }])
     })
 
-    it.each([
-      { action: 'replace', label: 'replace' },
-      { action: 'merge', label: 'merge' },
-      { action: 'remove', label: 'remove' },
-    ])('requires a todos array for the $label action', async ({ action }) => {
+    it('requires a todos array for add', async () => {
       const ctx = await setup(true)
       const agent = agentWithSession('missing-todos')
-      const result = await callTodo(ctx, { action }, { agent })
+      const result = await callTodo(ctx, { action: 'add' }, { agent })
       expect(result.isError).toBe(true)
-      expect(text(result)).toContain(`requires a \`todos\` array for action "${action}"`)
+      expect(text(result)).toContain('requires a `todos` array for action "add"')
       expect(agent.session.events.some(e => e.type === 'todo/write')).toBe(false)
+    })
+
+    it.each([
+      { label: 'missing updates', args: { action: 'update' }, fragment: 'non-empty `updates`' },
+      { label: 'empty updates', args: { action: 'update', updates: [] }, fragment: 'non-empty `updates`' },
+      { label: 'missing indices', args: { action: 'remove' }, fragment: 'non-empty `indices`' },
+      { label: 'empty indices', args: { action: 'remove', indices: [] }, fragment: 'non-empty `indices`' },
+    ])('rejects $label without changing the durable list', async ({ label, args, fragment }) => {
+      const ctx = await setup(true)
+      const agent = agentWithSession(`invalid-${label}`)
+      await callTodo(ctx, { action: 'add', todos: [{ content: 'a', status: 'pending' }] }, { agent })
+      const result = await callTodo(ctx, args, { agent })
+      expect(result.isError).toBe(true)
+      expect(text(result)).toContain(fragment)
+      expect(agent.session.events.filter(e => e.type === 'todo/write')).toHaveLength(1)
+    })
+
+    it.each([
+      { label: 'negative update index', args: { action: 'update', updates: [{ index: -1, status: 'completed' }] }, fragment: 'invalid todo index -1' },
+      { label: 'large update index', args: { action: 'update', updates: [{ index: 1, status: 'completed' }] }, fragment: 'invalid todo index 1' },
+      { label: 'duplicate update index', args: { action: 'update', updates: [{ index: 0, status: 'completed' }, { index: 0, content: 'renamed' }] }, fragment: 'duplicate index 0' },
+      { label: 'empty update', args: { action: 'update', updates: [{ index: 0 }] }, fragment: 'provide content or status' },
+      { label: 'blank update content', args: { action: 'update', updates: [{ index: 0, content: '  ' }] }, fragment: 'non-empty string' },
+      { label: 'negative remove index', args: { action: 'remove', indices: [-1] }, fragment: 'invalid todo index -1' },
+      { label: 'large remove index', args: { action: 'remove', indices: [1] }, fragment: 'invalid todo index 1' },
+      { label: 'duplicate remove index', args: { action: 'remove', indices: [0, 0] }, fragment: 'duplicate index 0' },
+    ])('rejects $label instead of appending or guessing', async ({ label, args, fragment }) => {
+      const ctx = await setup(true)
+      const agent = agentWithSession(`invalid-index-${label}`)
+      await callTodo(ctx, { action: 'add', todos: [{ content: 'a', status: 'pending' }] }, { agent })
+      const result = await callTodo(ctx, args, { agent })
+      expect(result.isError).toBe(true)
+      expect(text(result)).toContain(fragment)
+      expect(agent.session.events.filter(e => e.type === 'todo/write')).toHaveLength(1)
+    })
+
+    it.each([
+      { label: 'add', args: { action: 'add', todos: [{ content: 'a', status: 'completed' }] } },
+      { label: 'update', args: { action: 'update', updates: [{ index: 1, content: 'a' }] } },
+    ])('rejects duplicate resulting content after $label', async ({ label, args }) => {
+      const ctx = await setup(true)
+      const agent = agentWithSession(`duplicate-result-${label}`)
+      await callTodo(ctx, { action: 'add', todos: [
+        { content: 'a', status: 'pending' },
+        { content: 'b', status: 'in_progress' },
+      ] }, { agent })
+      const result = await callTodo(ctx, args, { agent })
+      expect(result.isError).toBe(true)
+      expect(text(result)).toContain('duplicate content "a"')
+      expect(agent.session.events.filter(e => e.type === 'todo/write')).toHaveLength(1)
     })
   })
 
@@ -304,14 +423,26 @@ describe('dsh-tool-todo', () => {
     { label: 'unknown item keys', todos: [{ content: 'a', status: 'pending', children: [] }], fragment: 'not a declared property' },
   ])('rejects $label as an isError result', async ({ todos, fragment }) => {
     const ctx = await setup(true)
-    const result = await callTodo(ctx, { todos })
+    const result = await callTodo(ctx, { action: 'add', todos })
     expect(result.isError).toBe(true)
     expect(text(result)).toContain(fragment)
   })
 
   it('rejects a non-agent caller (the list has no owning session)', async () => {
     const ctx = await setup(true)
-    const result = await callTodo(ctx, { todos: [{ content: 'a', status: 'pending' }] }, { agent: undefined })
+    const result = await callTodo(ctx, { action: 'add', todos: [{ content: 'a', status: 'pending' }] }, { agent: undefined })
+    expect(result.isError).toBe(true)
+    expect(text(result)).toContain('owning agent session')
+  })
+
+  it('rejects a non-agent todo_read caller', async () => {
+    const ctx = await setup(true)
+    const result = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: CallId(`call-${++callCounter}`),
+      name: 'todo_read',
+      arguments: {},
+    })
     expect(result.isError).toBe(true)
     expect(text(result)).toContain('owning agent session')
   })
@@ -320,7 +451,10 @@ describe('dsh-tool-todo', () => {
     const ctx = await setup(true)
     const def = ctx.tools.get('todo_write')!
     const todos = [{ content: 'a', status: 'pending' }]
-    expect(def.presentCall?.({ todos })).toEqual({ card: 'generic', title: 'Update todo list', kind: 'other', rawInput: { todos } })
+    expect(def.presentCall?.({ action: 'add', todos })).toEqual({ card: 'generic', title: 'Update todo list', kind: 'other', rawInput: { action: 'add', todos } })
+    expect(ctx.tools.get('todo_read')?.presentCall?.({})).toEqual({
+      card: 'generic', title: 'Read todo list', kind: 'other', rawInput: {},
+    })
   })
 
   it('unregisters the tool when its contributing fiber is disposed (HMR-safety)', async () => {
@@ -329,8 +463,10 @@ describe('dsh-tool-todo', () => {
     await ctx.plugin(ToolRuntime)
     const fiber = await ctx.plugin(tool, { allowParallelInProgress: true })
     expect(ctx.tools.schemas().some(s => s.name === 'todo_write')).toBe(true)
+    expect(ctx.tools.schemas().some(s => s.name === 'todo_read')).toBe(true)
     await fiber.dispose()
     expect(ctx.tools.schemas().some(s => s.name === 'todo_write')).toBe(false)
+    expect(ctx.tools.schemas().some(s => s.name === 'todo_read')).toBe(false)
   })
 
   it('has the namespace-plugin export shape (no stray default) so the Loader keeps name/inject/apply', () => {

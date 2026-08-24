@@ -2,11 +2,11 @@
 
 English | [中文](README.zh.md)
 
-The model-facing `todo_write` tool: the agent's task list — replaced wholesale by default, but updatable in place via delta actions.
+The model-facing `todo_read` and `todo_write` tools for an agent's ordered task list.
 
 ## What it does
 
-Registers one tool, `todo_write({ action, todos })`, on `ctx.tools`. By default the sent list REPLACES the previous one — but to update specific tasks without resending everything, send a delta with `action`: `merge` upserts each entry by `content` (add new tasks, update the `status` of existing ones), `remove` deletes listed contents, and `clear` empties the list; each delta merges onto the current list. Reserve the COMPLETE list with `action: replace` when the task direction changes significantly. Each call appends a `todo/write` event (the full resulting list snapshot) to the calling agent's session log via `agent.session.append('todo/write', { todos })`; the current list is the most recent such event (last-write-wins on replay).
+Registers `todo_read()` and `todo_write({ action, todos, updates, indices })` on `ctx.tools`. `todo_read` returns the complete current list with zero-based operation indices. The current list is the latest `todo/write` after the current `turn/start`; a new turn starts empty, matching the standing-plan projection. `todo_write` requires an action: `add` appends `todos`, `update` changes existing entries through `updates[].index`, `remove` deletes `indices`, and `clear` empties the list. Whole-list replacement is not supported. Every index addresses the current ordered list before that call; an invalid index fails instead of adding or guessing. Each successful write appends a `todo/write` event carrying the complete resulting list to the calling agent's session log; replay remains last-write-wins within that turn.
 
 `status` is one of `pending`, `in_progress`, or `completed`.
 
@@ -22,11 +22,11 @@ The flag moves the model-facing instruction and the accepted input together — 
 
 ## Validation
 
-Beyond the schema's type/required/enum checks, `execute` rejects an empty or duplicate `content`, and any item key beyond `content`/`status` — an extended item shape (ids, nesting) fails loud instead of silently flattening, keeping the logged snapshot equal to what the model believes it wrote. For `replace`, `merge`, and `remove` the `todos` array is required; `clear` ignores it. The active-count rule (§ Configuration) applies to the RESULTING list for every action: a `merge`/`remove` that would leave more than one `in_progress` under a single-active composition is rejected, so a delta cannot widen a single-active plan into parallel work. Ordering and the discipline of keeping the list current are left to the model via the tool description.
+Beyond the schema's type and enum checks, `execute` rejects empty or duplicate resulting `content`. `add` requires `todos`; `update` requires a non-empty `updates` array whose entries contain a unique in-range index and at least one of `content` or `status`; `remove` requires unique in-range `indices`; `clear` needs no collection. The active-count rule (§ Configuration) applies to the complete resulting list for every write, so a delta cannot bypass a single-active composition.
 
 ## Rendering
 
-The canonical result is `{ todos, counts: { pending, inProgress, completed } }`; its Native renderer returns the compact update acknowledgement. The tool also writes the full `todo/write` session event. UIs subscribe to the event stream and render that durable list themselves: the [web client](../../client/ui-conversation) shows a plan strip plus a dedicated tool row off the standing plan — latest `todo/write` with no later `turn/start` ([display](../../../.agents/notes/implemented/feature/2026-07-23-web-todo-display.md), [lifetime](../../../.agents/notes/implemented/feature/2026-07-28-todo-plan-clears-on-next-turn.md)).
+Both tools return `{ todos, counts: { pending, inProgress, completed } }`. The Native renderer exposes every entry with its zero-based index; a write prefixes the list with the status counts. `todo_write` also records the full `todo/write` session event. UIs subscribe to the event stream and render that durable list themselves: the [web client](../../client/ui-conversation) shows a plan strip plus a dedicated tool row off the standing plan — latest `todo/write` with no later `turn/start` ([display](../../../.agents/notes/implemented/feature/2026-07-23-web-todo-display.md), [lifetime](../../../.agents/notes/implemented/feature/2026-07-28-todo-plan-clears-on-next-turn.md)).
 
 ## Session projection
 
@@ -42,7 +42,7 @@ A function/namespace plugin: it exports `name` / `inject` / `apply` and NO defau
 
 #### What the model sees
 
-The model sees the generated [`todo_write` schema](../../../docs/tool-catalog.md#deepseek-aidsh-tool-todo).
+The model sees the generated [`todo_read` and `todo_write` schemas](../../../docs/tool-catalog.md#deepseek-aidsh-tool-todo).
 
 #### Token effect
 
@@ -56,11 +56,11 @@ Prefix-stable while the definition and visibility are unchanged. Plugin lifecycl
 
 #### What the model sees
 
-Each assistant tool call retains the entire list in its arguments (the full list for `replace`/`clear`, the delta for `merge`/`remove`). Success returns exactly `Updated todo list: <pending> pending, <inProgress> in progress, <completed> completed.` Stable failures are ``Error: invalid todo: `content` must be a non-empty string``, `Error: invalid todos: duplicate content "<content>"`, `Error: todo_write requires an owning agent session`, `Error: todo_write requires a \`todos\` array for action "<action>"` — only for `replace`/`merge`/`remove` when `todos` is omitted — and — only where the deployment set `allowParallelInProgress: false` — `Error: invalid todos: at most one task may be in_progress (got <n>)`. The full `todo/write` session event is UI and replay state, not a second model message.
+Each assistant write call retains only its action arguments: new entries for `add`, index-addressed changes for `update`, or indices for `remove`. Every successful read and write returns the complete current list as `<index> [<status>] <JSON content>` lines, so the next mutation can address a visible index. Stable failures identify a missing action collection, empty content, duplicate resulting content, duplicate or out-of-range indices, an update with neither `content` nor `status`, a missing owner, or a violation of the configured active-count rule. The full `todo/write` event remains UI and replay state rather than a second model message.
 
 #### Token effect
 
-Token growth scales with every full list the model submits, and those call arguments remain until compaction. The result itself is small and fixed-shape.
+Write-call token growth scales with the submitted delta. Results include the complete indexed list so correctness costs tokens proportional to the current task count; `todo_read` incurs that cost only when the model needs to resynchronize.
 
 #### KV Cache effect
 
@@ -69,5 +69,4 @@ Append-only; newly visible content follows the reusable request prefix and does 
 ## Known Limitations and Deferred Work
 
 - **Single-owner scope only** — the list belongs to the one calling agent session; subagent/shared/swarm scopes are a deliberate cut (see § Single owner), and a non-agent caller is rejected.
-- **Delta actions key off `content`** — `remove`/`merge` cannot rename a task in place; rename is a `remove` (old `content`) followed by a `merge` (new `content`). A stable per-task `id` that would let `merge` rename directly and let the model address items by identifier is deferred, because it needs a `TodoItem` shape change, a `session` format version bump, and touch across ~9 consumers (`acp`, `session-query`, `team`, `client/connection`, `session-projection`, and more).
-- **No read-back tool** — the tool result already echoes the complete `{ todos, counts }` and every delta is merged and logged, so the model sees the current list after each call; a dedicated read-back tool is deferred as low-value surface.
+- **Indices follow list order** — `add` and `remove` may change later indices. Each `update` and `remove` must address the latest ordered list; after compaction or whenever that list is not visible, the model must call `todo_read`. Out-of-range indices fail instead of mutating another position or appending.

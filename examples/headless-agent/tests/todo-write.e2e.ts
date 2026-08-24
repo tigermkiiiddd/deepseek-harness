@@ -34,7 +34,7 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('todo_write: real model records a
       'Use the todo_write tool to record a plan of exactly three steps for work '
       + 'running in parallel: "inspect the failing test" (in_progress), '
       + '"watch the background build" (in_progress), then "apply the fix" (pending). '
-      + 'Send all three in one todo_write call, then reply with the single word DONE.' }], source: { kind: 'user' } }))
+      + 'Send all three in one todo_write call with action add, then reply with the single word DONE.' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
 
     const events = [...agent.session.events]

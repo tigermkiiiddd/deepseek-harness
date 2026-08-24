@@ -50,6 +50,7 @@ describe('todo_write tool through the agent loop', () => {
   it('model calls todo_write: a tool/call, a non-error tool/result, and a todo/write snapshot land', async () => {
     const adapter = new MockAdapter([
       toolCallResponse('call-1', 'todo_write', {
+        action: 'add',
         todos: [
           { content: 'read the code', status: 'in_progress' },
           { content: 'write the fix', status: 'pending' },
@@ -74,14 +75,15 @@ describe('todo_write tool through the agent loop', () => {
     ])
   })
 
-  it('a second todo_write replaces the list (last-write-wins on the log)', async () => {
+  it('a second add appends without resending the first task', async () => {
     const adapter = new MockAdapter([
-      toolCallResponse('call-1', 'todo_write', { todos: [{ content: 'step one', status: 'in_progress' }] }),
+      toolCallResponse('call-1', 'todo_write', {
+        action: 'add',
+        todos: [{ content: 'step one', status: 'in_progress' }],
+      }),
       toolCallResponse('call-2', 'todo_write', {
-        todos: [
-          { content: 'step one', status: 'completed' },
-          { content: 'step two', status: 'in_progress' },
-        ],
+        action: 'add',
+        todos: [{ content: 'step two', status: 'pending' }],
       }),
       textResponse('Done planning.'),
     ])
@@ -94,34 +96,58 @@ describe('todo_write tool through the agent loop', () => {
     const todoEvents = agent.session.events.filter(e => e.type === 'todo/write')
     expect(todoEvents).toHaveLength(2)
     expect(findEvent(agent.session.events, 'todo/write', 'last').data.todos).toEqual([
-      { content: 'step one', status: 'completed' },
-      { content: 'step two', status: 'in_progress' },
+      { content: 'step one', status: 'in_progress' },
+      { content: 'step two', status: 'pending' },
     ])
   })
 
-  it('a merge delta updates the current list without resending it', async () => {
+  it('an index delta renames and completes a task without duplicating it', async () => {
     const adapter = new MockAdapter([
-      toolCallResponse('call-1', 'todo_write', { todos: [{ content: 'read', status: 'in_progress' }] }),
+      toolCallResponse('call-1', 'todo_write', { action: 'add', todos: [
+        { content: 'read', status: 'in_progress' },
+        { content: 'build', status: 'pending' },
+      ] }),
       toolCallResponse('call-2', 'todo_write', {
-        action: 'merge',
-        todos: [
-          { content: 'read', status: 'completed' },
-          { content: 'build', status: 'pending' },
-        ],
+        action: 'update',
+        updates: [{ index: 0, content: 'read and inspect', status: 'completed' }],
       }),
       textResponse('Done planning.'),
     ])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('it-todo-merge'), { provider: 'mock', model: 'mock' })
+    const agent = ctx.agentLoop.create(SessionId('it-todo-update'), { provider: 'mock', model: 'mock' })
 
-    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'plan then merge' }], source: { kind: 'user' } }))
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'plan then update' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
 
     const todoEvents = agent.session.events.filter(e => e.type === 'todo/write')
     expect(todoEvents).toHaveLength(2)
     expect(findEvent(agent.session.events, 'todo/write', 'last').data.todos).toEqual([
-      { content: 'read', status: 'completed' },
+      { content: 'read and inspect', status: 'completed' },
       { content: 'build', status: 'pending' },
     ])
+  })
+
+  it('todo_read returns current operation indices without appending another snapshot', async () => {
+    const adapter = new MockAdapter([
+      toolCallResponse('call-1', 'todo_write', {
+        action: 'add',
+        todos: [{ content: 'inspect', status: 'in_progress' }],
+      }),
+      toolCallResponse('call-2', 'todo_read', {}),
+      textResponse('Index confirmed.'),
+    ])
+    const ctx = await harness(adapter)
+    const agent = ctx.agentLoop.create(SessionId('it-todo-read'), { provider: 'mock', model: 'mock' })
+
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'record then read the plan' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+
+    const results = agent.session.events.filter(event => event.type === 'tool/result')
+    expect(results).toHaveLength(2)
+    expect(results[1]?.data.message.content[0]).toMatchObject({
+      content: [{ type: 'text', text: 'Current todo list (zero-based indices):\n0 [in_progress] "inspect"' }],
+      isError: false,
+    })
+    expect(agent.session.events.filter(event => event.type === 'todo/write')).toHaveLength(1)
   })
 })

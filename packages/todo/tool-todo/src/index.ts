@@ -1,9 +1,8 @@
 /**
- * Model-facing todo list: whole-list replacement by default, plus optional delta actions
- * (`merge` / `remove` / `clear`) that update only specific tasks. Each call appends a `todo/write`
- * snapshot to the calling agent's session; replay is last-write-wins, and UIs render from session
- * events. A non-agent caller has no owning list and is rejected. Named exports preserve loader
- * injection metadata.
+ * Model-facing todo list with an indexed read tool and index-addressed write actions. Each write
+ * appends a `todo/write` snapshot to the calling agent's session; replay is last-write-wins, and
+ * UIs render from session events. A non-agent caller has no owning list and is rejected. Named
+ * exports preserve loader injection metadata.
  * @module @deepseek-ai/dsh-tool-todo
  */
 
@@ -12,6 +11,7 @@ import z from '@deepseek-ai/schemastery'
 import { z as zod } from 'zod'
 import type { ZodType } from 'zod'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { ValueSchemaSpec } from '@deepseek-ai/dsh-tools'
 import type { Session, TodoItem } from '@deepseek-ai/dsh-session'
 // Type-only: resolves ctx.sessionProjections for the optional unit child.
 import type {} from '@deepseek-ai/dsh-session-projection'
@@ -27,8 +27,15 @@ export const inject = ['tools']
 /** The valid {@link TodoItem} statuses, as a runtime set for input narrowing. */
 const STATUSES = ['pending', 'in_progress', 'completed'] as const
 
-/** The delta-action discriminant the model may pass; omitted (or `replace`) means full-list replacement. */
-export type TodoAction = 'replace' | 'clear' | 'merge' | 'remove'
+/** The required write-action discriminant. */
+export type TodoAction = 'add' | 'update' | 'remove' | 'clear'
+
+/** One index-addressed update against the current todo list. */
+interface TodoUpdate {
+  index: number
+  content?: string
+  status?: TodoItem['status']
+}
 
 /** Schemastery configuration for the todo tool consumer. */
 export interface Config {
@@ -48,12 +55,12 @@ export const Config: z<Config> = z.object({
 })
 
 const DESCRIPTION_HEAD =
-  'Record and update a structured task list for the current work. UPDATE specific tasks '
-  + 'with a delta instead of resending the whole list: use `action` — `merge` upserts each '
-  + 'entry by `content` (adds new tasks, updates the `status` of tasks that already exist), '
-  + '`remove` deletes the listed tasks, and `clear` empties the list; each delta merges '
-  + 'onto the current list. ONLY send the COMPLETE list with `action: replace` when the '
-  + 'task direction changes significantly, for example when the plan is restructured. '
+  'Record and update a structured task list for the current work without resending the whole list. '
+  + 'The `action` is REQUIRED: `add` appends new `todos`; `update` changes existing entries '
+  + 'using zero-based `updates[].index`; `remove` deletes zero-based `indices`; and `clear` empties '
+  + 'the list. Indices always refer to the current ordered list before that call. `update` never '
+  + 'adds a task, and an invalid index fails instead of appending. There is no whole-list replace. '
+  + 'Call `todo_read` before `update` or `remove` whenever the latest indexed list is not visible. '
   + 'Keep the list current as work progresses. Use it to plan multi-step work: add one '
   + 'todo per concrete step before you start. '
 
@@ -87,11 +94,9 @@ function describe(allowParallel: boolean): string {
 }
 
 /**
- * Validate and trim a raw todo delta: each entry must be non-empty, unique, and already
- * status-checked. Deliberately does NOT count `in_progress` items — a delta may legitimately add
- * one active task even when another already exists, and the active-count rule applies to the
- * *resulting* list, not the delta. The registry has already rejected an unknown `content`/`status`
- * shape, so the recorded casts express that guarantee.
+ * Validate and trim complete todo entries. The active-count rule applies to the resulting list,
+ * after the selected action has run. The registry has already rejected an unknown
+ * `content`/`status` field set, so the status cast records that guarantee.
  * @param raw - the model-supplied list, already schema-checked.
  * @returns the cleaned canonical list.
  */
@@ -112,6 +117,17 @@ function normalize(raw: { content: string; status: string }[]): TodoItem[] {
   return todos
 }
 
+/** Reject repeated display content in a resulting list. */
+function assertUniqueContent(todos: readonly TodoItem[]): void {
+  const seen = new Set<string>()
+  for (const todo of todos) {
+    if (seen.has(todo.content)) {
+      throw new Error(`invalid todos: duplicate content ${JSON.stringify(todo.content)}`)
+    }
+    seen.add(todo.content)
+  }
+}
+
 /**
  * Reject any list carrying more than one `in_progress` item unless the deployment allows parallel
  * work, preserving the deployment's single-active discipline on every action's result.
@@ -129,44 +145,163 @@ function assertSingleActive(todos: TodoItem[], allowParallel: boolean): void {
 }
 
 /**
- * The durable current list: the latest whole `todo/write` snapshot, or `[]` before the first
- * write. Merge actions build on this so the agent need not resend the entire list.
+ * The durable current list: the latest whole `todo/write` snapshot after the current
+ * `turn/start`, or `[]` before this turn's first write. Delta actions build on this so the agent
+ * need not resend the entire list.
  * @param session - the calling agent's session, read back to its latest todo snapshot.
  * @returns a copy of the current todo entries.
  */
 function currentTodoList(session: Session): TodoItem[] {
-  const last = session.events.findLast(event => event.type === 'todo/write')
-  return last ? last.data.todos.map(todo => ({ content: todo.content, status: todo.status })) : []
-}
-
-/**
- * Upsert-by-content: update the `status` of matched entries in place, append newly added entries,
- * and preserve the existing order of untouched entries.
- * @param current - the durable current list.
- * @param delta - the normalized entries to merge in.
- * @returns the merged full list.
- */
-function mergeInto(current: TodoItem[], delta: TodoItem[]): TodoItem[] {
-  const byContent = new Map(delta.map(todo => [todo.content, todo] as const))
-  const merged = current.map(todo => byContent.get(todo.content) ?? todo)
-  for (const todo of delta) {
-    if (!current.some(existing => existing.content === todo.content)) merged.push(todo)
+  for (let index = session.events.length - 1; index >= 0; index--) {
+    const event = session.events[index]
+    if (event === undefined) continue
+    if (event.type === 'todo/write') {
+      return event.data.todos.map(todo => ({ content: todo.content, status: todo.status }))
+    }
+    if (event.type === 'turn/start') return []
   }
-  return merged
+  return []
 }
 
 /**
- * For `replace` / `merge` / `remove` the model must supply the `todos` array; `clear` ignores it.
+ * Apply index-addressed changes without changing list length or order.
+ * @param current - the durable current list.
+ * @param updates - changes whose indices address `current` before this call.
+ * @returns the updated full list.
+ */
+function updateAtIndices(current: TodoItem[], updates: TodoUpdate[]): TodoItem[] {
+  const result = current.map(todo => ({ ...todo }))
+  const seen = new Set<number>()
+  for (const update of updates) {
+    const existing = current[update.index]
+    if (existing === undefined) {
+      throw new Error(`invalid todo index ${update.index}: current list has ${current.length} entries`)
+    }
+    if (seen.has(update.index)) {
+      throw new Error(`invalid todo updates: duplicate index ${update.index}`)
+    }
+    seen.add(update.index)
+    if (update.content === undefined && update.status === undefined) {
+      throw new Error(`invalid todo update at index ${update.index}: provide content or status`)
+    }
+    const content = update.content?.trim()
+    if (content !== undefined && content.length === 0) {
+      throw new Error('invalid todo: `content` must be a non-empty string')
+    }
+    result[update.index] = {
+      content: content ?? existing.content,
+      status: update.status ?? existing.status,
+    }
+  }
+  return result
+}
+
+/**
+ * Read the todo entries required by `add`.
  * @param args - the tool call arguments, already schema-checked.
- * @param action - the chosen action, used only to phrase the missing-argument error.
+ * @param action - the selected todo-list action.
  * @returns the present `todos` array.
  */
-function takeTodos(args: { todos?: TodoItem[] }, action: TodoAction): TodoItem[] {
+function takeTodos(args: { todos?: TodoItem[] }): TodoItem[] {
   if (args.todos === undefined) {
-    throw new Error(`todo_write requires a \`todos\` array for action "${action}"`)
+    throw new Error('todo_write requires a `todos` array for action "add"')
   }
   return args.todos
 }
+
+/** Read the changes required by `update`. */
+function takeUpdates(args: { updates?: TodoUpdate[] }): TodoUpdate[] {
+  if (args.updates === undefined || args.updates.length === 0) {
+    throw new Error('todo_write requires a non-empty `updates` array for action "update"')
+  }
+  return args.updates
+}
+
+/** Read the indices required by `remove`. */
+function takeIndices(args: { indices?: number[] }): number[] {
+  if (args.indices === undefined || args.indices.length === 0) {
+    throw new Error('todo_write requires a non-empty `indices` array for action "remove"')
+  }
+  return args.indices
+}
+
+/** Remove entries by their indices in the current list. */
+function removeAtIndices(current: TodoItem[], indices: number[]): TodoItem[] {
+  const selected = new Set<number>()
+  for (const index of indices) {
+    if (index < 0 || index >= current.length) {
+      throw new Error(`invalid todo index ${index}: current list has ${current.length} entries`)
+    }
+    if (selected.has(index)) throw new Error(`invalid todo indices: duplicate index ${index}`)
+    selected.add(index)
+  }
+  return current.filter((_todo, index) => !selected.has(index))
+}
+
+/** Closed-union backstop for todo actions. */
+/* v8 ignore next 3 -- the input schema rejects actions outside this closed union. */
+function assertNever(value: never): never {
+  throw new Error(`unreachable todo action: ${String(value)}`)
+}
+
+interface TodoResult {
+  todos: TodoItem[]
+  counts: {
+    pending: number
+    inProgress: number
+    completed: number
+  }
+}
+
+/** Build the canonical result shared by reads and writes. */
+function todoResult(todos: TodoItem[]): TodoResult {
+  const count = (status: TodoItem['status']): number => todos.filter(todo => todo.status === status).length
+  return {
+    todos: todos.map(todo => ({ content: todo.content, status: todo.status })),
+    counts: {
+      pending: count('pending'),
+      inProgress: count('in_progress'),
+      completed: count('completed'),
+    },
+  }
+}
+
+/** Render the complete current list with operation indices for the model. */
+function indexedTodoText(todos: readonly TodoItem[]): string {
+  if (todos.length === 0) return 'Current todo list: []'
+  const entries = todos.map((todo, index) => `${index} [${todo.status}] ${JSON.stringify(todo.content)}`)
+  return `Current todo list (zero-based indices):\n${entries.join('\n')}`
+}
+
+/** The result fields shared by todo_read and todo_write. */
+const TODO_RESULT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    todos: {
+      type: 'array',
+      required: true,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          content: { type: 'string', required: true },
+          status: { type: 'string', required: true, enum: [...STATUSES] },
+        },
+      },
+    },
+    counts: {
+      type: 'object',
+      additionalProperties: false,
+      required: true,
+      properties: {
+        pending: { type: 'integer', required: true },
+        inProgress: { type: 'integer', required: true },
+        completed: { type: 'integer', required: true },
+      },
+    },
+  },
+} as const satisfies ValueSchemaSpec
 
 /** Wire payload schema of the `todos` projection (whole list or pre-first-write null). */
 const todosProjectionSchema: ZodType<TodoItem[] | null> = zod.union([
@@ -178,8 +313,8 @@ const todosProjectionSchema: ZodType<TodoItem[] | null> = zod.union([
 ])
 
 /**
- * Register the `todo_write` tool on `ctx.tools` and, when the session-projection seam is composed,
- * the `todos` unit.
+ * Register the `todo_read` and `todo_write` tools on `ctx.tools` and, when the
+ * session-projection seam is composed, the `todos` unit.
  * @param ctx - registrant context carrying the tool registry.
  * @param config - deployment's explicit todo policy.
  */
@@ -205,22 +340,36 @@ export function apply(ctx: Context, config: Config): void {
     })
   })
   ctx.tools.register(defineTool({
+    name: 'todo_read',
+    description: 'Read the current ordered task list with zero-based indices. Call this before '
+      + '`todo_write` update or remove whenever the latest indexed list is not visible, including '
+      + 'after compaction. Never guess an index.',
+    parameters: {},
+    output: {
+      schema: TODO_RESULT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: indexedTodoText(value.todos) }],
+    },
+    execute(_args, exec) {
+      if (!exec.agent) throw new Error('todo_read requires an owning agent session')
+      return Promise.resolve(todoResult(currentTodoList(exec.agent.session)))
+    },
+    presentCall: () => ({ card: 'generic', title: 'Read todo list', kind: 'other', rawInput: {} }),
+  }))
+  ctx.tools.register(defineTool({
     name: 'todo_write',
     description: describe(allowParallel),
     parameters: {
       action: {
         type: 'string',
-        enum: ['replace', 'clear', 'merge', 'remove'],
-        description: 'replace (default): the whole list, replacing the previous one. '
-          + 'merge: upsert each entry by content (add new tasks, update the status of existing '
-          + 'tasks). remove: delete the listed contents. clear: empty the list. Each delta '
-          + 'operates on the current list (the latest todo/write).',
+        required: true,
+        enum: ['add', 'update', 'remove', 'clear'],
+        description: 'add: append `todos`. update: change entries addressed by zero-based '
+          + '`updates[].index`. remove: delete entries addressed by zero-based `indices`. clear: '
+          + 'empty the list. Whole-list replacement is not supported.',
       },
       todos: {
         type: 'array',
-        description: 'Task entries to change. replace (default): the COMPLETE list replacing the '
-          + 'previous one. merge: a delta to add entries or update their status (matched by '
-          + 'content). remove: the content values to delete (status ignored). Omit for clear.',
+        description: 'New task entries. Required by add; omitted by update, remove, and clear.',
         items: {
           type: 'object',
           additionalProperties: false,
@@ -235,39 +384,35 @@ export function apply(ctx: Context, config: Config): void {
           },
         },
       },
-    },
-    output: {
-      schema: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          todos: {
-            type: 'array',
-            required: true,
-            items: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                content: { type: 'string', required: true },
-                status: { type: 'string', required: true, enum: [...STATUSES] },
-              },
-            },
-          },
-          counts: {
-            type: 'object',
-            additionalProperties: false,
-            required: true,
-            properties: {
-              pending: { type: 'integer', required: true },
-              inProgress: { type: 'integer', required: true },
-              completed: { type: 'integer', required: true },
+      updates: {
+        type: 'array',
+        description: 'Changes for action update. Each zero-based index addresses the current list '
+          + 'before this call; provide content, status, or both. Updating never appends.',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            index: { type: 'integer', required: true, description: 'Zero-based current-list index.' },
+            content: { type: 'string', description: 'Replacement task text. Omit to keep it.' },
+            status: {
+              type: 'string',
+              enum: [...STATUSES],
+              description: 'Replacement lifecycle state. Omit to keep it.',
             },
           },
         },
       },
+      indices: {
+        type: 'array',
+        description: 'Zero-based current-list indices to delete for action remove.',
+        items: { type: 'integer' },
+      },
+    },
+    output: {
+      schema: TODO_RESULT_SCHEMA,
       render: (_args, value) => [{
         type: 'text',
-        text: `Updated todo list: ${value.counts.pending} pending, ${value.counts.inProgress} in progress, ${value.counts.completed} completed.`,
+        text: `Updated todo list: ${value.counts.pending} pending, ${value.counts.inProgress} in progress, ${value.counts.completed} completed.\n${indexedTodoText(value.todos)}`,
       }],
     },
     execute(args, exec) {
@@ -276,33 +421,30 @@ export function apply(ctx: Context, config: Config): void {
         // session) has nowhere to write it. Reject rather than silently no-op.
         throw new Error('todo_write requires an owning agent session')
       }
-      const action = args.action ?? 'replace'
+      const action = args.action
       const current = currentTodoList(exec.agent.session)
       let todos: TodoItem[]
-      if (action === 'clear') {
-        todos = []
-      } else {
-        const delta = normalize(takeTodos(args, action))
-        if (action === 'merge') {
-          todos = mergeInto(current, delta)
-        } else if (action === 'remove') {
-          const remove = new Set(delta.map(todo => todo.content))
-          todos = current.filter(todo => !remove.has(todo.content))
-        } else {
-          todos = delta
-        }
+      switch (action) {
+        case 'add':
+          todos = [...current, ...normalize(takeTodos(args))]
+          break
+        case 'update':
+          todos = updateAtIndices(current, takeUpdates(args))
+          break
+        case 'remove':
+          todos = removeAtIndices(current, takeIndices(args))
+          break
+        case 'clear':
+          todos = []
+          break
+        /* v8 ignore next 2 -- the input schema rejects actions outside this closed union. */
+        default:
+          return assertNever(action)
       }
+      assertUniqueContent(todos)
       assertSingleActive(todos, allowParallel)
       exec.agent.session.append('todo/write', { todos })
-      const count = (status: TodoItem['status']): number => todos.filter(todo => todo.status === status).length
-      return Promise.resolve({
-        todos: todos.map(todo => ({ content: todo.content, status: todo.status })),
-        counts: {
-          pending: count('pending'),
-          inProgress: count('in_progress'),
-          completed: count('completed'),
-        },
-      })
+      return Promise.resolve(todoResult(todos))
     },
     presentCall: args => ({ card: 'generic', title: 'Update todo list', kind: 'other', rawInput: args }),
   }))
