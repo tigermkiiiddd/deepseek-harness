@@ -27,6 +27,24 @@ A preset is a directory holding one `agent.cordis.yml`, optionally beside a `pre
 
 Locally authored presets live one directory per preset under `${DSH_HOME:-$HOME/.dsh}/.agent-presets/`, and the shipped set sits beside the deployment's own config. Use those when the user asks where to look. A deployment can configure other roots, so the path you read or edit comes from `list()` or `resolve()` — which is also where `copy()` reports what it just created.
 
+## Tool schema disclosure configuration
+
+`dsh-agent-tool-presentation` configures both the transport shape and schema disclosure. `mode` accepts `native`, `code`, or `both`. Its independent `lazyLoading` field controls progressive schema disclosure:
+
+```yaml
+- id: tool-presentation
+  name: '@deepseek-ai/dsh-agent-tool-presentation'
+  config:
+    mode: native
+    lazyLoading:
+      enabled: on # off | auto | on
+      activationThresholdTokens: 8000
+      listingMaxTokens: 4000
+      alwaysVisible: []
+```
+
+`enabled: on` always enables progressive disclosure, `off` uses complete eager schemas, and `auto` activates only when the estimated deferred-schema cost reaches `activationThresholdTokens`. `listingMaxTokens` bounds the compact catalog, while `alwaysVisible` names tools whose exact schemas remain directly visible.
+
 ## The roster service
 
 `ctx.agentPresets` owns discovery, authoring, and mounting. You reach it by mounting a temporary plugin that injects it and registers a tool for yourself — `cordis_mount` returns only the mount acknowledgement, so a registered tool is how a service answer gets back to you, and it becomes callable on your next step.

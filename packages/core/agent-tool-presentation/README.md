@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-The row an [agent preset](../../preset/agent-presets/README.md) carries to say which form of its tools the model sees: `native` (every schema), `code` (only `run_code` plus a generated TypeScript SDK), or `both`.
+The row an [agent preset](../../preset/agent-presets/README.md) carries to say which form of its tools the model sees: `native` (every schema), `code` (only `run_code` plus a generated TypeScript SDK), or `both`. Its optional `lazyLoading` block independently selects `off`, threshold-based `auto`, or `on` progressive disclosure for that preset.
 
 ## Why a row rather than a registry
 
@@ -14,7 +14,7 @@ What a preset can own is the **presentation** of that registry. `ctx.tools.prese
 
 `native` applies immediately. A code mode instead waits for `ctx.codeRuntime`, which is a host-plane service ([`dsh-code-runtime-worker-thread`](../../code-runtime/code-runtime-worker-thread/README.md)): a preset selecting Code Mode against a deployment composing no runtime then holds this row pending, and `dsh-agent-presets` refuses the mount naming this id. The alternative — applying optimistically — moves the failure to the session's first request, where the operator can act on neither the preset nor the composition.
 
-`mode` is required rather than defaulted, because a preset without this row already gets the deployment default; an omitted value would mean the row was composed for nothing.
+`mode` is required rather than defaulted, because a preset without this row already gets the deployment default; an omitted value would mean the row was composed for nothing. Omitting `lazyLoading` inherits the deployment default. Supplying it fixes the choice for the preset scope, so lazy and eager sessions can coexist in one process without a launcher or environment-variable switch.
 
 One agent declares one presentation. A second declaration in the same composition is refused rather than merged: two answers to "which form does the model see" is a contradiction, not an override.
 
@@ -24,7 +24,7 @@ Indirectly, through the projection it selects in `dsh-tools`: `code` presents `r
 
 #### KV Cache effect
 
-No direct invalidation; the presentation is fixed when the agent is composed, so its request prefix is stable for the session's life.
+No direct invalidation; both presentation axes are fixed when the agent is composed, so its request prefix is stable for the session's life. `tool_describe` returns an exact schema as an ordinary tool result and never rewrites the fixed prefix.
 
 ## Known Limitations and Deferred Work
 

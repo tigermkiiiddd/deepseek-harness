@@ -20,7 +20,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type { ToolPresentationMode } from '@deepseek-ai/dsh-tools'
+import type { LazyLoadingConfig, ToolPresentationMode } from '@deepseek-ai/dsh-tools'
 // Type-only: brings the `ctx.tools` Context merge into this program.
 import type {} from '@deepseek-ai/dsh-tools'
 
@@ -44,11 +44,22 @@ export interface Config {
    * composed for nothing.
    */
   mode: ToolPresentationMode
+  /**
+   * Optional per-preset progressive disclosure. Omission inherits the host
+   * default; `off`, `auto`, and `on` remain fixed for this preset's lifetime.
+   */
+  lazyLoading?: LazyLoadingConfig
 }
 
 /** Runtime schema. */
 export const Config: z<Config> = z.object({
   mode: z.union(['native', 'code', 'both'] as const).required(),
+  lazyLoading: z.object({
+    enabled: z.union(['off', 'auto', 'on'] as const),
+    activationThresholdTokens: z.natural().min(1),
+    listingMaxTokens: z.natural().min(1),
+    alwaysVisible: z.array(z.string()),
+  }),
 })
 
 /**
@@ -57,16 +68,17 @@ export const Config: z<Config> = z.object({
  * @param config - the selected presentation.
  */
 export function apply(ctx: Context, config: Config): void {
+  const lazyLoading = config.lazyLoading?.enabled === undefined ? undefined : config.lazyLoading
   // `presentAs` is itself the effect — it registers through the calling
   // context and hands back that exact disposer — so the declaration unwinds
   // with this row without a second wrapper owning it.
   if (config.mode === 'native') {
-    ctx.tools.presentAs('native')
+    ctx.tools.presentAs('native', lazyLoading)
     return
   }
   // The wait is the loud failure: an entry still pending on `codeRuntime` is
   // what `dsh-agent-presets` reports as an unusable row, naming this id.
   ctx.inject(['codeRuntime'], (runtimeCtx: Context) => {
-    runtimeCtx.tools.presentAs(config.mode)
+    runtimeCtx.tools.presentAs(config.mode, lazyLoading)
   })
 }

@@ -252,3 +252,14 @@
   config:
     fetch: false
     searchTimeoutMs: 60000
+
+# Configure this preset's tool schema disclosure.
+- id: tool-presentation
+  name: '@deepseek-ai/dsh-agent-tool-presentation'
+  config:
+    mode: native
+    lazyLoading:
+      enabled: on
+      activationThresholdTokens: 8000
+      listingMaxTokens: 4000
+      alwaysVisible: []

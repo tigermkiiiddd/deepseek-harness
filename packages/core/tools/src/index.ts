@@ -26,6 +26,15 @@ import type { CodeSdkLanguage } from './code-mode.ts'
 import { renderToolsSdk } from './ts-types.ts'
 import type { ToolSdkSchema } from './ts-types.ts'
 import { renderToolsSdkPy } from './py-types.ts'
+import {
+  LAZY_BRIDGE_NAMES,
+  createLazyBridgeTools,
+  executeDeferredTool,
+  renderLazyCatalog,
+  resolveLazyLoadingConfig,
+  resolveLazyLoadingState,
+} from './lazy-loading.ts'
+import type { LazyLoadingConfig, LazyLoadingState, ResolvedLazyLoadingConfig } from './lazy-loading.ts'
 
 /**
  * Language → SDK-section renderer. The registry looks up the loaded
@@ -102,6 +111,13 @@ export type { JsonValue } from '@deepseek-ai/dsh-session'
 export type { CodeDispatchEventData, CodeDispatchStartEventData } from './types.ts'
 
 export { CodeRunFailedError, RUN_CODE_NAME } from './code-mode.ts'
+export {
+  TOOL_SEARCH_NAME,
+  TOOL_DESCRIBE_NAME,
+  TOOL_CALL_NAME,
+  type LazyLoadingConfig,
+  type LazyLoadingMode,
+} from './lazy-loading.ts'
 export { jsonSchemaToTs, renderToolsSdk } from './ts-types.ts'
 export { jsonSchemaToPy, renderToolsSdkPy } from './py-types.ts'
 export { defineContentToolFixture, type ContentToolFixtureOptions } from './testing.ts'
@@ -663,6 +679,8 @@ export interface Config {
    * in `toolOrder` are invalid.
    */
   mode?: ToolPresentationMode
+  /** Progressive disclosure of exact tool schemas. Omission/off preserves the legacy full catalog. */
+  lazyLoading?: LazyLoadingConfig
   /**
    * Concurrency cap for a `run_code` program's overlapping sub-calls
    * (default 10, the loop scheduler's own default). Sub-calls follow the
@@ -721,6 +739,8 @@ class ToolLayer implements ScopeLayer {
    * "which form does the model see" is a contradiction, not a merge.
    */
   mode: ToolPresentationMode | undefined
+  /** Progressive-disclosure choice declared by this scope's preset. */
+  lazyLoading: ResolvedLazyLoadingConfig | undefined
 
   constructor(scope: ScopeKey | undefined) {
     this.tools = new NamedEntries(name => new Error(scope === undefined
@@ -731,7 +751,7 @@ class ToolLayer implements ScopeLayer {
   /** Whether every contribution table in this aggregate layer is empty. */
   isEmpty(): boolean {
     return this.tools.isEmpty() && this.restrictions.isEmpty() && this.guards.isEmpty()
-      && this.mode === undefined
+      && this.mode === undefined && this.lazyLoading === undefined
   }
 
   /** Whether every compiled restriction in this layer admits a global tool name. */
@@ -789,6 +809,17 @@ export class ToolRuntime extends Service {
 
   static Config: z<Config> = z.object({
     mode: z.union(['native', 'code', 'both'] as const).default('native'),
+    lazyLoading: z.object({
+      enabled: z.union(['off', 'auto', 'on'] as const).default('off'),
+      activationThresholdTokens: z.natural().min(1).default(8000),
+      listingMaxTokens: z.natural().min(1).default(4000),
+      alwaysVisible: z.array(z.string()).default([]),
+    }).default({
+      enabled: 'off',
+      activationThresholdTokens: 8000,
+      listingMaxTokens: 4000,
+      alwaysVisible: [],
+    }),
     maxParallelSubCalls: z.natural().min(1).default(10),
   })
 
@@ -814,6 +845,7 @@ export class ToolRuntime extends Service {
   )
   /** Presentation for scopes that declare none; {@link presentAs} shadows it per scope. */
   private readonly defaultMode: ToolPresentationMode
+  private readonly lazyLoading: ResolvedLazyLoadingConfig
   private readonly maxParallelSubCalls: number
   /**
    * Reserved presentation transport, kept outside the filterable registration
@@ -822,14 +854,28 @@ export class ToolRuntime extends Service {
    * transport is stateless beyond its closures over `this`.
    */
   private codeTransport: ToolDefinition | undefined
+  /** Stable bridge definitions inserted outside ordinary/filterable registrations. */
+  private readonly lazyBridges: ReadonlyMap<string, ToolDefinition>
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx, 'tools')
     // The schema already defaulted an omitted mode; the ?? narrows the
     // optional-input type for direct (non-Loader) construction in tests.
     this.defaultMode = config.mode ?? 'native'
+    this.lazyLoading = resolveLazyLoadingConfig(config.lazyLoading)
     this.maxParallelSubCalls = resolveMaxParallelSubCalls(config.maxParallelSubCalls)
+    this.lazyBridges = createLazyBridgeTools({
+      state: scope => this.lazyLoadingState(scope),
+      executeUnderlying: (name, args, exec) => executeDeferredTool(
+        this,
+        scope => this.lazyLoadingState(scope),
+        name,
+        args,
+        exec,
+      ),
+    })
     ctx.systemPrompt.tools(context => this.wireSchemas(context.scope))
+    if (this.lazyLoading.enabled !== 'off') ctx.systemPrompt.section(this.lazyCatalogSection())
     if (this.defaultMode !== 'native') {
       ctx.systemPrompt.section(this.collapseSection())
       ctx.systemPrompt.section(this.sdkSection())
@@ -891,6 +937,15 @@ export class ToolRuntime extends Service {
     }
   }
 
+  /** Compact, bounded discovery manifest; exact schemas remain server-side. */
+  private lazyCatalogSection(): { name: string; order: number; text: (context: { scope?: ScopeKey }) => string } {
+    return {
+      name: 'tools:lazy-catalog',
+      order: SDK_SECTION_ORDER + 1,
+      text: context => renderLazyCatalog(this.lazyLoadingState(context.scope), this.lazyLoadingFor(context.scope)),
+    }
+  }
+
   /**
    * The presentation one scope's agent sees: its own declaration, else the
    * deployment default.
@@ -908,6 +963,16 @@ export class ToolRuntime extends Service {
       if (mode !== undefined) return mode
     }
     return this.defaultMode
+  }
+
+  /** Resolve the nearest preset declaration, falling back to the deployment default. */
+  private lazyLoadingFor(scope?: ScopeKey): ResolvedLazyLoadingConfig {
+    const layers = this.layers.chainLayers(scope)
+    for (let index = layers.length - 1; index >= 0; index -= 1) {
+      const config = layers[index]?.lazyLoading
+      if (config !== undefined) return config
+    }
+    return this.lazyLoading
   }
 
   /**
@@ -928,6 +993,7 @@ export class ToolRuntime extends Service {
       peekRuntime: () => this.ctx.get('codeRuntime'),
       maxParallel: this.maxParallelSubCalls,
       shapeDispatchLog: dispatch => this.shapeDispatchLog(dispatch),
+      bindingSchemas: scope => this.codeBindingSchemas(scope),
     })
     return this.codeTransport
   }
@@ -941,13 +1007,15 @@ export class ToolRuntime extends Service {
    * composes Code Mode agents beside native ones in the same process, and a
    * process-global override would be the `mode` config field instead.
    * @param mode - the presentation the covered agents' models see.
+   * @param lazyLoading - optional progressive disclosure fixed by the preset.
    * @returns the exact disposer that restores the deployment default.
    */
-  presentAs(mode: ToolPresentationMode): () => void {
+  presentAs(mode: ToolPresentationMode, lazyLoading?: LazyLoadingConfig): () => void {
     const ctx = this.ctx
     if (scopeOf(ctx) === undefined) {
       throw new Error('tools.presentAs() requires a scoped context (agent.ctx): a context-global presentation is the `mode` config field on the tools row')
     }
+    const resolvedLazyLoading = lazyLoading === undefined ? undefined : resolveLazyLoadingConfig(lazyLoading)
     const dispose = ctx.effect(function* (this: ToolRuntime) {
       yield this.layers.effect(
         ctx,
@@ -956,7 +1024,11 @@ export class ToolRuntime extends Service {
             throw new Error(`tools.presentAs("${mode}") conflicts with "${layer.mode}" already declared for this scope; one composition selects one presentation`)
           }
           layer.mode = mode
-          return () => { layer.mode = undefined }
+          layer.lazyLoading = resolvedLazyLoading
+          return () => {
+            layer.mode = undefined
+            layer.lazyLoading = undefined
+          }
         },
         { label: 'tools.presentAs()' },
       )
@@ -967,6 +1039,9 @@ export class ToolRuntime extends Service {
       if (mode !== 'native') {
         yield ctx.systemPrompt.section(this.collapseSection())
         yield ctx.systemPrompt.section(this.sdkSection())
+      }
+      if (resolvedLazyLoading?.enabled !== undefined && resolvedLazyLoading.enabled !== 'off') {
+        yield ctx.systemPrompt.section(this.lazyCatalogSection())
       }
     }.bind(this), 'tools.presentAs()')
     // oxlint-disable-next-line typescript/no-misused-promises -- synchronous composite teardown; direct return preserves disposer identity
@@ -980,6 +1055,21 @@ export class ToolRuntime extends Service {
   private wireSchemas(scope?: ScopeKey): ToolProviderResult {
     const view = this.view(scope)
     const mode = this.modeFor(scope)
+    const lazyConfig = this.lazyLoadingFor(scope)
+    const lazy = this.lazyLoadingStateFromView(view, lazyConfig)
+    if (lazy.active) {
+      const nativeSchemas = [...view.visible.values()]
+        .filter((definition) => {
+          if (definition.name === RUN_CODE_NAME) return mode !== 'native'
+          return LAZY_BRIDGE_NAMES.has(definition.name) || lazyConfig.alwaysVisible.has(definition.name)
+        })
+        .filter(definition => mode !== 'code' || definition.name === RUN_CODE_NAME)
+        .map(definition => this.schemaOf(definition, false))
+      return {
+        schemas: nativeSchemas,
+        knownNames: [...view.knownNames, ...LAZY_BRIDGE_NAMES, ...(mode === 'native' ? [] : [RUN_CODE_NAME])],
+      }
+    }
     if (mode === 'native') {
       const schemas = [...view.visible.values()].map(definition => this.schemaOf(definition, false))
       return { schemas, knownNames: [...view.knownNames] }
@@ -1054,6 +1144,9 @@ export class ToolRuntime extends Service {
     if (name === RUN_CODE_NAME) {
       throw new Error(`tool name "${RUN_CODE_NAME}" is reserved for the Code Mode presentation transport and cannot be registered or shadowed`)
     }
+    if (LAZY_BRIDGE_NAMES.has(name)) {
+      throw new Error(`tool name "${name}" is reserved for tool presentation infrastructure and cannot be registered or shadowed`)
+    }
     return this.layers.effect(
       this.ctx,
       layer => layer.tools.insert(name, definition),
@@ -1082,8 +1175,12 @@ export class ToolRuntime extends Service {
       ...allow !== undefined ? { allow: new Set(allow) } : {},
       ...deny !== undefined ? { deny: new Set(deny) } : {},
     }
-    if ([...allow ?? [], ...deny ?? []].includes(RUN_CODE_NAME)) {
-      throw new Error(`tools.restrict() cannot name reserved Code Mode presentation transport "${RUN_CODE_NAME}"; restrict end-capability tools instead`)
+    const reserved = [...allow ?? [], ...deny ?? []].find(name => name === RUN_CODE_NAME || LAZY_BRIDGE_NAMES.has(name))
+    if (reserved !== undefined) {
+      if (reserved === RUN_CODE_NAME) {
+        throw new Error(`tools.restrict() cannot name reserved Code Mode presentation transport "${RUN_CODE_NAME}"; restrict end-capability tools instead`)
+      }
+      throw new Error(`tools.restrict() cannot name reserved presentation transport "${reserved}"; restrict end-capability tools instead`)
     }
     const known = this.view(scope).restrictableNames
     const unknown = [...allow ?? [], ...deny ?? []].filter(name => !known.has(name))
@@ -1189,6 +1286,13 @@ export class ToolRuntime extends Service {
     if (this.modeFor(scope) !== 'native') {
       visible.set(RUN_CODE_NAME, this.requireCodeTransport())
     }
+    const lazy = resolveLazyLoadingState(visible.values(), this.lazyLoadingFor(scope))
+    if (lazy.active) {
+      for (const [name, definition] of this.lazyBridges) {
+        visible.set(name, definition)
+        knownNames.add(name)
+      }
+    }
     return { visible, knownNames, restrictableNames }
   }
 
@@ -1235,10 +1339,40 @@ export class ToolRuntime extends Service {
     return [...this.view(scope).visible.values()].map(definition => this.schemaOf(definition, true))
   }
 
+  /** Current scope's lazy projection, derived from the authoritative registry view. */
+  private lazyLoadingState(scope?: ScopeKey): LazyLoadingState {
+    return this.lazyLoadingStateFromView(this.view(scope), this.lazyLoadingFor(scope))
+  }
+
+  private lazyLoadingStateFromView(view: ToolView, config: ResolvedLazyLoadingConfig): LazyLoadingState {
+    return resolveLazyLoadingState(view.visible.values(), config)
+  }
+
+  /** Exact bindings the Code Runtime may expose; deferred definitions stay behind the bridges. */
+  private codeBindingSchemas(scope?: ScopeKey): ToolSchema[] {
+    const view = this.view(scope)
+    const lazyConfig = this.lazyLoadingFor(scope)
+    const lazy = this.lazyLoadingStateFromView(view, lazyConfig)
+    return [...view.visible.values()]
+      .filter((definition) => {
+        if (definition.name === RUN_CODE_NAME) return false
+        if (!lazy.active) return true
+        return LAZY_BRIDGE_NAMES.has(definition.name) || lazyConfig.alwaysVisible.has(definition.name)
+      })
+      .map(definition => this.schemaOf(definition, true))
+  }
+
   /** Project visible callable tools onto the generated Code Mode SDK contract. */
   private sdkSchemas(scope?: ScopeKey): ToolSdkSchema[] {
-    return [...this.view(scope).visible.values()]
-      .filter(definition => definition.name !== RUN_CODE_NAME)
+    const view = this.view(scope)
+    const lazyConfig = this.lazyLoadingFor(scope)
+    const lazy = this.lazyLoadingStateFromView(view, lazyConfig)
+    return [...view.visible.values()]
+      .filter((definition) => {
+        if (definition.name === RUN_CODE_NAME) return false
+        if (!lazy.active) return true
+        return LAZY_BRIDGE_NAMES.has(definition.name) || lazyConfig.alwaysVisible.has(definition.name)
+      })
       .map((definition): ToolSdkSchema => {
         const output = snapshotJsonValue(definition.output.schema)
         /* v8 ignore next -- registration already validated and retained this schema as lossless JSON. */

@@ -12,7 +12,13 @@ import { createScope } from '@deepseek-ai/dsh-scope'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { CodeRuntime } from '@deepseek-ai/dsh-code-runtime'
 import type { CodeRunRequest, CodeRunResult } from '@deepseek-ai/dsh-code-runtime'
-import ToolRuntime, { RUN_CODE_NAME, defineTool } from '@deepseek-ai/dsh-tools'
+import ToolRuntime, {
+  RUN_CODE_NAME,
+  TOOL_CALL_NAME,
+  TOOL_DESCRIBE_NAME,
+  TOOL_SEARCH_NAME,
+  defineTool,
+} from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { apply, Config, inject, name } from '@deepseek-ai/dsh-agent-tool-presentation'
@@ -83,6 +89,24 @@ describe('the tool-presentation row', () => {
     const assembly = await ctx.systemPrompt.assemble({ scope: agent })
 
     expect(assembly.tools.map(tool => tool.name)).toEqual(['echo', RUN_CODE_NAME])
+  })
+
+  it('lets presets independently enable and disable progressive disclosure', async () => {
+    const ctx = await host()
+    const lazy = await mount(ctx, { mode: 'native', lazyLoading: { enabled: 'on' } }, 'lazy')
+    const eager = await mount(ctx, { mode: 'native', lazyLoading: { enabled: 'off' } }, 'eager')
+
+    const lazyAssembly = await ctx.systemPrompt.assemble({ scope: lazy.agent })
+    const eagerAssembly = await ctx.systemPrompt.assemble({ scope: eager.agent })
+
+    expect(lazyAssembly.tools.map(tool => tool.name)).toEqual([
+      TOOL_CALL_NAME,
+      TOOL_DESCRIBE_NAME,
+      TOOL_SEARCH_NAME,
+    ])
+    expect(lazyAssembly.sections.find(section => section.name === 'tools:lazy-catalog')?.text).toContain('echo')
+    expect(eagerAssembly.tools.map(tool => tool.name)).toEqual(['echo'])
+    expect(eagerAssembly.sections.some(section => section.name === 'tools:lazy-catalog')).toBe(false)
   })
 
   it('restores the deployment default when the agent unloads', async () => {

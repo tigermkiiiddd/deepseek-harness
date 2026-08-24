@@ -76,10 +76,30 @@ function entryListProblem(rows: unknown, at = ''): string | undefined {
 }
 
 /**
+ * Why one composition text cannot mount, or undefined when it looks loadable.
+ * Parsed with the loader's own YAML dialect ({@link entryListSchema}, the one
+ * carrying `!!js`), so a caller validating before a preset file exists can
+ * never call a composition broken that the loader would accept.
+ * @param text - the composition file's contents.
+ * @returns one human-readable reason, or undefined when the text is loadable.
+ */
+export function compositionTextProblem(text: string): string | undefined {
+  let rows: unknown
+  try {
+    rows = load(text, { schema: entryListSchema })
+  } catch (error) {
+    /* v8 ignore next -- js-yaml throws YAMLException (an Error) for every parse failure; the fallback keeps a hostile value readable */
+    const full = error instanceof Error ? error.message : String(error)
+    // First line only: js-yaml appends a multi-line code-frame snippet, and
+    // the reason is displayed on a roster card, not in a terminal.
+    return `the composition is not valid YAML: ${full.replace(/\n[\s\S]*$/, '')}`
+  }
+  return entryListProblem(rows)
+}
+
+/**
  * Why the composition at `path` cannot mount, or undefined when it looks
- * loadable. Parsed with the loader's own YAML dialect ({@link entryListSchema},
- * the one carrying `!!js`), so health can never call a composition broken
- * that the loader would accept.
+ * loadable. Delegates to {@link compositionTextProblem} once the file is read.
  * @param path - absolute path of the composition file.
  * @returns one human-readable reason, or undefined when the file is loadable.
  */
@@ -92,17 +112,7 @@ async function compositionProblem(path: string): Promise<string | undefined> {
     // deleted in between, permissions — is the same answer as unparsable.
     return `the composition file ${COMPOSITION_FILE} cannot be read`
   }
-  let rows: unknown
-  try {
-    rows = load(content, { schema: entryListSchema })
-  } catch (error) {
-    /* v8 ignore next -- js-yaml throws YAMLException (an Error) for every parse failure; the fallback keeps a hostile value readable */
-    const full = error instanceof Error ? error.message : String(error)
-    // First line only: js-yaml appends a multi-line code-frame snippet, and
-    // the reason is displayed on a roster card, not in a terminal.
-    return `the composition is not valid YAML: ${full.replace(/\n[\s\S]*$/, '')}`
-  }
-  return entryListProblem(rows)
+  return compositionTextProblem(content)
 }
 
 /**

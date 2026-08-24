@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { COMPOSITION_FILE, discoverPresets, scanRoot } from '@deepseek-ai/dsh-agent-presets'
+import { COMPOSITION_FILE, compositionTextProblem, discoverPresets, scanRoot } from '@deepseek-ai/dsh-agent-presets'
 
 const fsHarness = vi.hoisted(() => ({
   nextReadError: undefined as NodeJS.ErrnoException | undefined,
@@ -217,5 +217,16 @@ describe('composition health', () => {
 
   it('accepts an empty list', async () => {
     expect(await scanned('[]\n')).toBeUndefined()
+  })
+})
+
+describe('compositionTextProblem', () => {
+  it('answers the same loadability verdict as the file-based health check, without a path', () => {
+    // Callers that validate composition text before any preset file exists
+    // (a member's own preset at creation) must reach the loader's exact
+    // dialect: `!!js` accepted, the row shape enforced.
+    expect(compositionTextProblem('- id: x\n  name: some-plugin\n  config:\n    value: !!js "1 + 1"\n')).toBeUndefined()
+    expect(compositionTextProblem('name: not-a-list\n')).toMatch(/top-level list of plugin rows/)
+    expect(compositionTextProblem('- id: x\n  name: [unclosed\n')).toMatch(/not valid YAML/)
   })
 })

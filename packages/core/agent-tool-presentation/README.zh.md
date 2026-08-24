@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-[agent preset](../../preset/agent-presets/README.zh.md) 用来声明「模型看到的工具是哪一种形态」的那一行：`native`（全部 schema）、`code`（只有 `run_code` 加一份生成的 TypeScript SDK）或 `both`。
+[agent preset](../../preset/agent-presets/README.zh.md) 用来声明「模型看到的工具是哪一种形态」的那一行：`native`（全部 schema）、`code`（只有 `run_code` 加一份生成的 TypeScript SDK）或 `both`。可选的 `lazyLoading` 块独立选择本 preset 的渐进披露方式：`off`、按阈值启用的 `auto` 或 `on`。
 
 ## 为什么是一行插件，而不是把注册表搬下来
 
@@ -14,7 +14,7 @@ preset 能拥有的是这份注册表的**呈现方式**。`ctx.tools.presentAs(
 
 `native` 立即生效。code 类模式则等待 `ctx.codeRuntime`——这是一个宿主平面服务（[`dsh-code-runtime-worker-thread`](../../code-runtime/code-runtime-worker-thread/README.zh.md)）：若某个 preset 在未组装运行时的部署上选择 Code Mode，本行就停在 pending，`dsh-agent-presets` 会指名此 id 拒绝挂载。另一种做法——先乐观应用——会把失败推迟到该会话的第一次请求，那时操作者对 preset 和组装都已无从下手。
 
-`mode` 是必填而非有默认值：不带这一行的 preset 本来就会拿到部署默认值，省略它等于这一行白组装了。
+`mode` 是必填而非有默认值：不带这一行的 preset 本来就会拿到部署默认值，省略它等于这一行白组装了。省略 `lazyLoading` 会继承部署默认值；显式填写后，该选择固定在 preset scope 上，因此同一进程可以同时运行延迟模式与全量模式，无需启动器或环境变量开关。
 
 一个 agent 只声明一次呈现方式。同一份组装里的第二次声明会被拒绝而不是合并：对「模型看到哪种形态」给出两个答案是矛盾，不是覆盖。
 
@@ -24,7 +24,7 @@ preset 能拥有的是这份注册表的**呈现方式**。`ctx.tools.presentAs(
 
 #### KV Cache effect
 
-没有直接的失效影响；呈现方式在 agent 组装时即固定，因此其请求前缀在该会话的整个生命周期内保持稳定。
+没有直接的失效影响；两条呈现轴都在 agent 组装时固定，因此其请求前缀在该会话的整个生命周期内保持稳定。`tool_describe` 只把完整 schema 作为普通工具结果返回，不会重写固定前缀。
 
 ## 已知限制与暂缓事项
 

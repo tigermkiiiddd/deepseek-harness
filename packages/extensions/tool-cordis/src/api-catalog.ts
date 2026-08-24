@@ -2020,6 +2020,32 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the new topic id.',
       },
       {
+        signature: 'getConfig(memberId: string, sessionId: string): Promise<SessionConfigSnapshot>',
+        description: 'The member\'s resolved session configuration set plus the model shortcut. The snapshot is derived from options cached when the topic was created, loaded, or updated — create or load the topic first.',
+        parameters: [{ name: 'memberId', description: 'the member that owns the topic.' }, { name: 'sessionId', description: 'the topic whose config is read.' }],
+        returns: 'the resolved options and the current model, if any.',
+        throws: ['when the member has no cached options for the topic.'],
+      },
+      {
+        signature: 'setConfig(memberId: string, sessionId: string, configId: string, value: string): Promise<SessionConfigSnapshot>',
+        description: 'Set one session configuration option (e.g. `"model"`) and return the updated snapshot. The value is validated by the agent.',
+        parameters: [{ name: 'memberId', description: 'the member that owns the topic.' }, { name: 'sessionId', description: 'the topic whose option is set.' }, { name: 'configId', description: 'the option id, e.g. `"model"`.' }, { name: 'value', description: 'the new value id.' }],
+        returns: 'the updated snapshot.',
+      },
+      {
+        signature: 'listProviders(memberId: string): Promise<MemberProviderInfo[]>',
+        description: 'The providers the member advertises, gated on the `providers` capability.',
+        parameters: [{ name: 'memberId', description: 'the member whose providers are listed.' }],
+        returns: 'the provider list.',
+        throws: ['when the member did not advertise `providers` in `initialize`.'],
+      },
+      {
+        signature: 'setProvider(memberId: string, config: MemberProviderConfigInput): Promise<void>',
+        description: 'Configure one provider (member-scoped). The agent stores the routing config on its own side; the harness never persists secrets.',
+        parameters: [{ name: 'memberId', description: 'the member whose provider is configured.' }, { name: 'config', description: 'the provider id, protocol, base URL, and optional headers.' }],
+        throws: ['when the member did not advertise `providers` in `initialize`.'],
+      },
+      {
         signature: 'prompt(memberId: string, sessionId: string, text: string): Promise<{ promptId: string }>',
         description: 'Accept one prompt turn and return immediately; chunks stream as `team/member-update` events and settlement as `team/turn-end`.',
         parameters: [{ name: 'memberId', description: 'the member to prompt.' }, { name: 'sessionId', description: 'the member topic to prompt in.' }, { name: 'text', description: 'the user text for this turn.' }],
@@ -2219,9 +2245,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     description: 'Tool registry and execution pipeline. Scoped registrations shadow globals; one visibility resolver feeds presentation, lookup, and dispatch.',
     methods: [
       {
-        signature: 'presentAs(mode: ToolPresentationMode): () => void',
+        signature: 'presentAs(mode: ToolPresentationMode, lazyLoading?: LazyLoadingConfig): () => void',
         description: 'Present the calling scope\'s tools in `mode` instead of the deployment default. Nearest scope on the chain wins, so a preset\'s standing declaration covers every agent joined under it.\n\nScoped only, and one declaration per scope: this is how an agent preset composes Code Mode agents beside native ones in the same process, and a process-global override would be the `mode` config field instead.',
-        parameters: [{ name: 'mode', description: 'the presentation the covered agents\' models see.' }],
+        parameters: [{ name: 'mode', description: 'the presentation the covered agents\' models see.' }, { name: 'lazyLoading', description: 'optional progressive disclosure fixed by the preset.' }],
         returns: 'the exact disposer that restores the deployment default.',
       },
       {
@@ -3763,6 +3789,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface KvUnitDescriptor {\n    readonly name: string;\n    readonly version: number;\n    readonly tables: readonly string[];\n    readonly hasGlobal: boolean;\n}',
   },
   {
+    name: 'LazyLoadingConfig',
+    declaration: 'export interface LazyLoadingConfig {\n    enabled?: LazyLoadingMode;\n    activationThresholdTokens?: number;\n    listingMaxTokens?: number;\n    alwaysVisible?: string[];\n}',
+  },
+  {
+    name: 'LazyLoadingMode',
+    declaration: 'export type LazyLoadingMode = \'off\' | \'auto\' | \'on\';',
+  },
+  {
     name: 'LlmAdapter',
     declaration: 'export abstract class LlmAdapter {\n    providerInfo(provider: string): LlmProviderInfo;\n    providerRetryPolicy(_provider: string): ResolvedRetryPolicy | undefined;\n    listModels(_provider: string): Promise<readonly LlmModelInfo[]>;\n    resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo>;\n    async prepareCall(provider: string, model: string, signal?: AbortSignal): Promise<PreparedAdapterCall>;\n    abstract stream(options: GenerateOptions): AsyncIterable<StreamChunk>;\n}',
   },
@@ -3868,7 +3902,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'MemberConfig',
-    declaration: 'export interface MemberConfig {\n    readonly id: string;\n    readonly title?: string;\n    readonly description?: string;\n    readonly kind?: \'dsh\';\n    readonly command?: string;\n    readonly args?: string[];\n    readonly cwd?: string;\n    readonly env?: Record<string, string>;\n    readonly permission?: \'allow\' | \'reject\';\n    readonly autostart?: boolean;\n}',
+    declaration: 'export interface MemberConfig {\n    readonly id: string;\n    readonly title?: string;\n    readonly description?: string;\n    readonly kind?: \'dsh\';\n    readonly command?: string;\n    readonly args?: string[];\n    readonly cwd?: string;\n    readonly env?: Record<string, string>;\n    readonly permission?: \'allow\' | \'reject\';\n    readonly autostart?: boolean;\n    readonly preset?: string;\n}',
   },
   {
     name: 'MemberConfigInput',
@@ -3879,12 +3913,20 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface MemberHistoryEntry {\n    readonly role: \'user\' | \'assistant\';\n    readonly text: string;\n}',
   },
   {
+    name: 'MemberProviderConfigInput',
+    declaration: 'export interface MemberProviderConfigInput {\n    readonly id: string;\n    readonly apiType: string;\n    readonly baseUrl: string;\n    readonly headers: Record<string, string> | undefined;\n}',
+  },
+  {
+    name: 'MemberProviderInfo',
+    declaration: 'export interface MemberProviderInfo {\n    readonly id: string;\n    readonly required: boolean;\n    readonly supported: readonly string[];\n    readonly current: {\n        readonly apiType: string;\n        readonly baseUrl: string;\n    } | undefined;\n}',
+  },
+  {
     name: 'MemberSession',
     declaration: 'export interface MemberSession {\n    readonly sessionId: string;\n    readonly cwd: string;\n    readonly title?: string | undefined;\n    readonly updatedAt?: string | undefined;\n}',
   },
   {
     name: 'MemberSnapshot',
-    declaration: 'export interface MemberSnapshot {\n    readonly id: string;\n    readonly title: string;\n    readonly description: string | undefined;\n    readonly kind: \'dsh\' | undefined;\n    readonly status: MemberStatus;\n    readonly capabilities: MemberCapabilities | undefined;\n    readonly autostart: boolean;\n    readonly lastError: string | undefined;\n}',
+    declaration: 'export interface MemberSnapshot {\n    readonly id: string;\n    readonly title: string;\n    readonly description: string | undefined;\n    readonly kind: \'dsh\' | undefined;\n    readonly status: MemberStatus;\n    readonly capabilities: MemberCapabilities | undefined;\n    readonly autostart: boolean;\n    readonly lastError: string | undefined;\n    readonly model: string | undefined;\n}',
   },
   {
     name: 'MemberStatus',
@@ -4279,12 +4321,24 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type SessionAvailability = \'live\' | \'persisted\';',
   },
   {
+    name: 'SessionConfigOptionInfo',
+    declaration: 'export interface SessionConfigOptionInfo {\n    readonly id: string;\n    readonly name: string;\n    readonly category: string | undefined;\n    readonly type: \'select\' | \'boolean\';\n    readonly currentValue: string | boolean;\n    readonly options: readonly SessionConfigValueInfo[];\n}',
+  },
+  {
+    name: 'SessionConfigSnapshot',
+    declaration: 'export interface SessionConfigSnapshot {\n    readonly options: readonly SessionConfigOptionInfo[];\n    readonly model: {\n        readonly currentValue: string;\n        readonly options: readonly SessionConfigValueInfo[];\n    } | undefined;\n}',
+  },
+  {
+    name: 'SessionConfigValueInfo',
+    declaration: 'export interface SessionConfigValueInfo {\n    readonly value: string;\n    readonly name: string;\n    readonly description: string | undefined;\n}',
+  },
+  {
     name: 'SessionEvent',
     declaration: 'export type SessionEvent<T extends SessionEventType = SessionEventType> = {\n    [K in SessionEventType]: {\n        type: K;\n        seq: number;\n        time: number;\n        data: SessionEventMap[K];\n        ignorable?: true;\n    } & (K extends SurfaceEventType ? {\n        sourceEventSeqs?: number[];\n        surfaceOp?: SurfaceOp;\n    } : object);\n}[T];',
   },
   {
     name: 'SessionEventMap',
-    declaration: 'export interface SessionEventMap {\n    \'turn/start\': {\n        turn: number;\n    };\n    \'turn/end\': {\n        turn: number;\n        reason: TurnEndReason;\n    };\n    \'step/start\': {\n        turn: number;\n        step: number;\n    };\n    \'step/end\': {\n        turn: number;\n        step: number;\n    };\n    \'user/message\': UserMessage;\n    \'assistant/chunk\': {\n        turn: number;\n        step: number;\n        chunk: StreamChunk;\n    };\n    \'assistant/message\': {\n        turn: number;\n        step: number;\n        message: AssistantMessage;\n        usage?: TokenUsage;\n        interrupted?: true;\n    };\n    \'tool/call\': {\n        turn: number;\n        step: number;\n        callId: CallId;\n        name: string;\n        arguments: string;\n    };\n    \'tool/result\': {\n        turn: number;\n        step: number;\n        message: ToolResultMessage;\n        error?: {\n            name: string;\n            code: string;\n        };\n        meta?: JsonValue;\n    };\n    \'todo/write\': {\n        todos: TodoItem[];\n    };\n    \'request/header\': {\n        header: EpochHeader;\n        reason: RequestHeaderReason;\n    };\n    \'request/context\': RequestContext;\n    \'session/end-seed\': Record<string, never>;\n}',
+    declaration: 'export interface SessionEventMap {\n    \'turn/start\': {\n        turn: number;\n    };\n    \'turn/end\': {\n        turn: number;\n        reason: TurnEndReason;\n    };\n    \'step/start\': {\n        turn: number;\n        step: number;\n    };\n    \'step/end\': {\n        turn: number;\n        step: number;\n    };\n    \'user/message\': UserMessage;\n    \'assistant/chunk\': {\n        turn: number;\n        step: number;\n        chunk: StreamChunk;\n    };\n    \'assistant/message\': {\n        turn: number;\n        step: number;\n        message: AssistantMessage;\n        usage?: TokenUsage;\n        interrupted?: true;\n    };\n    \'tool/call\': {\n        turn: number;\n        step: number;\n        callId: CallId;\n        name: string;\n        arguments: string;\n    };\n    \'tool/result\': {\n        turn: number;\n        step: number;\n        message: ToolResultMessage;\n        error?: {\n            name: string;\n            code: string;\n        };\n        meta?: JsonValue;\n    };\n    \'todo/write\': {\n        todos: TodoItem[];\n    };\n    \'request/header\': {\n        header: EpochHeader;\n        reason: RequestHeaderReason;\n    };\n    \'request/context\': RequestContext;\n    \'session/cwd\': {\n        cwd: string;\n    };\n    \'session/end-seed\': Record<string, never>;\n}',
   },
   {
     name: 'SessionEventMetadataFilter',
@@ -4823,12 +4877,20 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface TeamMembership {\n    readonly root: Agent;\n    readonly id: TeamId;\n    readonly role: \'lead\' | \'teammate\';\n    readonly name: string;\n}',
   },
   {
-    name: 'TeamMemberView',
-    declaration: 'export interface TeamMemberView {\n    readonly id: SessionId;\n    readonly name: string;\n    readonly role: \'lead\' | \'teammate\';\n    readonly status: \'running\' | \'idle\' | \'inactive\' | \'provisioning\' | \'failed\';\n    readonly description?: string;\n    readonly provider?: string;\n    readonly context?: \'fresh\' | \'fork\';\n    readonly model?: string;\n    readonly diagnostics: string[];\n}',
-  },
-  {
     name: 'TeamMessageId',
     declaration: 'export type TeamMessageId = Branded<\'TeamMessageId\'>;',
+  },
+  {
+    name: 'TeamPermissionHandler',
+    declaration: 'export type TeamPermissionHandler = (request: TeamPermissionRequest) => TeamPermissionOutcome | undefined | Promise<TeamPermissionOutcome | undefined>;',
+  },
+  {
+    name: 'TeamPermissionOutcome',
+    declaration: 'export type TeamPermissionOutcome = {\n    readonly outcome: \'selected\';\n    readonly optionId: string;\n} | {\n    readonly outcome: \'cancelled\';\n};',
+  },
+  {
+    name: 'TeamPermissionRequest',
+    declaration: 'export interface TeamPermissionRequest {\n    readonly requestId: string;\n    readonly memberId: string;\n    readonly sessionId: string;\n    readonly toolCall: ToolCallUpdate;\n    readonly options: readonly PermissionOption[];\n}',
   },
   {
     name: 'TeamTaskAction',
@@ -5048,7 +5110,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolRuntime',
-    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    constructor(ctx: Context, config: Config = {});\n    presentAs(mode: ToolPresentationMode): () => void;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n}',
+    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    constructor(ctx: Context, config: Config = {});\n    presentAs(mode: ToolPresentationMode, lazyLoading?: LazyLoadingConfig): () => void;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n}',
   },
   {
     name: 'ToolRuntimeScheduler',
