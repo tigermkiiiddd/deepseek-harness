@@ -80,7 +80,7 @@ afterEach(async () => {
   const pending = fibers.splice(0)
   await Promise.allSettled(pending.reverse().map(async fiber => fiber.dispose()))
   // Reset mock-server env so later tests do not inherit scripted behavior.
-  for (const key of ['MOCK_TEXT', 'MOCK_SESSION_ID', 'MOCK_HISTORY_RICH', 'MOCK_PERMISSION', 'MOCK_CONFIG_OPTIONS', 'MOCK_ECHO_IMAGES']) {
+  for (const key of ['MOCK_TEXT', 'MOCK_SESSION_ID', 'MOCK_HISTORY_RICH', 'MOCK_PERMISSION', 'MOCK_CONFIG_OPTIONS', 'MOCK_ECHO_IMAGES', 'MOCK_EXT', 'MOCK_FORK']) {
     Reflect.deleteProperty(process.env, key)
   }
 })
@@ -276,31 +276,51 @@ describe('member session bridge', () => {
     }))
   })
 
-  it('rejects fork loud but accepts rerun as a no-op for member session ids', async () => {
+  it('forks a member topic through native session/fork and accepts rerun as resend', async () => {
+    setMockEnv({ MOCK_FORK: '1', MOCK_SESSION_ID: 'source-topic' })
     const ctx = await harness()
     const api = createApiProxy(ctx, DEFAULTS)
-    const sessionId = SessionId('member:architect:some-topic')
-    // A member topic cannot truncate its own log; the caller's follow-up prompt
-    // is the re-run. Fork has no ACP inverse in the dsh bridge — stays rejected.
-    const fork = expectErr(await api.sessions.fork(request({ sessionId })))
-    expect(fork.code).toBe('internal')
-    expect(fork.message).toContain('not supported for member sessions')
-    const rerun = expectOk(await api.sessions.rerun(request({ sessionId, atSeq: 5 })))
+    await api.team.start(request({ memberId: 'architect' }))
+    await api.team.newSession(request({ memberId: 'architect' }))
+    const forked = expectOk(await api.sessions.fork(request({
+      sessionId: SessionId('member:architect:source-topic'),
+    })))
+    expect(forked.sessionId).toMatch(/^member:architect:fork-/)
+    // The client's rerun anchor is a virtual-session seq; a re-run stays
+    // "the caller's follow-up prompt as a new turn" for now.
+    const rerun = expectOk(await api.sessions.rerun(request({ sessionId: SessionId('member:architect:source-topic'), atSeq: 5 })))
     expect(rerun.accepted).toBe(true)
   })
 
-  it('refuses queue updates for member session ids loud', async () => {
+  it('runs member queue operations through the dsh/session/queue extension', async () => {
+    setMockEnv({ MOCK_EXT: '1', MOCK_SESSION_ID: 'queue-topic' })
     const ctx = await harness()
     const api = createApiProxy(ctx, DEFAULTS)
-    // Member topics have no local agent inbox; the refusal must not masquerade
-    // as "queued item is no longer pending".
-    const error = expectErr(await api.sessions.updateQueue(request({
-      sessionId: SessionId('member:architect:some-topic'),
-      itemId: 'q-1' as never,
+    await api.team.start(request({ memberId: 'architect' }))
+    const sessionId = SessionId('member:architect:queue-topic')
+
+    const removed = expectErr(await api.sessions.updateQueue(request({
+      sessionId,
+      itemId: 'q-missing' as never,
       action: { kind: 'remove' },
     })))
-    expect(error.code).toBe('internal')
-    expect(error.message).toContain('not supported for member sessions')
+    // A missing item still fails loud, but with the queue's own vocabulary —
+    // not the old blanket refusal.
+    expect(removed.code).toBe('internal')
+    expect(removed.message).toContain('no longer pending')
+  })
+
+  it('renames a member topic through the dsh/session/rename extension', async () => {
+    setMockEnv({ MOCK_EXT: '1', MOCK_SESSION_ID: 'rename-topic' })
+    const ctx = await harness()
+    const api = createApiProxy(ctx, DEFAULTS)
+    await api.team.start(request({ memberId: 'architect' }))
+    const renamed = expectOk(await api.sessions.rename(request({
+      sessionId: SessionId('member:architect:rename-topic'),
+      title: 'New Name',
+    })))
+    expect(renamed.title).toBe('New Name')
+    expect(renamed.seq).toBe(1)
   })
 
   it('carries a composed title projection in session.list', async () => {

@@ -113,6 +113,7 @@ import type {
   AskUserQuestionAnswer, AskUserQuestionItem, AskUserQuestionRequest,
 } from '@deepseek-ai/dsh-user-questions'
 import { UserQuestionError } from '@deepseek-ai/dsh-user-questions'
+import type { TeamUserQuestionAnswer } from '@deepseek-ai/dsh-team'
 import { DirectoryPickerError } from '@deepseek-ai/dsh-host-directory-picker'
 import {
   ApiRemoteSessionNotFound as SessionNotFound,
@@ -1242,7 +1243,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
   /** Resolve the team service if composed. */
   function teamService(): TeamServiceShape | undefined {
-    return ctx.get('team')
+    // The structural face widens incrementally as member capabilities move
+    // onto the wire; the concrete service always satisfies it.
+    return ctx.get('team') as unknown as TeamServiceShape | undefined
   }
 
   /**
@@ -1366,7 +1369,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       const pending: PendingQuestion = {
         rpcId,
         sessionId,
-        questions: request.questions,
+        questions: [...request.questions],
         resolve: (answer) => {
           void team.answerUserQuestion(request.memberId, request.requestId, answer).catch((error: unknown) => {
             ctx.logger.warn(`api-proxy: failed to answer member question batch: ${String(error)}`)
@@ -1382,7 +1385,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       pendingQuestions.set(rpcId, pending)
       const envelope: RpcRequest<MuxFrame> = {
         rpcId,
-        payload: { type: 'question/requested', sessionId, questions: request.questions },
+        payload: { type: 'question/requested', sessionId, questions: [...request.questions] },
       }
       for (const queue of muxQueues) queue.push(envelope)
       return undefined
@@ -1543,7 +1546,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         request.signal?.addEventListener('abort', onAbort, { once: true })
         const envelope: RpcRequest<MuxFrame> = {
           rpcId,
-          payload: { type: 'question/requested', sessionId, questions: request.questions },
+          payload: { type: 'question/requested', sessionId, questions: [...request.questions] },
         }
         for (const queue of muxQueues) queue.push(envelope)
       })
@@ -2078,21 +2081,6 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
   }
 
   /**
-   * Shared refusal for session-domain operations that read host logs and
-   * therefore cannot apply to member topics.
-   * @param request - the RPC request being refused.
-   * @param operation - the human-readable operation name for the message.
-   * @returns a wire error response.
-   */
-  function memberUnsupported<T>(request: RpcRequest<unknown>, operation: string): RpcResponse<T> {
-    return err(request, {
-      code: 'internal',
-      message: `${operation} is not supported for member sessions`,
-      details: {},
-    })
-  }
-
-  /**
    * Resolve one requested identity to a live agent, creating or resuming it once.
    * An undefined cwd is the free-session request: the new session's header
    * records no working directory, and identity matching accepts only a
@@ -2340,6 +2328,16 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     readHistoryEvents(memberId: string, sessionId: string): Promise<TranslatedSessionEvent[]>
     isTurnInFlight(memberId: string, sessionId: string): boolean
     newSession(memberId: string): Promise<string>
+    renameTopic(memberId: string, sessionId: string, title: string): Promise<{ title: string; seq: number }>
+    forkTopic(memberId: string, sessionId: string): Promise<string>
+    queueOp(memberId: string, sessionId: string, payload: Record<string, unknown>): Promise<Record<string, unknown>>
+    onUserQuestion(handler: (request: {
+      readonly requestId: string
+      readonly memberId: string
+      readonly sessionId?: string
+      readonly questions: readonly AskUserQuestionItem[]
+    }) => TeamUserQuestionAnswer | undefined | Promise<TeamUserQuestionAnswer | undefined>): () => void
+    answerUserQuestion(memberId: string, requestId: string, answer: TeamUserQuestionAnswer): Promise<boolean>
     prompt(memberId: string, sessionId: string, text: string): Promise<{ promptId: string }>
     promptContent(memberId: string, sessionId: string, content: readonly MemberPromptBlock[]): Promise<{ promptId: string }>
     cancel(memberId: string, sessionId: string): Promise<void>
@@ -2890,7 +2888,20 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       async rename(request) {
         const { sessionId, title } = request.payload
-        if (isMemberSessionId(sessionId)) return memberUnsupported(request, 'rename')
+        if (isMemberSessionId(sessionId)) {
+          const parsed = parseMemberSessionId(sessionId)
+          if (parsed === undefined) {
+            return err(request, { code: 'session-not-found', message: `invalid member session id "${sessionId}"`, details: { sessionId } })
+          }
+          const team = teamService()
+          if (team === undefined) return teamUnavailable(request)
+          try {
+            const renamed = await team.renameTopic(parsed.memberId, parsed.topicId, title)
+            return ok(request, { title: renamed.title, seq: renamed.seq })
+          } catch (error: unknown) {
+            return teamError(request, error)
+          }
+        }
         const found = await agentFor(sessionId)
         if ('error' in found) return err(request, found.error)
         const titles = ctx.get('sessionTitle')
@@ -2921,7 +2932,26 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       async fork(request) {
         const { sessionId, atSeq } = request.payload
-        if (isMemberSessionId(sessionId)) return memberUnsupported(request, 'fork')
+        if (isMemberSessionId(sessionId)) {
+          // Member topics fork through the native session/fork: the whole log
+          // seeds a fresh live conversation in the member process (the ACP
+          // fork carries no anchor).
+          const parsed = parseMemberSessionId(sessionId)
+          if (parsed === undefined) {
+            return err(request, { code: 'session-not-found', message: `invalid member session id "${sessionId}"`, details: { sessionId } })
+          }
+          const team = teamService()
+          if (team === undefined) return teamUnavailable(request)
+          try {
+            const forkedTopic = await team.forkTopic(parsed.memberId, parsed.topicId)
+            ensureMemberTopicSeen(parsed.memberId, forkedTopic)
+            broadcastHost({ type: 'host/session-added', sessionId: makeMemberSessionId(parsed.memberId, forkedTopic), blank: false, agentId: parsed.memberId })
+            return ok(request, { sessionId: makeMemberSessionId(parsed.memberId, forkedTopic) })
+          } catch (error: unknown) {
+            return teamError(request, error)
+          }
+        }
+        void atSeq
         let source: SessionReadState
         try {
           source = await readSessionState(sessionId)
@@ -3021,9 +3051,10 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       async rerun(request) {
         const { sessionId, atSeq } = request.payload
         if (isMemberSessionId(sessionId)) {
-          // A member topic cannot truncate its own log: a re-run is simply the
-          // caller's follow-up prompt as a new turn on the same topic (the Web
-          // client always queues one after an accepted rerun).
+          // The client's rerun anchor is a virtual-session seq; mapping it onto
+          // the member's own log index needs the paged history alignment, so a
+          // re-run stays "the caller's follow-up prompt as a new turn" for now
+          // (the Web client always queues one after an accepted rerun).
           return ok(request, { accepted: true as const })
         }
         let source: SessionReadState
@@ -3249,10 +3280,38 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       updateQueue(request) {
         const { sessionId, itemId, action } = request.payload
-        // Member topics have no local agent inbox; a refusal here would only
-        // masquerade as "queued item is no longer pending".
+        // Member topics run their pending queue inside the member process;
+        // the operation forwards through the dsh/session/queue extension.
         if (isMemberSessionId(sessionId)) {
-          return Promise.resolve(memberUnsupported(request, 'queue updates'))
+          const parsed = parseMemberSessionId(sessionId)
+          if (parsed === undefined) {
+            return Promise.resolve(err(request, { code: 'session-not-found', message: `invalid member session id "${sessionId}"`, details: { sessionId } }))
+          }
+          const team = teamService()
+          if (team === undefined) return Promise.resolve(teamUnavailable(request))
+          const textOf = (blocks: readonly { type: string; text?: string }[]): string =>
+            blocks.filter(block => block.type === 'text').map(block => block.text ?? '').join('')
+          let payload: Record<string, unknown>
+          if (action.kind === 'edit') {
+            if (action.content.some(block => block.type !== 'text')) {
+              return Promise.resolve(err(request, {
+                code: 'attachment-error',
+                message: 'queue edits accept text content only',
+                details: { reason: 'QUEUE_EDIT_NON_TEXT' },
+              }))
+            }
+            payload = { op: 'edit', itemId, text: textOf(action.content) }
+          } else {
+            payload = { op: action.kind, itemId }
+          }
+          return Promise.resolve((async () => {
+            try {
+              await team.queueOp(parsed.memberId, parsed.topicId, payload)
+              return ok(request, { accepted: true as const })
+            } catch (error: unknown) {
+              return teamError(request, error)
+            }
+          })())
         }
         if (action.kind === 'edit' && action.content.some(block => block.type !== 'text')) {
           return Promise.resolve(err(request, {

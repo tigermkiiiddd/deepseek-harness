@@ -72,6 +72,8 @@ import {
   type InitializeRequest,
   type InitializeResponse,
   type ListProvidersRequest,
+  type ForkSessionRequest,
+  type ForkSessionResponse,
   type ListProvidersResponse,
   type ListSessionsRequest,
   type ListSessionsResponse,
@@ -118,7 +120,15 @@ const NEWSESSION_GATE = process.env.MOCK_NEWSESSION_READY !== undefined && proce
 // loadSession, and answer session/set_config_option.
 const WANT_PROVIDERS = process.env.MOCK_PROVIDERS === '1'
 const WANT_CONFIG = process.env.MOCK_CONFIG_OPTIONS === '1'
+// When MOCK_EXT is `1`, answer the dsh extension surface: `dsh/session/rename`
+// echoes the title; `dsh/session/queue` keeps per-session pending items in
+// process memory. When MOCK_FORK is `1`, `unstable_forkSession` mints a fresh
+// `fork-<id>` session id.
+const WANT_EXT = process.env.MOCK_EXT === '1'
+const WANT_FORK = process.env.MOCK_FORK === '1'
 const ECHO_IMAGES = process.env.MOCK_ECHO_IMAGES === '1'
+/** In-memory pending queue items per session id, for dsh/session/queue. */
+const queues = new Map<string, Array<{ id: string; text: string }>>()
 const MODEL = process.env.MOCK_MODEL ?? 'mock-model-1'
 
 /** The canned selectors the mock advertises when config options are on. */
@@ -360,6 +370,49 @@ function makeAgent(conn: AgentSideConnection): Agent {
     },
     async unstable_setProvider(_params: SetProviderRequest): Promise<SetProviderResponse> {
       return {}
+    },
+    async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+      if (!WANT_EXT) throw new RequestError(-32601, `Method not found: ${method}`, undefined)
+      if (method === 'dsh/session/rename') {
+        const title = params['title']
+        if (typeof title !== 'string' || title.length === 0) {
+          throw new RequestError(-32602, 'title must be a non-empty string', undefined)
+        }
+        return { title, seq: 1 }
+      }
+      if (method === 'dsh/session/queue') {
+        const op = params['op']
+        const sid = String(params['sessionId'] ?? '')
+        const list = queues.get(sid) ?? []
+        queues.set(sid, list)
+        if (op === 'list') return { items: list }
+        if (op === 'enqueue') {
+          const itemId = `q-${randomUUID().slice(0, 8)}`
+          list.push({ id: itemId, text: String(params['text'] ?? '') })
+          return { itemId }
+        }
+        const itemId = String(params['itemId'] ?? '')
+        const index = list.findIndex(item => item.id === itemId)
+        if (index < 0) throw new RequestError(-32602, 'queued item is no longer pending', undefined)
+        if (op === 'remove') {
+          list.splice(index, 1)
+          return { accepted: true }
+        }
+        if (op === 'edit') {
+          list[index]!.text = String(params['text'] ?? '')
+          return { accepted: true }
+        }
+        if (op === 'steer') {
+          list.splice(index, 1)
+          return { accepted: true }
+        }
+        throw new RequestError(-32602, 'unsupported queue op', undefined)
+      }
+      throw new RequestError(-32601, `Method not found: ${method}`, undefined)
+    },
+    async unstable_forkSession(_params: ForkSessionRequest): Promise<ForkSessionResponse> {
+      if (!WANT_FORK) throw new RequestError(-32601, 'Method not found: session/fork', undefined)
+      return { sessionId: `fork-${randomUUID().slice(0, 8)}` }
     },
   }
 }
