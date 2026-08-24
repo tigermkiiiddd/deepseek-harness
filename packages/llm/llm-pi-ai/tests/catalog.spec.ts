@@ -892,7 +892,7 @@ describe('catalog cache overlay', () => {
     const installed = getBuiltinModels('deepseek')
     if (installed.length === 0) throw new Error('the installed catalog ships no deepseek models')
     const installedSize = installed.length
-    const target = installed[0]
+    const target = installed[0]!
     const dir = await cacheDir()
     await writeCatalogCache(dir, 'deepseek', {
       format: CATALOG_CACHE_FORMAT,

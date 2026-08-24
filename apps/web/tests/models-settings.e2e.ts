@@ -187,8 +187,8 @@ describe('web e2e: Models settings page configures a dormant provider', () => {
 
     // The route inherits its catalog, so the sync reports a count and leaves
     // the list inherited — no row is written, no "已自定义" tag appears.
-    await expect(settingsDialog.getByText(/已同步 \d+ 个模型/)).toBeVisible({ timeout: 30_000 })
-    expect(settingsDialog.getByText('已自定义模型目录')).toHaveCount(0)
+    await expect.poll(() => settingsDialog.getByText(/已同步 \d+ 个模型/).count(), { timeout: 30_000 }).toBeGreaterThanOrEqual(1)
+    await expect.poll(() => settingsDialog.getByText('已自定义模型目录').count(), { timeout: 10_000 }).toBe(0)
     await settingsDialog.getByRole('button', { name: '取消', exact: true }).click()
   }, 60_000)
 

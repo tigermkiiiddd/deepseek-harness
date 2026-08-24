@@ -1088,14 +1088,6 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
    * against, so the minted reference is the authorization record for this process's lifetime.
    */
   const memberAdmittedImages = new Map<SessionId, Map<string, ImageAttachmentRef>>()
-   /**
-    * Member topics that received at least one accepted user prompt in this
-    * process. A topic's blank bit is derived as "no evidence of content":
-    * neither a prompt accepted here nor the member's own reported activity or
-    * title — so a fresh topic lists as New Session exactly like a main-instance
-    * blank, and becomes a normal row from its first turn on.
-    */
-   const memberTopicsWithContent = new Set<SessionId>()
   const imageAdmissionChains = new WeakMap<Agent, Promise<void>>()
 
   /** Serialize image admission with model selection for one agent. */

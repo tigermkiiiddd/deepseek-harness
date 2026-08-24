@@ -24,7 +24,7 @@ import type { Api, Model } from '@earendil-works/pi-ai'
 import { supportedProtocols } from './provider.ts'
 
 /** On-disk format of one cache file; a reader that does not know it treats the file as absent. */
-export const CATALOG_CACHE_FORMAT = 1
+export const CATALOG_CACHE_FORMAT = 1 as const
 
 /** One model a route's endpoint reported; `api` is the protocol of the listing that named it. */
 export interface CatalogCacheModel {
