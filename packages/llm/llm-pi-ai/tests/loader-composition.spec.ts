@@ -67,6 +67,10 @@ async function loadComposition(): Promise<{ ctx: Context; settingsPath: string }
     '    debounceMs: 10',
     '- id: llm-pi-ai',
     "  name: '@deepseek-ai/dsh-llm-pi-ai'",
+    '  config:',
+    '    # Unit tests never run the catalog sync: no network call from a suite',
+    '    # that is testing something else.',
+    '    catalogSyncEnabled: false',
     '',
   ].join('\n'))
 

@@ -208,6 +208,28 @@ function requestHeaders(headers: Readonly<Record<string, string>> | undefined): 
   }
 }
 
+/** Add a vLLM reasoning cap while preserving Harness's visible-output allowance. */
+function withThinkingTokenBudget(payload: unknown, budget: number): Record<string, unknown> {
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new LlmError('pi-ai produced a non-object OpenAI completions request payload', 'INVALID_REQUEST')
+  }
+  const request: Record<string, unknown> = { ...payload, thinking_token_budget: budget }
+  const field = 'max_completion_tokens' in request
+    ? 'max_completion_tokens'
+    : 'max_tokens' in request ? 'max_tokens' : undefined
+  if (field === undefined) return request
+  const visibleOutputTokens = request[field]
+  if (!Number.isSafeInteger(visibleOutputTokens) || (visibleOutputTokens as number) <= 0) {
+    throw new LlmError(`pi-ai produced an invalid ${field} value`, 'INVALID_REQUEST')
+  }
+  const totalCompletionTokens = (visibleOutputTokens as number) + budget
+  if (!Number.isSafeInteger(totalCompletionTokens)) {
+    throw new LlmError(`combined ${field} and thinking_token_budget exceed the safe integer range`, 'INVALID_REQUEST')
+  }
+  request[field] = totalCompletionTokens
+  return request
+}
+
 /**
  * pi-ai-backed multi-provider adapter. Each operation reads the current
  * profiles, so a configuration change reaches the next request without a
@@ -337,6 +359,7 @@ export class PiAiAdapter extends LlmAdapter {
       model,
       options.reasoningEffort ?? profile.reasoning,
     )
+    const thinkingTokenBudget = profile.configuredThinkingTokenBudgets.get(options.model)
     const apiKey = await this.config.resolveApiKey(options.provider, profile)
 
     const consumer = new AbortController()
@@ -369,6 +392,9 @@ export class PiAiAdapter extends LlmAdapter {
         ...options.temperature === undefined ? {} : { temperature: options.temperature },
         ...options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens },
         ...options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) },
+        ...thinkingTokenBudget === undefined
+          ? {}
+          : { onPayload: (payload: unknown) => withThinkingTokenBudget(payload, thinkingTokenBudget) },
         signal: watchdog.signal,
         // Profile headers are deployment-owned; attribution names are
         // Harness-owned and therefore win collisions.

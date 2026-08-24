@@ -273,6 +273,7 @@ export function CustomProviderCard(props: CustomProviderCardProps): ReactNode {
           api: protocol,
           ...keyValue.length === 0 ? {} : { apiKey: keyValue },
         }}
+        protocols={protocols}
         probeBlocked={keyFailure === 'keyBlank' ? 'keyBlankNew' : keyFailure}
         api={api}
         t={t}

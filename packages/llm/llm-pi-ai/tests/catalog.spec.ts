@@ -12,6 +12,8 @@ import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 import { createModels, getSupportedThinkingLevels } from '@earendil-works/pi-ai'
 import type { Api, Model, OpenAICompletionsCompat, Provider } from '@earendil-works/pi-ai'
+import { CATALOG_CACHE_FORMAT, catalogFingerprint, writeCatalogCache } from '../src/catalog-cache.ts'
+import { catalogModels } from '../src/catalog.ts'
 import { resolveProfiles } from '../src/config.ts'
 import { buildProvider, supportedProtocols } from '../src/provider.ts'
 import { assemble } from './assemble.ts'
@@ -43,12 +45,16 @@ async function home(): Promise<string> {
   return dir
 }
 
+// Unit tests never run the catalog sync: no network call and no write into a
+// deployment home from suites that are testing something else.
+const isolated = (config: LlmPiAi.Config): LlmPiAi.Config => Object.assign({}, config, { catalogSyncEnabled: false })
+
 /** The dormant composition plus a real settings service, as the product mounts it. */
 async function bootWithSettings(dir: string, config: LlmPiAi.Config): Promise<Context> {
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(FileSettingsProvider, { path: join(dir, 'settings.yaml'), watch: false })
-  await ctx.plugin(LlmPiAi, config)
+  await ctx.plugin(LlmPiAi, isolated(config))
   return ctx
 }
 
@@ -71,7 +77,7 @@ function gateway(baseURL: string, overrides: Record<string, unknown> = {}): LlmP
 async function harness(config: LlmPiAi.Config): Promise<Context> {
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
-  await ctx.plugin(LlmPiAi, config)
+  await ctx.plugin(LlmPiAi, isolated(config))
   return ctx
 }
 
@@ -312,6 +318,52 @@ describe('hand-declared providers', () => {
     })).toThrow(/needs a baseURL/)
   })
 
+  it('lets an entry name its own protocol on a route spanning several', () => {
+    // opencode-go's installed catalog serves anthropic-messages, openai-completions,
+    // and openai-responses, so a model it does not describe inherits no protocol;
+    // the entry's own api is what makes it serviceable.
+    const resolved = resolveProfiles({
+      'opencode-go': { models: [{ id: 'upstream-new', api: 'anthropic-messages' }] },
+    })
+    expect(resolved.get('opencode-go')?.piProvider.getModels()[0]?.api).toBe('anthropic-messages')
+  })
+
+  it('points a multi-protocol gap at the model, not the route', () => {
+    // A route-level api would repoint every sibling, so the diagnostic names the
+    // entry — on a hand-declared route it still points at the route.
+    expect(() => resolveProfiles({
+      'opencode-go': { models: [{ id: 'upstream-new' }] },
+    })).toThrow(/name the wire protocol its endpoint speaks on this model/)
+    expect(() => resolveProfiles({
+      'acme-gateway': { baseURL: 'https://acme.test', models: [{ id: 'm', contextWindow: 1, maxTokens: 1 }] },
+    })).toThrow(/set the route's api/)
+  })
+
+  it('lets an entry repoint a catalog model off its own protocol', () => {
+    const [catalogModel] = getBuiltinModels('deepseek')
+    if (catalogModel === undefined) throw new Error('the installed catalog ships no deepseek model')
+    const resolved = resolveProfiles({
+      'deepseek': { models: [{ id: catalogModel.id, api: 'openai-responses' }] },
+    })
+    expect(resolved.get('deepseek')?.piProvider.getModels()[0]?.api).toBe('openai-responses')
+  })
+
+  it('refuses an entry protocol this build cannot serve', () => {
+    expect(() => resolveProfiles({
+      'acme-gateway': { baseURL: 'https://acme.test', models: [{ id: 'm', api: 'quantum-telepathy' }] },
+    })).toThrow()
+  })
+
+  it('refuses an undescribed model with no same-protocol sibling base to inherit', () => {
+    // amazon-bedrock's catalog speaks a protocol this build does not serve and
+    // names no provider-level base, so a model repointed onto a served
+    // protocol has no endpoint family anywhere to inherit — the refusal names
+    // the missing base rather than guessing one.
+    expect(() => resolveProfiles({
+      'amazon-bedrock': { models: [{ id: 'upstream-new', api: 'anthropic-messages' }] },
+    })).toThrow(/needs a baseURL/)
+  })
+
   it.each(['bedrock-converse-stream', 'google-vertex', 'azure-openai-responses', 'openai-codex-responses'])(
     'refuses %s, whose authentication a profile cannot express',
     (api) => {
@@ -384,6 +436,28 @@ describe('hand-declared providers', () => {
     expect(declare({ id: 'm', contextWindow: 1.5, maxTokens: 1 })).toThrow(/contextWindow must be a positive integer/)
     expect(declare({ id: 'm', contextWindow: 1, maxTokens: 0 })).toThrow(/maxTokens must be a positive integer/)
     expect(declare({ id: 'm', contextWindow: 1, maxTokens: 1.5 })).toThrow(/maxTokens must be a positive integer/)
+  })
+
+  it('validates vLLM thinking budgets against their route independently of output caps', () => {
+    const declare = (model: LlmPiAi.PiAiModelProfile, api: Api = 'openai-completions'): (() => unknown) =>
+      () => resolveProfiles({ 'acme-gateway': { api, baseURL: 'https://acme.test', models: [model] } })
+    const valid = resolveProfiles({
+      'acme-gateway': {
+        api: 'openai-completions',
+        baseURL: 'https://acme.test',
+        models: [{ id: 'ornith', maxTokens: 32_768, thinkingTokenBudget: 24_576 }],
+      },
+    })
+
+    expect(valid.get('acme-gateway')?.configuredThinkingTokenBudgets.get('ornith')).toBe(24_576)
+    expect(declare({ id: 'ornith', maxTokens: 32_768, thinkingTokenBudget: 0 }))
+      .toThrow(/thinkingTokenBudget must be a positive/)
+    expect(declare({ id: 'ornith', maxTokens: 32_768, thinkingTokenBudget: 1.5 }))
+      .toThrow(/thinkingTokenBudget/)
+    expect(declare({ id: 'ornith', maxTokens: 8192, thinkingTokenBudget: 8192 }))
+      .not.toThrow()
+    expect(declare({ id: 'ornith', maxTokens: 32_768, thinkingTokenBudget: 24_576 }, 'anthropic-messages'))
+      .toThrow(/thinkingTokenBudget.*api is "anthropic-messages"/)
   })
 
   it('names the route key when no displayName is configured', () => {
@@ -753,6 +827,97 @@ describe('modelOverrides', () => {
     expect(() => resolveProfiles({
       deepseek: { modelOverrides: { [deepseekModel().id]: smuggled } },
     })).toThrow(/sets "id", which is the dict key/)
+  })
+})
+
+describe('catalog cache overlay', () => {
+  /** A throwaway cache directory, cleaned with the shared `homes` list. */
+  async function cacheDir(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-pi-cache-'))
+    homes.push(dir)
+    return dir
+  }
+
+  it('serves the endpoint listing in place of the installed catalog', async () => {
+    const installed = getBuiltinModels('deepseek')
+    if (installed.length === 0) throw new Error('the installed catalog ships no deepseek models')
+    const knownId = installed[0]?.id ?? 'known'
+    const dir = await cacheDir()
+    await writeCatalogCache(dir, 'deepseek', {
+      format: CATALOG_CACHE_FORMAT,
+      fingerprint: catalogFingerprint(catalogModels('deepseek')),
+      fetchedAt: new Date().toISOString(),
+      endpoints: ['https://api.deepseek.com/models'],
+      models: [
+        { id: knownId, api: 'openai-completions' },
+        { id: 'upstream-new', api: 'openai-completions' },
+      ],
+    })
+
+    const resolved = resolveProfiles({ deepseek: { apiKeyEnv: KEY_ENV } }, dir)
+    const models = resolved.get('deepseek')?.piProvider.getModels() ?? []
+
+    // The listing is the current truth: its ids, in its order — the installed
+    // rows it does not name no longer serve.
+    expect(models.map(model => model.id)).toEqual([knownId, 'upstream-new'])
+    const added = models.find(model => model.id === 'upstream-new')
+    if (added === undefined) throw new Error('the upstream addition vanished from the route')
+    // A listing discloses ids but not endpoints: the same-protocol sibling's
+    // base answers, and capacities fall back to the request defaults.
+    expect(added.api).toBe('openai-completions')
+    expect(added.baseUrl).toBe(installed[0]?.baseUrl)
+    expect((added.contextWindow ?? 0) > 0).toBe(true)
+    expect((added.maxTokens ?? 0) > 0).toBe(true)
+  })
+
+  it('lets an explicit models list win over the cache', async () => {
+    const dir = await cacheDir()
+    await writeCatalogCache(dir, 'deepseek', {
+      format: CATALOG_CACHE_FORMAT,
+      fingerprint: catalogFingerprint(catalogModels('deepseek')),
+      fetchedAt: new Date().toISOString(),
+      endpoints: ['https://api.deepseek.com/models'],
+      models: [{ id: 'upstream-new', api: 'openai-completions' }],
+    })
+
+    const resolved = resolveProfiles({
+      deepseek: { apiKeyEnv: KEY_ENV, models: [{ id: 'only-this', name: 'Only This' }] },
+    }, dir)
+    const models = resolved.get('deepseek')?.piProvider.getModels() ?? []
+
+    expect(models.map(model => model.id)).toEqual(['only-this'])
+  })
+
+  it('keeps modelOverrides on the installed catalog, not the cache', async () => {
+    const installed = getBuiltinModels('deepseek')
+    if (installed.length === 0) throw new Error('the installed catalog ships no deepseek models')
+    const installedSize = installed.length
+    const target = installed[0]
+    const dir = await cacheDir()
+    await writeCatalogCache(dir, 'deepseek', {
+      format: CATALOG_CACHE_FORMAT,
+      fingerprint: catalogFingerprint(catalogModels('deepseek')),
+      fetchedAt: new Date().toISOString(),
+      endpoints: ['https://api.deepseek.com/models'],
+      models: [{ id: 'upstream-new', api: 'openai-completions' }],
+    })
+
+    const resolved = resolveProfiles({
+      deepseek: { apiKeyEnv: KEY_ENV, modelOverrides: { [target.id]: { name: 'DeepSeek (proxied)' } } },
+    }, dir)
+    const models = resolved.get('deepseek')?.piProvider.getModels() ?? []
+
+    expect(models).toHaveLength(installedSize)
+    expect(models.find(model => model.id === target.id)?.name).toBe('DeepSeek (proxied)')
+  })
+
+  it('serves the installed catalog when no cache file exists', async () => {
+    const dir = await cacheDir()
+    const resolved = resolveProfiles({ deepseek: { apiKeyEnv: KEY_ENV } }, dir)
+    const models = resolved.get('deepseek')?.piProvider.getModels() ?? []
+
+    expect(models.map(model => model.id))
+      .toEqual(getBuiltinModels('deepseek').map(model => model.id))
   })
 })
 

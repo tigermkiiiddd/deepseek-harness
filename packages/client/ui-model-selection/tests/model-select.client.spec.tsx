@@ -182,3 +182,102 @@ describe('ModelSelect reasoning effort', () => {
     expect(load).not.toHaveBeenCalled()
   })
 })
+
+describe('ModelSelect search filter', () => {
+  const groups = [
+    {
+      id: 'deepseek-official',
+      name: 'DeepSeek',
+      models: [
+        { id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash' },
+        { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro' },
+      ],
+    },
+    {
+      id: 'minimax',
+      name: 'MiniMax',
+      models: [{ id: 'm2.7', name: 'MiniMax M2.7' }],
+    },
+  ]
+
+  function mount(): void {
+    render(<ModelSelect
+      locked={false}
+      available
+      directory={createSnapshotStore(state({ groups }))}
+      load={vi.fn()}
+      select={vi.fn().mockResolvedValue(true)}
+      t={t}
+    />)
+    fireEvent.click(screen.getByRole('button', { name: /选择模型/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /模型/ }))
+  }
+
+  const search = () => screen.getByLabelText<HTMLInputElement>('搜索模型…')
+
+  it('filters by model name and id, and keeps a group whole when its name matches', () => {
+    mount()
+
+    fireEvent.change(search(), { target: { value: 'pro' } })
+    expect(screen.getByRole('menuitemradio', { name: 'DeepSeek-V4-Pro' })).toBeTruthy()
+    expect(screen.queryByRole('menuitemradio', { name: /Flash/ })).toBeNull()
+    expect(screen.queryByText('MiniMax M2.7')).toBeNull()
+
+    // Matching the provider name keeps every one of its models, so a user who
+    // remembers the provider but not the model still finds them all.
+    fireEvent.change(search(), { target: { value: 'minimax' } })
+    expect(screen.getByRole('menuitemradio', { name: 'MiniMax M2.7' })).toBeTruthy()
+
+    // An id match lands too — users paste ids straight from settings.yaml.
+    fireEvent.change(search(), { target: { value: 'm2.7' } })
+    expect(screen.getByRole('menuitemradio', { name: 'MiniMax M2.7' })).toBeTruthy()
+  })
+
+  it('reports a search with no matches, and clears on escape before backing out', () => {
+    mount()
+
+    fireEvent.change(search(), { target: { value: 'no-such-model' } })
+    expect(screen.getByText('没有匹配的模型。')).toBeTruthy()
+
+    // The first escape only drops the filter; the pane and its list stay.
+    fireEvent.keyDown(search(), { key: 'Escape' })
+    expect(screen.queryByText('没有匹配的模型。')).toBeNull()
+    expect(screen.getByRole('menuitemradio', { name: /Flash/ })).toBeTruthy()
+
+    // An empty filter's escape backs out to the root pane — the search seat is
+    // gone with it.
+    fireEvent.keyDown(search(), { key: 'Escape' })
+    expect(screen.queryByLabelText('搜索模型…')).toBeNull()
+    expect(screen.getByRole('menuitem', { name: /模型/ })).toBeTruthy()
+  })
+
+  it('selects the first match on enter and resets the filter when the menu closes', async () => {
+    const directory = createSnapshotStore(state({ groups, current: null }))
+    const select = vi.fn(async (selection: ModelSelection) => {
+      directory.set(state({ groups, current: selection }))
+      return true
+    })
+    render(<ModelSelect
+      locked={false}
+      available
+      directory={directory}
+      load={vi.fn()}
+      select={select}
+      t={t}
+    />)
+    fireEvent.click(screen.getByRole('button', { name: /选择模型/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /模型/ }))
+
+    fireEvent.change(search(), { target: { value: 'pro' } })
+    fireEvent.keyDown(search(), { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(select).toHaveBeenCalledWith({ provider: 'deepseek-official', model: 'deepseek-v4-pro' })
+    })
+
+    // Reopening starts unfiltered rather than re-applying the old query.
+    fireEvent.click(screen.getByRole('button', { name: /选择模型/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /模型/ }))
+    expect(search().value).toBe('')
+  })
+})

@@ -1,6 +1,6 @@
 /**
  * Answering "which models can this provider serve?" for the configuration
- * surface's "fetch available models" action.
+ * surface's refresh and fetch actions.
  *
  * A route the installed pi-ai catalog ships is answered **from that catalog**,
  * with no network call at all: pi-ai's registry is the authoritative list for
@@ -8,10 +8,15 @@
  * not disclose. Only a route the catalog does not describe — a gateway, a
  * self-hosted server — is interrogated over the wire.
  *
- * Neither path is a catalog refresh. Nothing here is stored: the request
- * carries a draft the user is still editing, and the reply is candidate
- * metadata the surface offers for adoption. `settings.yaml` remains the only
- * thing that decides what a route serves.
+ * {@link refreshCatalog} is the other half of that: the installed catalog is
+ * a version cache, and upstream keeps adding models it has not caught up with.
+ * A refresh asks every listable protocol family on the route for its current
+ * listing, tags each model with the protocol of the listing that named it,
+ * and stores the union in the route's local cache file — which resolution
+ * then serves in place of the frozen snapshot. The write is all-or-nothing:
+ * a refused or empty endpoint keeps the previous cache, so a partial answer
+ * can never retire models the route was serving. `settings.yaml` stays
+ * untouched; the route remains an installed provider.
  *
  * Only OpenAI-compatible protocols are interrogated. Their listing is the one
  * shape a gateway, a self-hosted server, and the official endpoints all agree
@@ -22,10 +27,14 @@
  * @module dsh-llm-pi-ai/discovery
  */
 
+import type { Api, Model } from '@earendil-works/pi-ai'
 import { INVALID_CREDENTIAL_CODE, LlmError, normalizeApiKey } from '@deepseek-ai/dsh-llm'
 import type { LlmDiscoveredModel, LlmModelDiscoveryRequest } from '@deepseek-ai/dsh-llm'
 import { attributionHeaders } from '@deepseek-ai/dsh-llm'
-import { catalogModels } from './catalog.ts'
+import { CATALOG_CACHE_FORMAT } from './catalog-cache.ts'
+import type { CatalogCacheFile, CatalogCacheModel } from './catalog-cache.ts'
+import { catalogFingerprint, writeCatalogCache } from './catalog-cache.ts'
+import { catalogModels, catalogProvider, siblingBaseUrl } from './catalog.ts'
 
 /**
  * Protocols whose model listing this module can read: the two that speak
@@ -196,23 +205,24 @@ export async function discoverModels(
   request: LlmModelDiscoveryRequest,
   storedApiKey?: () => Promise<string | undefined>,
 ): Promise<readonly LlmDiscoveredModel[]> {
+  const installed = request.provider === undefined ? undefined : catalogModels(request.provider)
   // A catalog route already has its answer, and a better one: the installed
   // entries carry context windows and output caps no listing endpoint reports.
-  if (request.provider !== undefined) {
-    const installed = catalogModels(request.provider)
-    if (installed.size > 0) {
-      return [...installed.values()].map(model => ({
-        id: model.id,
-        name: model.name,
-        contextWindow: model.contextWindow,
-        maxTokens: model.maxTokens,
-      }))
-    }
+  // Refreshing that cache is `refreshCatalog`, not this read.
+  if (installed !== undefined && installed.size > 0) {
+    return [...installed.values()].map(model => ({
+      id: model.id,
+      name: model.name,
+      contextWindow: model.contextWindow,
+      maxTokens: model.maxTokens,
+      api: model.api,
+    }))
   }
-  if (request.baseURL === undefined || request.baseURL.length === 0) {
+  const baseURL = request.baseURL
+  if (baseURL === undefined || baseURL.length === 0) {
     throw new LlmError(
-      `pi-ai ships no catalog for provider "${request.provider ?? ''}", so its models can only come from its`
-      + " endpoint; set a baseURL, or enter this provider's models by hand",
+      `pi-ai ships no usable endpoint for provider "${request.provider ?? ''}"; set a baseURL, or enter`
+      + " this provider's models by hand",
       'DISCOVERY_FAILED',
     )
   }
@@ -229,7 +239,7 @@ export async function discoverModels(
       'DISCOVERY_UNSUPPORTED',
     )
   }
-  const url = listingUrl(request.baseURL)
+  const url = listingUrl(baseURL)
   // A key typed into the form wins: it is the one the user is testing, and it
   // may be the replacement for exactly the stored key that is failing. The
   // stored one is only asked for here, past the catalog short-circuit and the
@@ -239,6 +249,21 @@ export async function discoverModels(
   // relies on the provider's own ambient discovery is meant to be asked.
   const supplied = request.apiKey ?? await storedApiKey?.()
   const apiKey = supplied === undefined ? undefined : usableProbeKey(supplied)
+  return fetchListing(url, apiKey, request.signal)
+}
+
+/**
+ * Interrogate one listing endpoint and return its models in endpoint order.
+ * @param url - the full listing URL.
+ * @param apiKey - bearer credential, or `undefined` for an unauthenticated ask.
+ * @param signal - caller cancellation.
+ * @returns the advertised models.
+ */
+async function fetchListing(
+  url: string,
+  apiKey: string | undefined,
+  signal?: AbortSignal,
+): Promise<LlmDiscoveredModel[]> {
   let response: Response
   try {
     response = await fetch(url, {
@@ -248,10 +273,10 @@ export async function discoverModels(
         ...apiKey === undefined ? {} : { authorization: `Bearer ${apiKey}` },
         ...attributionHeaders(),
       },
-      ...request.signal === undefined ? {} : { signal: request.signal },
+      ...signal === undefined ? {} : { signal },
     })
   } catch (error: unknown) {
-    if (request.signal?.aborted) {
+    if (signal?.aborted) {
       throw new LlmError('model discovery aborted by caller', 'ABORTED', { cause: error })
     }
     throw new LlmError(`could not reach ${url}`, 'DISCOVERY_FAILED', { cause: error })
@@ -269,7 +294,7 @@ export async function discoverModels(
     // Cancellation during the body read rejects with the abort reason, which
     // may be any value; the caller gets the same coded failure it would have
     // for a cancellation before the request went out.
-    if (request.signal?.aborted) {
+    if (signal?.aborted) {
       throw new LlmError('model discovery aborted by caller', 'ABORTED', { cause: error })
     }
     throw error
@@ -281,4 +306,138 @@ export async function discoverModels(
     throw new LlmError(`${url} did not answer with JSON`, 'DISCOVERY_FAILED', { cause: error })
   }
   return readListing(body)
+}
+
+/** Options for {@link refreshCatalog}. */
+export interface CatalogRefreshOptions {
+  /** Cache directory the refreshed listing is written to. */
+  dir: string
+  /** Bearer credential for the interrogation; `undefined` asks unauthenticated. */
+  apiKey?: string | undefined
+  /** Caller cancellation. */
+  signal?: AbortSignal
+}
+
+/**
+ * Refresh one catalog route's local cache from its own endpoints. Every
+ * listable protocol family on the route is asked on that family's base, and
+ * the union of their listings — each model tagged with the protocol of the
+ * listing that named it — replaces the frozen snapshot in the cache file.
+ * The write is all-or-nothing: a refused, unreachable, or empty endpoint keeps
+ * the previous cache so a partial answer can never retire models the route was
+ * serving. A model the route cannot resolve (no base for its protocol) is
+ * dropped from the store rather than written to fail resolution later.
+ * @param provider - the catalog route to refresh.
+ * @param options - cache directory, credential, and cancellation.
+ * @returns the document that was written.
+ */
+export async function refreshCatalog(provider: string, options: CatalogRefreshOptions): Promise<CatalogCacheFile> {
+  const installed = catalogModels(provider)
+  if (installed.size === 0) {
+    throw new LlmError(
+      `pi-ai ships no catalog for provider "${provider}"; there is nothing to refresh`,
+      'DISCOVERY_FAILED',
+    )
+  }
+  const basesByApi = new Map<string, string[]>()
+  for (const model of installed.values()) {
+    if (!LISTABLE_PROTOCOLS.has(model.api)) continue
+    if (typeof model.baseUrl !== 'string' || model.baseUrl.length === 0) continue
+    const list = basesByApi.get(model.api) ?? []
+    if (!list.includes(model.baseUrl)) list.push(model.baseUrl)
+    basesByApi.set(model.api, list)
+  }
+  // One listing per protocol family, on that family's own base: the OpenAI-
+  // compatible one sits under /v1 when the catalog carries it, and a family
+  // asked on another family's base would report the wrong catalog or nothing.
+  // A family only reaches this list with at least one base, so the filter
+  // cannot drop an endpoint; it exists for the type, which cannot see that.
+  const endpoints = [...basesByApi.entries()]
+    .map(([api, bases]) => ({ api, baseURL: bases.find(base => base.endsWith('/v1')) ?? bases[0] }))
+    .filter((endpoint): endpoint is { api: string; baseURL: string } => endpoint.baseURL !== undefined)
+  // Two families may share one base (opencode-go serves completions and
+  // responses from /zen/go/v1); the listing answers both, so it is asked once
+  // and its models carry the first family's protocol.
+  const unique = new Map<string, { api: string; baseURL: string }>()
+  for (const endpoint of endpoints) {
+    const key = endpoint.baseURL.replace(/\/+$/, '')
+    if (!unique.has(key)) unique.set(key, endpoint)
+  }
+  if (unique.size === 0) {
+    throw new LlmError(
+      `pi-ai ships no usable endpoint for provider "${provider}"; set a baseURL, or enter this provider's`
+      + ' models by hand',
+      'DISCOVERY_FAILED',
+    )
+  }
+  const apiKey = options.apiKey === undefined ? undefined : usableProbeKey(options.apiKey)
+  const seen = new Set<string>()
+  const collected: CatalogCacheModel[] = []
+  const sources: string[] = []
+  for (const endpoint of unique.values()) {
+    const url = listingUrl(endpoint.baseURL)
+    sources.push(url)
+    for (const entry of await fetchListing(url, apiKey, options.signal)) {
+      if (seen.has(entry.id)) continue
+      seen.add(entry.id)
+      collected.push({ id: entry.id, api: endpoint.api, ...entry.name === undefined ? {} : { name: entry.name } })
+    }
+  }
+  if (collected.length === 0) {
+    throw new LlmError(
+      `${sources.join(', ')} answered with no models; refusing to replace the installed catalog with an`
+      + ' empty listing',
+      'DISCOVERY_FAILED',
+    )
+  }
+  // A model the route cannot resolve would fail every request that names it,
+  // so it is dropped from the store rather than written to break resolution.
+  const providerBaseUrl = catalogProvider(provider)?.baseUrl
+  const models = collected.filter((entry) => {
+    const base = installed.get(entry.id)
+    if (base !== undefined && typeof base.baseUrl === 'string' && base.baseUrl.length > 0) return true
+    if (providerBaseUrl !== undefined && providerBaseUrl.length > 0) return true
+    return entry.api !== undefined && siblingBaseUrl(installed, entry.api) !== undefined
+  })
+  if (models.length === 0) {
+    throw new LlmError(
+      `none of the models ${sources.join(', ')} reported can be served on provider "${provider}";`
+      + ' the installed catalog keeps serving',
+      'DISCOVERY_FAILED',
+    )
+  }
+  const file: CatalogCacheFile = {
+    format: CATALOG_CACHE_FORMAT,
+    fingerprint: catalogFingerprint(installed),
+    fetchedAt: new Date().toISOString(),
+    endpoints: sources,
+    models,
+  }
+  await writeCatalogCache(options.dir, provider, file)
+  return file
+}
+
+/**
+ * The refreshed cache as a discovery reply: cached ids keep the installed
+ * entry's metadata (a listing rarely discloses capacities), and upstream
+ * additions carry whatever the listing disclosed plus their family's protocol.
+ * @param file - the cache document a refresh just wrote.
+ * @param installed - the route's installed catalog entries, indexed by id.
+ * @returns the discovered models in cache order.
+ */
+export function discoveredFromCache(
+  file: CatalogCacheFile,
+  installed: ReadonlyMap<string, Model<Api>>,
+): LlmDiscoveredModel[] {
+  return file.models.map((entry) => {
+    const base = installed.get(entry.id)
+    const api = entry.api ?? base?.api
+    return {
+      id: entry.id,
+      ...entry.name === undefined ? {} : { name: entry.name },
+      ...base?.contextWindow === undefined ? {} : { contextWindow: base.contextWindow },
+      ...base?.maxTokens === undefined ? {} : { maxTokens: base.maxTokens },
+      ...api === undefined ? {} : { api },
+    }
+  })
 }

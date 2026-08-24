@@ -1,13 +1,17 @@
 /**
- * The model list of one pi-ai provider profile, plus the action that asks the
- * provider what it serves.
+ * The model list of one pi-ai provider profile, plus the action that refreshes
+ * what the route serves.
  *
  * The list is the profile's `models` array as the card holds it: an empty list
  * means "serve this route's built-in catalog", and any entry replaces that
- * catalog, so a row is only ever added deliberately. Fetching asks the endpoint
- * **the form currently shows** — including a key typed but not yet saved — so
- * adding a provider is one pass instead of save-then-return; the reply is
- * candidates the user picks from, never configuration written behind them.
+ * catalog, so a row is only ever added deliberately. Refreshing asks the
+ * adapter to re-sync the route's catalog from its own endpoints — the reply is
+ * applied directly, never staged as candidates: a route that inherits its
+ * catalog keeps inheriting it (the adapter's local cache now serves the
+ * current listing), and a route whose list the user already owns has that list
+ * replaced by the upstream one. A provider in draft gets its rows filled from
+ * the endpoint's listing, so adding a provider is one pass instead of
+ * save-then-return.
  *
  * A provider that cannot be interrogated (an unreachable endpoint, a protocol
  * with no readable listing) is not a dead end: the failure is shown next to the
@@ -17,7 +21,6 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
 import type { DiscoveredModelView, IApiClient } from '@deepseek-ai/dsh-api-remotes/client'
-import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import { formatCapacity, parseCapacity } from './DeepSeekModelsEditor.tsx'
 import type { DeepSeekModelDraft } from './DeepSeekModelsEditor.tsx'
 import { messageOf } from './store.ts'
@@ -81,6 +84,11 @@ export interface ModelListEditorProps {
    * told what the field already says.
    */
   probeBlocked?: keyof typeof en | undefined
+  /**
+   * Wire protocols a row may name, in adapter-reported order; absent when the
+   * owning card cannot read them and no per-row protocol choice is offered.
+   */
+  protocols?: readonly string[]
   /** Wire face the fetch action calls. */
   api: Pick<IApiClient, 'llm'>
   /** Section copy. */
@@ -143,13 +151,17 @@ function capacitySpelling(value: number | undefined): string {
   return value === undefined ? '' : formatCapacity(value)
 }
 
-/** Adopt a candidate, keeping whatever capacities the provider disclosed. */
-function adopt(candidate: DiscoveredModelView): ModelDraft {
+/** One listing row as a drafted model, keeping whatever the answerer disclosed. */
+function draftOf(entry: DiscoveredModelView): ModelDraft {
   return {
-    id: candidate.id,
-    ...candidate.name === undefined ? {} : { name: candidate.name },
-    ...candidate.contextWindow === undefined ? {} : { contextWindow: candidate.contextWindow },
-    ...candidate.maxTokens === undefined ? {} : { maxTokens: candidate.maxTokens },
+    id: entry.id,
+    // A protocol the answerer knew joins the row: on a route spanning several,
+    // it is the one field nothing else can supply for a model the installed
+    // catalog does not describe.
+    ...entry.api === undefined ? {} : { api: entry.api },
+    ...entry.name === undefined ? {} : { name: entry.name },
+    ...entry.contextWindow === undefined ? {} : { contextWindow: entry.contextWindow },
+    ...entry.maxTokens === undefined ? {} : { maxTokens: entry.maxTokens },
   }
 }
 
@@ -162,8 +174,10 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
   const { models, onChange, probe, api, t, disabled } = props
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<string | undefined>(undefined)
-  const [candidates, setCandidates] = useState<readonly DiscoveredModelView[] | undefined>(undefined)
-  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set())
+  // The last successful refresh: what the status line reports. Absent until a
+  // refresh has answered; a later failure leaves it in place so the user still
+  // sees when the route last synced.
+  const [refreshed, setRefreshed] = useState<{ count: number; at: string } | undefined>(undefined)
   // Rows carry an id and a name; capacities are the exception, so they stay
   // folded until asked for rather than crowding every row with four inputs.
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set())
@@ -227,13 +241,18 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
     }))
   }
 
-  const fetchModels = async (): Promise<void> => {
+  const refreshModels = async (): Promise<void> => {
     setBusy(true)
     setFailure(undefined)
     try {
       const response = await api.llm.discoverModels({
         settingsNs: probe.settingsNs,
         ...probe.provider === undefined ? {} : { provider: probe.provider },
+        // A named route's installed catalog is a version cache; the flag asks
+        // the adapter to re-sync it from the route's own endpoints. A route in
+        // draft has no catalog to sync, so it omits the flag and gets a plain
+        // endpoint interrogation instead.
+        ...probe.provider === undefined ? {} : { preferEndpoint: true },
         ...probe.baseURL === undefined || probe.baseURL.length === 0 ? {} : { baseURL: probe.baseURL },
         ...probe.api === undefined ? {} : { api: probe.api },
         ...probe.apiKey === undefined ? {} : { apiKey: probe.apiKey },
@@ -244,14 +263,17 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
       }
       const found = response.result.value.models
       if (found.length === 0) {
-        setFailure(t('fetchEmpty'))
+        setFailure(t('refreshEmpty'))
         return
       }
-      // Everything already configured starts unchecked, so adopting a
-      // selection never silently rewrites a capacity the user corrected.
-      const known = new Set(models.map(model => textOf(model, 'id')))
-      setCandidates(found)
-      setPicked(new Set(found.filter(model => !known.has(model.id)).map(model => model.id)))
+      // The reply applies directly: a route that inherits its catalog keeps
+      // inheriting it — the adapter's local cache now serves the current
+      // listing, and writing rows here would demote the route to a customized
+      // one. A route whose list the user already owns (or a draft being
+      // created) has that list replaced by the upstream one.
+      const inheritsCatalog = probe.provider !== undefined && models.length === 0
+      if (!inheritsCatalog) onChange(found.map(draftOf))
+      setRefreshed({ count: found.length, at: new Date().toLocaleTimeString() })
     } catch (error) {
       // The transport rejected rather than answering; without this the button
       // would stay busy with nothing shown.
@@ -259,47 +281,6 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
     } finally {
       setBusy(false)
     }
-  }
-
-  const closePicker = (): void => {
-    setCandidates(undefined)
-    setPicked(new Set())
-  }
-
-  const adoptPicked = (): void => {
-    /* v8 ignore next -- the dialog only renders with candidates loaded */
-    if (candidates === undefined) return
-    const byId = new Map(models.map(model => [textOf(model, 'id'), model]))
-    for (const candidate of candidates) {
-      if (!picked.has(candidate.id)) continue
-      // A row the user already tuned wins over the provider's own numbers.
-      // Keyed by id, so a half-typed row whose id is still empty is not a
-      // match and the candidate joins as its own row — correct, since a row
-      // without an id is not yet a model and the create/apply gates refuse it.
-      byId.set(candidate.id, byId.get(candidate.id) ?? adopt(candidate))
-    }
-    onChange([...byId.values()])
-    closePicker()
-  }
-
-  const toggle = (id: string): void => {
-    setPicked((current) => {
-      const next = new Set(current)
-      if (!next.delete(id)) next.add(id)
-      return next
-    })
-  }
-
-  const activeCandidates = candidates ?? []
-  const allCandidatesPicked = activeCandidates.length > 0
-    && activeCandidates.every(candidate => picked.has(candidate.id))
-
-  const toggleAllCandidates = (): void => {
-    setPicked((current) => {
-      return activeCandidates.every(candidate => current.has(candidate.id))
-        ? new Set()
-        : new Set(activeCandidates.map(candidate => candidate.id))
-    })
   }
 
   // A route the adapter already describes answers without an endpoint; only a
@@ -336,12 +317,19 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
           disabled={disabled || busy || !askable || props.probeBlocked !== undefined}
           title={props.probeBlocked !== undefined
             ? t(props.probeBlocked)
-            : askable ? undefined : t('fetchNeedsBaseUrl')}
-          onClick={() => { void fetchModels() }}
+            : askable ? undefined : t('refreshNeedsBaseUrl')}
+          onClick={() => { void refreshModels() }}
         >
-          {busy ? t('fetching') : t('fetchModels')}
+          {busy ? t('refreshing') : t('refreshModels')}
         </button>
       </div>
+      {refreshed !== undefined
+        ? (
+          <p className={styles['refreshed']}>
+            {t('refreshedStatus').replace('{count}', String(refreshed.count)).replace('{at}', refreshed.at)}
+          </p>
+        )
+        : null}
       {models.length === 0 ? <p className={styles['modelEmpty']}>{t('modelsEmpty')}</p> : null}
       {models.map((model, index) => (
         <div key={index} className={styles['modelEntry']}>
@@ -403,6 +391,28 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
           {expanded.has(index)
             ? (
               <div className={styles['modelAdvanced']}>
+                {/* The row's protocol wins over the route default for this one
+                    model — the field that lets a route spanning several
+                    protocols adopt a model its installed catalog does not yet
+                    describe. The empty choice means "inherit", which is what a
+                    catalog model already does. */}
+                {props.protocols !== undefined && props.protocols.length > 0
+                  ? (
+                    <label className={styles['modelField']}>
+                      <span className={styles['modelFieldLabel']}>{t('modelApi')}</span>
+                      <select
+                        className={`${styles['input']} ${styles['selectInput']}`}
+                        value={textOf(model, 'api')}
+                        aria-label={`${t('modelApi')} ${index + 1}`}
+                        disabled={disabled}
+                        onChange={(event) => { patch(index, { api: event.target.value === '' ? undefined : event.target.value }) }}
+                      >
+                        <option value="">{t('modelApiUnset')}</option>
+                        {props.protocols.map(choice => <option key={choice} value={choice}>{choice}</option>)}
+                      </select>
+                    </label>
+                  )
+                  : null}
                 <label className={styles['modelField']}>
                   <span className={styles['modelFieldLabel']}>{t('modelContextWindow')}</span>
                   <input
@@ -443,43 +453,6 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
         {t('addModel')}
       </button>
       {failure !== undefined ? <p className={styles['error']}>{failure}</p> : null}
-      <Modal
-        open={candidates !== undefined}
-        onClose={closePicker}
-        title={t('fetchTitle')}
-        closeLabel={t('close')}
-        description={t('fetchDescription')}
-        className={styles['fetchDialog'] as string}
-        footer={(
-          <>
-            <Button variant="outline" onClick={closePicker}>{t('cancel')}</Button>
-            <Button variant="outline" onClick={adoptPicked}>{t('fetchAdopt')}</Button>
-          </>
-        )}
-      >
-        <div className={styles['candidateActions']}>
-          <Button variant="ghost" size="sm" onClick={toggleAllCandidates}>
-            {t(allCandidatesPicked ? 'fetchDeselectAll' : 'fetchSelectAll')}
-          </Button>
-        </div>
-        <ul className={styles['candidateList']}>
-          {(candidates ?? []).map(candidate => (
-            <li key={candidate.id} className={styles['candidate']}>
-              <label className={styles['candidateLabel']}>
-                <input
-                  type="checkbox"
-                  checked={picked.has(candidate.id)}
-                  onChange={() => { toggle(candidate.id) }}
-                />
-                {/* The id alone: it is the string adoption writes, and the
-                    capacities the endpoint reported are adopted with it and
-                    editable in the row that appears. */}
-                <span className={styles['candidateId']}>{candidate.id}</span>
-              </label>
-            </li>
-          ))}
-        </ul>
-      </Modal>
     </section>
   )
 }

@@ -1,15 +1,22 @@
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, { userAgent } from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import { getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
+import { CATALOG_CACHE_FORMAT, catalogFingerprint } from '../src/catalog-cache.ts'
+import { catalogModels } from '../src/catalog.ts'
 import { discoverModels } from '../src/discovery.ts'
 
 const servers: Server[] = []
 /** Credential variables a test set, cleared so the next one starts unset. */
 const touchedEnv: string[] = []
+/** Temp cache directories a test created, removed so no case leaks its store. */
+const tempDirs: string[] = []
 
 afterEach(async () => {
   // A no-op when the test never stubbed `fetch`; only 'probe key format'
@@ -17,7 +24,41 @@ afterEach(async () => {
   vi.unstubAllGlobals()
   for (const name of touchedEnv.splice(0)) Reflect.deleteProperty(process.env, name)
   await Promise.all(servers.splice(0).map(server => new Promise(resolve => server.close(resolve))))
+  await Promise.all(tempDirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })))
 })
+
+/** A throwaway cache directory so no test writes into the real harness home. */
+async function tempCacheDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-llm-pi-ai-cache-'))
+  tempDirs.push(dir)
+  return dir
+}
+
+/** A dormant mount whose catalog cache lives in a test-owned directory. */
+async function harnessWithCache(cacheDir: string): Promise<Context> {
+  const ctx = new Context()
+  await ctx.plugin(LlmRuntime)
+  await ctx.plugin(LlmPiAi, { catalogCacheDir: cacheDir })
+  return ctx
+}
+
+/** A store a test plants ahead of time, shaped like one refreshCatalog wrote. */
+async function plantCache(cacheDir: string, provider: string, models: Array<{ id: string; api?: string }>): Promise<string> {
+  const path = join(cacheDir, `${provider}.json`)
+  const file = {
+    format: CATALOG_CACHE_FORMAT,
+    fingerprint: catalogFingerprint(catalogModels(provider)),
+    fetchedAt: new Date().toISOString(),
+    endpoints: ['https://planted.example/models'],
+    models,
+  }
+  await writeFile(path, JSON.stringify(file), 'utf8')
+  return path
+}
+
+async function readCacheFile(cacheDir: string, provider: string): Promise<Record<string, unknown>> {
+  return JSON.parse(await readFile(join(cacheDir, `${provider}.json`), 'utf8')) as Record<string, unknown>
+}
 
 interface ListingServer {
   url: string
@@ -95,13 +136,141 @@ describe('catalog-route model discovery', () => {
   it('says where a route the catalog does not describe must get its models', async () => {
     const ctx = await harness()
     await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'acme-gateway' }))
-      .rejects.toThrow(/ships no catalog for provider "acme-gateway".*set a baseURL/s)
+      .rejects.toThrow(/ships no usable endpoint for provider "acme-gateway".*set a baseURL/s)
     // A form that cleared the field says the same thing as one that never had it.
     await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'acme-gateway', baseURL: '' }))
       .rejects.toThrow(/set a baseURL/)
     // The seam refuses a request naming neither, so the module's own guard for
     // that shape is only reachable by calling it directly.
     await expect(discoverModels({})).rejects.toThrow(/set a baseURL/)
+  })
+})
+
+describe('catalog cache refresh (preferEndpoint)', () => {
+  it('stores the endpoint listing and answers from it with installed metadata', async () => {
+    const installed = getBuiltinModels('deepseek')
+    const knownId = installed[0]?.id ?? 'known'
+    // The resolved base is a real host, so the fetch is stubbed: the point
+    // under test is which URL the resolution chose and what lands in the store.
+    const urls: string[] = []
+    vi.stubGlobal('fetch', async (url: string | URL) => {
+      urls.push(String(url))
+      return new Response(JSON.stringify({
+        data: [
+          // An upstream row for a model the cache already describes: the
+          // installed entry's capacities answer, not the listing's.
+          { id: knownId, context_length: 1 },
+          { id: 'upstream-new-one' },
+          { id: 'upstream-new-two', display_name: 'Upstream New Two' },
+        ],
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    const cacheDir = await tempCacheDir()
+    const ctx = await harnessWithCache(cacheDir)
+
+    const models = await ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek', preferEndpoint: true })
+
+    // The endpoint is the current truth: its listing, in its order.
+    expect(urls).toEqual(['https://api.deepseek.com/models'])
+    expect(models.map(model => model.id)).toEqual([knownId, 'upstream-new-one', 'upstream-new-two'])
+    const known = models.find(model => model.id === knownId)
+    expect(known).toMatchObject({ contextWindow: installed[0]?.contextWindow, maxTokens: installed[0]?.maxTokens })
+    // deepseek's catalog agrees on one protocol, so every row carries it.
+    expect(models.every(model => model.api === 'openai-completions')).toBe(true)
+
+    const file = await readCacheFile(cacheDir, 'deepseek')
+    expect(file['format']).toBe(CATALOG_CACHE_FORMAT)
+    expect(file['fingerprint']).toBe(catalogFingerprint(catalogModels('deepseek')))
+    expect(file['endpoints']).toEqual(['https://api.deepseek.com/models'])
+    expect(file['models']).toEqual([
+      { id: knownId, api: 'openai-completions' },
+      { id: 'upstream-new-one', api: 'openai-completions' },
+      { id: 'upstream-new-two', api: 'openai-completions', name: 'Upstream New Two' },
+    ])
+  })
+
+  it('tags an upstream addition with its family protocol on a multi-protocol route', async () => {
+    const installed = getBuiltinModels('opencode-go')
+    if (installed.length === 0) throw new Error('the installed catalog ships no opencode-go models')
+    const urls: string[] = []
+    vi.stubGlobal('fetch', async (url: string | URL) => {
+      urls.push(String(url))
+      return new Response(JSON.stringify({ data: [{ id: 'upstream-new' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    const cacheDir = await tempCacheDir()
+    const ctx = await harnessWithCache(cacheDir)
+
+    const models = await ctx.llm.discoverModels('llm-pi-ai', { provider: 'opencode-go', preferEndpoint: true })
+
+    // Only the listable family is asked, on its own /v1 base.
+    expect(urls).toEqual(['https://opencode.ai/zen/go/v1/models'])
+    const added = models.find(model => model.id === 'upstream-new')
+    expect(added?.api).toBe('openai-completions')
+    const file = await readCacheFile(cacheDir, 'opencode-go')
+    expect(file['models']).toEqual([{ id: 'upstream-new', api: 'openai-completions' }])
+  })
+
+  it('refuses an empty listing and keeps the previous store', async () => {
+    const cacheDir = await tempCacheDir()
+    const path = await plantCache(cacheDir, 'deepseek', [{ id: 'planted-model', api: 'openai-completions' }])
+    const before = await readFile(path, 'utf8')
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    const ctx = await harnessWithCache(cacheDir)
+
+    await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek', preferEndpoint: true }))
+      .rejects.toThrow(/answered with no models; refusing to replace the installed catalog/)
+
+    expect(await readFile(path, 'utf8')).toBe(before)
+  })
+
+  it('keeps the previous store when the endpoint refuses', async () => {
+    const cacheDir = await tempCacheDir()
+    const path = await plantCache(cacheDir, 'deepseek', [{ id: 'planted-model', api: 'openai-completions' }])
+    const before = await readFile(path, 'utf8')
+    vi.stubGlobal('fetch', async () => new Response('nope', { status: 401 }))
+    const ctx = await harnessWithCache(cacheDir)
+
+    await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek', preferEndpoint: true }))
+      .rejects.toThrow(/answered 401; check the API key/)
+
+    expect(await readFile(path, 'utf8')).toBe(before)
+  })
+
+  it('still answers from the installed catalog without the flag', async () => {
+    // The default stays network-free: the flag is what opts into upstream.
+    const urls: string[] = []
+    vi.stubGlobal('fetch', async (url: string | URL) => {
+      urls.push(String(url))
+      return new Response(JSON.stringify({ data: [{ id: 'from-the-endpoint' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    const cacheDir = await tempCacheDir()
+    const ctx = await harnessWithCache(cacheDir)
+
+    const models = await ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek' })
+
+    expect(models.map(model => model.id).sort()).toEqual(getBuiltinModels('deepseek').map(model => model.id).sort())
+    expect(urls).toEqual([])
+  })
+
+  it('falls through to plain interrogation for a declared route', async () => {
+    const server = await listingServer({ body: JSON.stringify({ data: [{ id: 'draft-only' }] }) })
+    const cacheDir = await tempCacheDir()
+    const ctx = await harnessWithCache(cacheDir)
+
+    expect(await ctx.llm.discoverModels('llm-pi-ai', {
+      provider: 'acme-gateway',
+      baseURL: server.url,
+      preferEndpoint: true,
+    })).toEqual([{ id: 'draft-only' }])
   })
 })
 
@@ -185,7 +354,7 @@ describe('draft-provider model discovery', () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     Reflect.deleteProperty(process.env, 'ABSENT_FOR_DISCOVERY')
-    await ctx.plugin(LlmPiAi, { providers: { deepseek: { apiKeyEnv: 'ABSENT_FOR_DISCOVERY' } } })
+    await ctx.plugin(LlmPiAi, { catalogSyncEnabled: false, providers: { deepseek: { apiKeyEnv: 'ABSENT_FOR_DISCOVERY' } } })
 
     await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek' })).resolves.not.toHaveLength(0)
   })

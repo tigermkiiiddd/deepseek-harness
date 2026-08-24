@@ -37,6 +37,7 @@ import type {
   PiAiModelProfile,
   PiAiReasoningEfforts,
 } from './catalog.ts'
+import { cachedCatalogModels } from './catalog-cache.ts'
 import { buildProvider, supportedProtocols } from './provider.ts'
 
 /** Default maximum idle interval while an adapter stream read is outstanding. */
@@ -91,9 +92,12 @@ export interface PiAiProviderProfile {
   /** Name shown by configuration surfaces; defaults to the route key. */
   displayName?: string
   /**
-   * Wire protocol every model on this route speaks. Omission keeps each
-   * installed catalog model's own protocol, which is why a catalog route needs
-   * no protocol at all; a route the catalog does not ship must name one.
+   * Wire protocol defaulting every model on this route that names none itself.
+   * Omission keeps each installed catalog model's own protocol, which is why a
+   * catalog route needs no protocol at all; a route the catalog does not ship
+   * must name one — or each of its models must. A model entry's own `api`
+   * wins over this for that model, which is how a route spanning several
+   * protocols serves them side by side.
    */
   api?: string
   /** Endpoint for this route's models; defaults to the installed catalog's endpoint. */
@@ -207,6 +211,8 @@ export interface ResolvedPiAiProviderProfile
    * own, so a catalog capability must not appear here.
    */
   configuredMaxTokens: ReadonlyMap<string, number>
+  /** Per-request vLLM reasoning-token caps explicitly configured by model id. */
+  configuredThinkingTokenBudgets: ReadonlyMap<string, number>
 }
 
 /** Plugin configuration: the provider routes this instance owns. */
@@ -217,7 +223,29 @@ export interface Config {
    * and registers them the moment a settings section supplies profiles.
    */
   providers?: Record<string, PiAiProviderProfile>
+  /**
+   * Directory holding the per-route catalog cache files (see `catalog-cache.ts`).
+   * Defaults to `$DSH_HOME/llm-pi-ai/catalog-cache`. A deployment that must
+   * never phone home keeps the directory but sets `catalogSyncEnabled` false.
+   */
+  catalogCacheDir?: string
+  /**
+   * Minimum age in days before a stored catalog cache is refreshed again. The
+   * cache also refreshes whenever the installed pi-ai fingerprint changes, so
+   * this bounds staleness between pi-ai upgrades rather than pinning it.
+   */
+  catalogCacheTtlDays?: number
+  /**
+   * Whether the adapter refreshes catalog caches at all (at mount and when
+   * routes appear). False keeps a route serving whatever its cache or the
+   * installed snapshot holds, with no network attempt; manual refresh through
+   * the Models page still works.
+   */
+  catalogSyncEnabled?: boolean
 }
+
+/** Default minimum age before a stored catalog cache is refreshed again. */
+export const DEFAULT_CATALOG_CACHE_TTL_DAYS = 7
 
 const thinkingBudgets = z.object({
   minimal: z.number(),
@@ -282,9 +310,11 @@ const reasoningEfforts = z.dict(
 
 /** The fields a `models` entry and a `modelOverrides` value share; only the id's home differs. */
 const modelFields = {
+  api: z.union(supportedProtocols()),
   name: z.string(),
   contextWindow: z.number().step(1).min(1),
   maxTokens: z.number().step(1).min(1),
+  thinkingTokenBudget: z.number().step(1).min(1),
   // No explicit default, unlike the route's `defaultInput`: schemastery
   // materializes `[]` for an absent array, and resolution reads that as "no
   // answer here" so the catalog entry below still applies.
@@ -332,6 +362,9 @@ const profile = z.object({
 /** Runtime schema for {@link Config}. */
 export const Config: z<Config> = z.object({
   providers: z.dict(profile).default({}),
+  catalogCacheDir: z.string(),
+  catalogCacheTtlDays: z.number().step(1).min(1).default(DEFAULT_CATALOG_CACHE_TTL_DAYS),
+  catalogSyncEnabled: z.boolean().default(true),
 })
 
 /**
@@ -374,10 +407,15 @@ function rejectRemovedFields(provider: string, source: PiAiProviderProfile): voi
  * resolves to the empty (dormant) route set here rather than through a hidden
  * fallback, and each route's models and pi-ai provider are materialized once.
  * @param providers - configured provider profiles keyed by route.
+ * @param cacheDir - when named, a route's local catalog cache is read and, for
+ *   a route with no explicit `models` or `modelOverrides`, serves in place of
+ *   the installed snapshot. Validation passes omit it on purpose: whether a
+ *   settings write is serviceable must not depend on runtime cache state.
  * @returns validated profiles in configuration order.
  */
 export function resolveProfiles(
   providers: Readonly<Record<string, PiAiProviderProfile>> | undefined,
+  cacheDir?: string,
 ): Map<string, ResolvedPiAiProviderProfile> {
   if (Array.isArray(providers)) {
     throw new Error('llm-pi-ai: providers is now a dict keyed by provider route, not an array of profiles')
@@ -426,12 +464,19 @@ export function resolveProfiles(
     // always shown route keys, and a catalog route must not silently rename
     // itself on every configuration surface just because it gained a profile.
     const displayName = source.displayName ?? provider
+    // The cache is a serving concern, not a configuration fact: it is read only
+    // when a cache directory is named (the adapter, never the validator) and
+    // only for a route that has not spoken for itself with models or overrides.
+    const cachedModels = cacheDir === undefined || source.models !== undefined || source.modelOverrides !== undefined
+      ? undefined
+      : cachedCatalogModels(cacheDir, provider)
     const catalog = resolveRouteModels({
       provider,
       ...source.api === undefined ? {} : { api: source.api },
       ...source.baseURL === undefined ? {} : { baseURL: source.baseURL },
       ...source.models === undefined ? {} : { models: source.models },
       ...source.modelOverrides === undefined ? {} : { modelOverrides: source.modelOverrides },
+      ...cachedModels === undefined ? {} : { cachedModels },
       ...source.compat === undefined ? {} : { compat: source.compat },
       defaultInput,
       defaultContextWindow: source.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW,
@@ -451,6 +496,7 @@ export function resolveProfiles(
       ...rest.headers === undefined ? {} : { headers: { ...rest.headers } },
       ...rest.thinkingBudgets === undefined ? {} : { thinkingBudgets: { ...rest.thinkingBudgets } },
       configuredMaxTokens: catalog.configuredMaxTokens,
+      configuredThinkingTokenBudgets: catalog.configuredThinkingTokenBudgets,
       piProvider: buildProvider({
         provider,
         displayName,

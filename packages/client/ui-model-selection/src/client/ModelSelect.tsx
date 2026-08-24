@@ -52,6 +52,9 @@ export function ModelSelect(
   )
   const [open, setOpen] = useState(false)
   const [pane, setPane] = useState<Pane>('root')
+  // The model pane's filter: a case-insensitive substring over model name and
+  // id, or over the provider group name (which keeps every one of its models).
+  const [query, setQuery] = useState('')
   // The in-menu error strip serves catalog loads (its Retry re-runs the
   // load); a rejected SELECTION announces through the transient toast
   // instead, so the strip renders only while the latest failure-capable
@@ -62,6 +65,7 @@ export function ModelSelect(
   const rootRef = useRef<HTMLDivElement | null>(null)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([])
+  const searchRef = useRef<HTMLInputElement | null>(null)
   const id = useId()
 
   const choices = useMemo(() => state.groups.flatMap(group =>
@@ -80,6 +84,19 @@ export function ModelSelect(
     ? -1
     : choices.findIndex(c => c.selection.provider === state.current?.provider && c.selection.model === state.current.model)
   const currentChoice = choices[selectedIndex]
+  // The pane renders the filter, not the directory: a group whose name matches
+  // keeps all of its models; otherwise only matching models survive, and an
+  // emptied group drops out. `choices` above stays unfiltered — selection and
+  // the check mark must not depend on what the user is typing.
+  const needle = query.trim().toLowerCase()
+  const visibleGroups = useMemo(() => {
+    if (needle === '') return state.groups
+    return state.groups.flatMap((group) => {
+      if (group.name.toLowerCase().includes(needle)) return [group]
+      const models = group.models.filter(model => model.name.toLowerCase().includes(needle) || model.id.toLowerCase().includes(needle))
+      return models.length > 0 ? [{ ...group, models }] : []
+    })
+  }, [state.groups, needle])
   const reasoning = currentChoice?.model.reasoning
   const effectiveEffort = state.current?.reasoningEffort ?? reasoning?.defaultEffort
   const effortLabel = reasoning === undefined
@@ -124,6 +141,12 @@ export function ModelSelect(
     return () => { document.removeEventListener('mousedown', closeOutside) }
   }, [open])
 
+  // Drilling into the model pane puts the caret in the filter, so typing
+  // starts a search without an extra click.
+  useEffect(() => {
+    if (pane === 'model') searchRef.current?.focus()
+  }, [pane])
+
   if (!available) return null
 
   const show = (): void => {
@@ -135,6 +158,7 @@ export function ModelSelect(
   const close = (restoreFocus = false): void => {
     setOpen(false)
     setPane('root')
+    setQuery('')
     if (restoreFocus) queueMicrotask(() => { triggerRef.current?.focus() })
   }
 
@@ -268,6 +292,39 @@ export function ModelSelect(
 
           {pane === 'model' && (
             <>
+              {/* The filter sits above every state strip: a search typed while
+                  the list is still loading must not be lost when it lands. */}
+              <div className={css.search}>
+                <input
+                  ref={searchRef}
+                  type="text"
+                  className={css.searchInput}
+                  value={query}
+                  placeholder={t('menu.searchPlaceholder')}
+                  aria-label={t('menu.searchPlaceholder')}
+                  onChange={(event) => { setQuery(event.target.value) }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                      // Escape clears the filter first; only an empty filter
+                      // backs out of the pane. stopPropagation keeps the menu
+                      // from closing while it still has work to do.
+                      event.preventDefault()
+                      event.stopPropagation()
+                      if (query.length > 0) setQuery('')
+                      else setPane('root')
+                    } else if (event.key === 'Enter') {
+                      event.preventDefault()
+                      const first = visibleGroups.flatMap(group => group.models)[0]
+                      const owner = first === undefined
+                        ? undefined
+                        : visibleGroups.find(group => group.models.some(model => model.id === first.id))
+                      if (first !== undefined && owner !== undefined) {
+                        choose({ provider: owner.id, model: first.id })
+                      }
+                    }
+                  }}
+                />
+              </div>
               {state.status === 'loading' && (
                 <div className={css.status}>{t('status.loading')}</div>
               )}
@@ -284,7 +341,7 @@ export function ModelSelect(
                 </div>
               ))}
               <div className={clsx(css.groups, 'scrollable')}>
-                {state.groups.map((group) => {
+                {visibleGroups.map((group) => {
                   const headingId = `${id}-${group.id}`
                   return (
                     <section role="group" aria-labelledby={headingId} className={css.group} key={group.id}>
@@ -319,8 +376,8 @@ export function ModelSelect(
                   )
                 })}
               </div>
-              {state.status === 'ready' && choices.length === 0 && (
-                <div className={css.empty}>{t('empty.models')}</div>
+              {state.status === 'ready' && visibleGroups.length === 0 && (
+                <div className={css.empty}>{needle === '' ? t('empty.models') : t('empty.noMatch')}</div>
               )}
             </>
           )}

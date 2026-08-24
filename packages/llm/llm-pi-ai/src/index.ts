@@ -55,17 +55,20 @@
  * @module @deepseek-ai/dsh-llm-pi-ai
  */
 
+import { resolve as resolvePath } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import { dshHomePath, expandHomePath } from '@deepseek-ai/dsh-home-paths'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { assertUsableApiKey, LlmError } from '@deepseek-ai/dsh-llm'
 import type { AdapterRegistrationHandle, DirectoryRegistrationHandle, LlmConfigurableProvider } from '@deepseek-ai/dsh-llm'
 import { deepEqualJson, installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { PiAiAdapter } from './adapter.ts'
 import { authContextFrom, credentialStoreFrom } from './auth.ts'
-import { catalogProviderIds } from './catalog.ts'
-import { assertServiceable, Config, resolveProfiles } from './config.ts'
+import { catalogFingerprint, readCatalogCache } from './catalog-cache.ts'
+import { catalogModels, catalogProviderIds } from './catalog.ts'
+import { assertServiceable, Config, DEFAULT_CATALOG_CACHE_TTL_DAYS, resolveProfiles } from './config.ts'
 import type { ResolvedPiAiProviderProfile } from './config.ts'
-import { discoverModels } from './discovery.ts'
+import { discoveredFromCache, discoverModels, refreshCatalog } from './discovery.ts'
 import { registerPiAiFlows } from './login.ts'
 
 export { PiAiAdapter } from './adapter.ts'
@@ -142,6 +145,13 @@ export function apply(ctx: Context, config: Config): void {
   let current: () => Config = () => config
   let lastRaw: Config | undefined
   let memoized: ReadonlyMap<string, ResolvedPiAiProviderProfile> | undefined
+  // The catalog cache is a serving concern read at resolution time, so it joins
+  // the resolve here but never the validator. Its directory is fixed for this
+  // instance; a deployment that must not phone home sets catalogSyncEnabled
+  // false rather than pointing the directory somewhere else.
+  const cacheDir = config.catalogCacheDir === undefined
+    ? dshHomePath('llm-pi-ai', 'catalog-cache')
+    : resolvePath(expandHomePath(config.catalogCacheDir))
   /**
    * The resolved profiles for the current configuration, memoized by the raw
    * snapshot's identity — which is also what makes the adapter's own snapshot
@@ -156,10 +166,21 @@ export function apply(ctx: Context, config: Config): void {
   const profiles = (): ReadonlyMap<string, ResolvedPiAiProviderProfile> => {
     const raw = current()
     if (raw === lastRaw && memoized !== undefined) return memoized
-    const next = resolveProfiles(raw.providers)
+    const next = resolveProfiles(raw.providers, cacheDir)
     lastRaw = raw
     memoized = next
     return next
+  }
+  /**
+   * Drop the resolved-profiles memo so the next read re-resolves against the
+   * current cache files. Called after a refresh writes a new cache: the cache
+   * is not configuration, so no settings change will otherwise invalidate the
+   * memo, and without this a refreshed catalog would wait for an unrelated
+   * profile edit before it served.
+   */
+  const invalidateProfiles = (): void => {
+    lastRaw = undefined
+    memoized = undefined
   }
   profiles()
 
@@ -245,13 +266,45 @@ export function apply(ctx: Context, config: Config): void {
     if (profile === undefined) return undefined
     return resolveApiKey(provider, profile)
   }
+  /**
+   * The credential for a refresh when the route names one. A missing key is
+   * not a refusal: many listings are public, and an unauthenticated ask is the
+   * same posture a request to that route would take.
+   */
+  const apiKeyForRefresh = async (provider: string): Promise<string | undefined> => {
+    const profile = profiles().get(provider)
+    if (profile === undefined) return undefined
+    try {
+      return await resolveApiKey(provider, profile)
+    } catch {
+      // Swallows MISSING_CREDENTIAL only: resolveApiKey is the sole failing
+      // call here, and a refresh that cannot authenticate still asks.
+      return undefined
+    }
+  }
   // Interrogating an endpoint is a configuration-time action over a draft, so
   // it is offered for the whole namespace rather than per route: the provider
   // a surface is adding does not exist yet. The draft is the whole request
   // except the credential: a configuration surface edits a redacted descriptor
   // and never holds a stored secret, so an already-configured route supplies
   // its own here rather than being interrogated unauthenticated.
-  ctx.llm.registerModelDiscovery(NS, request => discoverModels(request, () => storedApiKey(request.provider)))
+  // `preferEndpoint` on a catalog route is the refresh action itself: ask the
+  // route's own endpoints for their current listing, store it in the route's
+  // local cache, and answer from that cache with the installed metadata. A
+  // declared route has no installed catalog to refresh, so it falls through
+  // to the plain endpoint interrogation.
+  ctx.llm.registerModelDiscovery(NS, async (request) => {
+    if (request.provider !== undefined && request.preferEndpoint === true
+      && catalogModels(request.provider).size > 0) {
+      const file = await refreshCatalog(
+        request.provider,
+        { dir: cacheDir, apiKey: await apiKeyForRefresh(request.provider) },
+      )
+      invalidateProfiles()
+      return discoveredFromCache(file, catalogModels(request.provider))
+    }
+    return discoverModels(request, () => storedApiKey(request.provider))
+  })
   // Route effects bind to this apply fiber via the stable `ctx` reference,
   // even when a swap runs inside the scoped settings callback below. A bare
   // mount (zero routes) is the dormant posture: nothing registers until a
@@ -282,6 +335,47 @@ export function apply(ctx: Context, config: Config): void {
     registeredFacts = facts
   }
   ensureRegistrationFacts()
+
+  // A route's catalog cache refreshes in the background when stale — pi-ai's
+  // own snapshot moved (fingerprint) or the store outgrew its TTL — and is
+  // left alone otherwise, so a mounted deployment makes at most one listing
+  // call per endpoint per TTL. A failed refresh keeps the previous state: the
+  // cache stays as it was, which is also the offline posture. Disposal aborts
+  // an in-flight refresh rather than letting it write after teardown.
+  const ttlMs = (config.catalogCacheTtlDays ?? DEFAULT_CATALOG_CACHE_TTL_DAYS) * 86_400_000
+  const refreshAbort = new AbortController()
+  const inflight = new Set<Promise<void>>()
+  ctx.effect(() => () => {
+    refreshAbort.abort()
+    for (const job of inflight) void job.catch(() => undefined)
+  }, 'llm-pi-ai: catalog cache refresh teardown')
+  const refreshRoute = (provider: string): void => {
+    if (!config.catalogSyncEnabled) return
+    if (profiles().get(provider) === undefined) return
+    if (catalogModels(provider).size === 0) return
+    const job = (async () => {
+      const fingerprint = catalogFingerprint(catalogModels(provider))
+      const stored = await readCatalogCache(cacheDir, provider)
+      if (stored !== undefined && stored.fingerprint === fingerprint
+        && Date.now() - Date.parse(stored.fetchedAt) < ttlMs) return
+      const file = await refreshCatalog(provider, {
+        dir: cacheDir,
+        apiKey: await apiKeyForRefresh(provider),
+        signal: refreshAbort.signal,
+      })
+      ctx.logger.info(
+        `llm-pi-ai: catalog cache for "${provider}" refreshed from ${file.endpoints.join(', ')} (${file.models.length} models)`,
+      )
+      invalidateProfiles()
+    })().catch((error: unknown) => {
+      if (refreshAbort.signal.aborted) return
+      const message = error instanceof Error ? error.message : String(error)
+      ctx.logger.warn(`llm-pi-ai: catalog cache refresh for "${provider}" kept the previous state: ${message}`)
+    })
+    inflight.add(job)
+    void job.then(() => { inflight.delete(job) })
+  }
+  for (const provider of profiles().keys()) refreshRoute(provider)
 
   installSettingsSection(ctx, NS, Config, config, {
     // Refuse an unserviceable section where it is written: without this a
@@ -315,6 +409,10 @@ export function apply(ctx: Context, config: Config): void {
         ctx.logger.error('llm-pi-ai: keeping the previous configurable-provider directory after a refused update')
         ctx.logger.error(error)
       }
+      // A route that just appeared gets its cache refreshed too; the TTL and
+      // fingerprint gates make a no-op cheap, so refreshing the whole set is
+      // simpler than diffing the change.
+      for (const provider of profiles().keys()) refreshRoute(provider)
     },
   })
 }

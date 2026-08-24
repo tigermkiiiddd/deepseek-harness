@@ -32,11 +32,16 @@ const IMAGE_REF: ImageAttachmentRef = {
   height: 1,
 }
 
+// Unit tests never run the catalog sync: no network call and no write into a
+// deployment home from a suite that is testing something else.
+const ISOLATED = { catalogSyncEnabled: false } as const
+
 async function harness(baseURL: string, overrides: Record<string, unknown> = {}): Promise<Context> {
   vi.stubEnv('PI_TEST_KEY', 'test-key')
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(LlmPiAi, {
+    ...ISOLATED,
     providers: { deepseek: { apiKeyEnv: 'PI_TEST_KEY', baseURL, ...overrides } },
   })
   return ctx
@@ -138,6 +143,51 @@ describe('PiAiAdapter provider routing', () => {
     })
   })
 
+  it('sends a configured vLLM thinking budget independently of the visible-output cap', async () => {
+    const server = await mockServer([{ events: textEvents }, { events: textEvents }])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'ornith-local': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'openai-completions',
+          baseURL: `${server.url}/v1`,
+          models: [{
+            id: 'Ornith-1.5-35B-A3B',
+            contextWindow: 245_760,
+            maxTokens: 32_768,
+            thinkingTokenBudget: 8192,
+          }],
+        },
+      },
+    })
+
+    const result = await assemble(ctx, {
+      provider: 'ornith-local',
+      model: 'Ornith-1.5-35B-A3B',
+      messages: [],
+    })
+    expect(result.finish).toEqual({ kind: 'stop' })
+    expect(server.requests[0]).toMatchObject({
+      model: 'Ornith-1.5-35B-A3B',
+      max_completion_tokens: 40_960,
+      thinking_token_budget: 8192,
+    })
+
+    const equalCaps = await assemble(ctx, {
+      provider: 'ornith-local',
+      model: 'Ornith-1.5-35B-A3B',
+      maxTokens: 8192,
+      messages: [],
+    })
+    expect(equalCaps.finish).toEqual({ kind: 'stop' })
+    expect(server.requests[1]).toMatchObject({
+      max_completion_tokens: 16_384,
+      thinking_token_budget: 8192,
+    })
+  })
+
   it('uses a dynamic request effort and reports unsupported efforts before network I/O', async () => {
     const server = await mockServer([{ events: textEvents }, { events: textEvents }])
     const ctx = await harness(server.url, { reasoning: 'max' })
@@ -219,6 +269,7 @@ describe('PiAiAdapter provider routing', () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(LlmPiAi, {
+      ...ISOLATED,
       providers: { openai: { apiKeyEnv: 'PI_TEST_KEY', baseURL: `${server.url}/v1` } },
     })
     const result = await assemble(ctx, { provider: 'openai', model: 'gpt-4.1', messages: [] })
@@ -291,6 +342,7 @@ describe('PiAiAdapter provider routing', () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(LlmPiAi, {
+      ...ISOLATED,
       providers: { openai: { apiKeyEnv: 'PI_TEST_KEY', baseURL: `${server.url}/v1` } },
     })
     await ctx.plugin(LateAttachmentStore)
@@ -325,6 +377,7 @@ describe('PiAiAdapter provider routing', () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(LlmPiAi, {
+      ...ISOLATED,
       providers: { openai: { apiKeyEnv: 'PI_TEST_KEY', baseURL: `${server.url}/v1` } },
     })
 
@@ -339,6 +392,7 @@ describe('PiAiAdapter provider routing', () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(LlmPiAi, {
+      ...ISOLATED,
       providers: {
         openai: {
           apiKeyEnv: 'PI_TEST_KEY',
@@ -427,6 +481,7 @@ describe('provider profile lifecycle', () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     const fiber = await ctx.plugin(LlmPiAi, {
+      ...ISOLATED,
       providers: {
         openai: {
           retryPolicy: {
@@ -458,7 +513,7 @@ describe('provider profile lifecycle', () => {
   it('exposes the installed pi-ai model catalog through provider-neutral metadata', async () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
-    await ctx.plugin(LlmPiAi, { providers: { openai: {} } })
+    await ctx.plugin(LlmPiAi, { ...ISOLATED, providers: { openai: {} } })
     const models = await ctx.llm.listModels('openai')
     expect(models.find(model => model.id === 'gpt-4.1')).toEqual({
       provider: 'openai', id: 'gpt-4.1', name: 'GPT-4.1',
@@ -473,6 +528,7 @@ describe('provider profile lifecycle', () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(LlmPiAi, {
+      ...ISOLATED,
       providers: { deepseek: {}, openai: {} },
     })
 

@@ -30,7 +30,6 @@ const EMPTY_EXPECTED = join(SNAPSHOT_DIR, 'empty.expected.md')
 const CONFIGURED_EXPECTED = join(SNAPSHOT_DIR, 'configured.expected.md')
 const DECLARED_EXPECTED = join(SNAPSHOT_DIR, 'declared.expected.md')
 const DECLARED_EDIT_EXPECTED = join(SNAPSHOT_DIR, 'declared-edit.expected.md')
-const MODEL_PICKER_EXPECTED = join(SNAPSHOT_DIR, 'model-picker.expected.md')
 const NATIVE_DELETE_EXPECTED = join(SNAPSHOT_DIR, 'native-delete.expected.md')
 const DELETE_EXPECTED = join(SNAPSHOT_DIR, 'delete.expected.md')
 const MODE = webSnapshotMode()
@@ -179,39 +178,17 @@ describe('web e2e: Models settings page configures a dormant provider', () => {
     expect(tripwire.pageErrors).toEqual([])
   }, 60_000)
 
-  it('selects and clears the discovered model catalog in one action', async () => {
-    onTestFailed(() => saveFailureShot(page, 'web-e2e-models-picker'))
+  it('refreshes the inherited catalog and reports the sync without demoting the route', async () => {
+    onTestFailed(() => saveFailureShot(page, 'web-e2e-models-refresh'))
     const settingsDialog = page.getByRole('dialog', { name: '设置' })
     await settingsDialog.getByRole('button', { name: '编辑 minimax-cn' }).click()
     await settingsDialog.getByText('自定义设置').click()
-    await settingsDialog.getByRole('button', { name: '获取可用模型' }).click()
+    await settingsDialog.getByRole('button', { name: '刷新模型' }).click()
 
-    const picker = page.getByRole('dialog', { name: '选择要添加的模型' })
-    await picker.waitFor({ timeout: 10_000 })
-    const boxes = picker.getByRole('checkbox')
-    const count = await boxes.count()
-    expect(count).toBeGreaterThan(0)
-    expect(await boxes.evaluateAll(nodes => nodes.map(node => (node as HTMLInputElement).checked))).toEqual(
-      Array.from({ length: count }, () => true),
-    )
-
-    await picker.getByRole('button', { name: '取消全选' }).click()
-    expect(await boxes.evaluateAll(nodes => nodes.map(node => (node as HTMLInputElement).checked))).toEqual(
-      Array.from({ length: count }, () => false),
-    )
-    await picker.getByRole('button', { name: '全选' }).waitFor()
-    const snapshot = await captureStableAria(
-      page,
-      '[role="dialog"][aria-label="选择要添加的模型"]',
-      scaffold.workspaceCwd,
-    )
-    await compareOrRefreshGolden(MODEL_PICKER_EXPECTED, snapshot, MODE)
-
-    await picker.getByRole('button', { name: '全选' }).click()
-    expect(await boxes.evaluateAll(nodes => nodes.map(node => (node as HTMLInputElement).checked))).toEqual(
-      Array.from({ length: count }, () => true),
-    )
-    await picker.getByRole('button', { name: '取消', exact: true }).click()
+    // The route inherits its catalog, so the sync reports a count and leaves
+    // the list inherited — no row is written, no "已自定义" tag appears.
+    await expect(settingsDialog.getByText(/已同步 \d+ 个模型/)).toBeVisible({ timeout: 30_000 })
+    expect(settingsDialog.getByText('已自定义模型目录')).toHaveCount(0)
     await settingsDialog.getByRole('button', { name: '取消', exact: true }).click()
   }, 60_000)
 

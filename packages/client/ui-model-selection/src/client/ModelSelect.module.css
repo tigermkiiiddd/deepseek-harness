@@ -96,6 +96,35 @@
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
 
+/* The model pane's filter: a quiet input above the state strips, sized to the
+   pane the rows set rather than forcing a wider card. */
+.search {
+  flex: 0 0 auto;
+  padding: 2px 4px 6px;
+}
+
+.searchInput {
+  box-sizing: border-box;
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  outline: none;
+  background: var(--dsw-specific-input-major);
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.searchInput::placeholder {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.searchInput:focus-visible {
+  border-color: var(--dsw-alias-border-l3);
+}
+
 .status,
 .empty {
   padding: 10px;

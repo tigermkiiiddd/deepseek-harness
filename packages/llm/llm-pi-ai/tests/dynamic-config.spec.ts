@@ -51,7 +51,9 @@ async function boot(
   await ctx.plugin(FileSettingsProvider, { path: join(dir, 'settings.yaml'), watch: false })
   await ctx.plugin(LocalCredentialProvider, { path: join(dir, '.credentials.yaml'), watch: false })
   if (options.authorization === true) await ctx.plugin(AuthorizationService)
-  await ctx.plugin(LlmPiAi, config)
+  // Unit tests never run the catalog sync: no network call and no write into a
+  // deployment home from suites that are testing something else.
+  await ctx.plugin(LlmPiAi, Object.assign({}, config, { catalogSyncEnabled: false }))
   return ctx
 }
 

@@ -534,6 +534,16 @@ function assertOfferedCompatFields(
 export interface PiAiModelProfile {
   /** Model id sent to the provider and accepted by {@link GenerateOptions.model}. */
   id: string
+  /**
+   * Wire protocol this model speaks, winning over the route's `api` for this
+   * one entry. Only a model the installed catalog does not describe needs it —
+   * on a route whose catalog agrees on one protocol it inherits that answer,
+   * and on a route spanning several (opencode-go serves anthropic-messages,
+   * openai-completions, and openai-responses) nothing else can supply it. A
+   * model the catalog describes keeps its own protocol unless this names a
+   * different one.
+   */
+  api?: string
   /** Display name for selectors; defaults to the catalog name, then the id. */
   name?: string
   /** Maximum combined request and response context in tokens. */
@@ -545,6 +555,12 @@ export interface PiAiModelProfile {
    * default on its own.
    */
   maxTokens?: number
+  /**
+   * Per-request reasoning-token cap sent as vLLM's
+   * `thinking_token_budget`; supported only by `openai-completions` models and
+   * independent of this model's visible-output `maxTokens`.
+   */
+  thinkingTokenBudget?: number
   /**
    * Request modalities this model accepts. Absent — or empty, which describes
    * a model that accepts nothing and so states no answer either — keeps the
@@ -582,7 +598,7 @@ export type PiAiModelOverride = Omit<PiAiModelProfile, 'id'>
 export interface RouteCatalogRequest {
   /** Provider route key, stamped onto every materialized model. */
   provider: string
-  /** Wire protocol override; absent defers to each catalog model's own API. */
+  /** Wire protocol default for models naming none themselves; absent defers to each entry, then each catalog model's own API. */
   api?: string
   /** Endpoint override; absent defers to the catalog model, then the catalog provider. */
   baseURL?: string
@@ -590,6 +606,14 @@ export interface RouteCatalogRequest {
   models?: readonly PiAiModelProfile[]
   /** Installed-catalog customizations by model id; only meaningful while `models` is absent. */
   modelOverrides?: Readonly<Record<string, PiAiModelOverride>>
+  /**
+   * The route's local catalog cache entries (see `catalog-cache.ts`). Only
+   * honored while both `models` and `modelOverrides` are absent — then they
+   * replace the installed catalog: upstream additions appear tagged with their
+   * family's protocol, upstream retirements disappear. Absent means serve the
+   * installed catalog unchanged.
+   */
+  cachedModels?: readonly PiAiModelProfile[]
   /** Route-level wire-compatibility switches, landing on each model whose protocol declares them; entries override per field. */
   compat?: PiAiCompatProfile
   /** Context capacity for a model neither the entry nor the catalog sizes. */
@@ -611,12 +635,29 @@ function invalid(provider: string, detail: string): never {
  * a provider's newest release — without restating the protocol its siblings
  * already use. A route whose shipped models disagree (an OpenAI-style catalog
  * spanning Responses and Chat Completions) has no such answer, so a model it
- * does not describe must name its protocol at the route.
+ * does not describe must name its protocol on itself or at the route.
  */
-function sharedCatalogApi(defaults: ReadonlyMap<string, Model<Api>>): string | undefined {
+export function sharedCatalogApi(defaults: ReadonlyMap<string, Model<Api>>): string | undefined {
   const apis = new Set<string>()
   for (const model of defaults.values()) apis.add(model.api)
   return apis.size === 1 ? [...apis][0] : undefined
+}
+
+/**
+ * The endpoint base of an installed entry that speaks the same protocol, for a
+ * model the route's profile admits without naming one. A gateway's models
+ * sharing a protocol share its endpoint family — opencode's anthropic models
+ * sit at `/zen/go` while its OpenAI-compatible ones sit at `/zen/go/v1` — so
+ * the sibling's base is the answer the entry's api already chose.
+ * @param defaults - the route's installed catalog entries, indexed by id.
+ * @param api - the protocol this model resolves to.
+ * @returns the first same-protocol sibling's base, or `undefined` when none names one.
+ */
+export function siblingBaseUrl(defaults: ReadonlyMap<string, Model<Api>>, api: string): string | undefined {
+  for (const model of defaults.values()) {
+    if (model.api === api && typeof model.baseUrl === 'string' && model.baseUrl.length > 0) return model.baseUrl
+  }
+  return undefined
 }
 
 /** The reasoning fields one materialized model carries. */
@@ -769,6 +810,8 @@ export interface RouteCatalog {
    * picked, so only an explicit configuration lands here.
    */
   configuredMaxTokens: ReadonlyMap<string, number>
+  /** Per-request vLLM reasoning-token caps explicitly configured by model id. */
+  configuredThinkingTokenBudgets: ReadonlyMap<string, number>
 }
 
 /**
@@ -813,9 +856,22 @@ export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
   // An override becomes the catalog entry's configuration, so everything a
   // models entry may declare — capacities, efforts, compat — resolves through
   // the same path with the same diagnostics and request-default semantics.
+  // Precedence for what a route serves: an explicit `models` list is the
+  // deployment's own word and wins outright; otherwise a model-level override
+  // means the deployment is managing the installed catalog, so it stays the
+  // base; otherwise a valid local cache replaces the installed catalog — it is
+  // that catalog as upstream currently reports it, which is what makes an
+  // upstream addition appear without any configuration change; and only then
+  // does the frozen snapshot serve.
+  const overridesPresent = Object.keys(overrides).length > 0
+  const cached = request.cachedModels
   const entries: readonly PiAiModelProfile[] = configured.length > 0
     ? configured
-    : [...defaults.values()].map(model => ({ id: model.id, ...overrides[model.id] }))
+    : overridesPresent
+      ? [...defaults.values()].map(model => ({ id: model.id, ...overrides[model.id] }))
+      : cached !== undefined && cached.length > 0
+        ? cached
+        : [...defaults.values()].map(model => ({ id: model.id }))
   if (entries.length === 0) {
     invalid(provider, 'resolves no models; the installed catalog does not describe this route, so its models'
       + ' must be listed in configuration')
@@ -830,17 +886,24 @@ export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
   }
   const seen = new Set<string>()
   const configuredMaxTokens = new Map<string, number>()
+  const configuredThinkingTokenBudgets = new Map<string, number>()
   const models = entries.map((entry) => {
     if (entry.id.length === 0) invalid(provider, 'has a model with an empty id')
     if (seen.has(entry.id)) invalid(provider, `lists model "${entry.id}" more than once`)
     seen.add(entry.id)
     const base = defaults.get(entry.id)
-    const api = request.api ?? base?.api ?? routeApi
+    // Per-model first: a route spanning several protocols cannot default one
+    // for all, and an entry naming a protocol different from its catalog
+    // sibling's is a deliberate repoint.
+    const api = entry.api ?? request.api ?? base?.api ?? routeApi
     if (api === undefined) {
-      invalid(provider, `model "${entry.id}" needs an api; the installed catalog does not describe it, so set the`
-        + ' route\'s api to the wire protocol its endpoint speaks')
+      invalid(provider, defaults.size > 0
+        ? `model "${entry.id}" needs an api; the installed catalog does not describe it and this route`
+          + ' serves several protocols, so name the wire protocol its endpoint speaks on this model'
+        : `model "${entry.id}" needs an api; the installed catalog does not describe it, so set the`
+          + " route's api to the wire protocol its endpoint speaks")
     }
-    const baseUrl = request.baseURL ?? base?.baseUrl ?? providerBaseUrl
+    const baseUrl = request.baseURL ?? base?.baseUrl ?? providerBaseUrl ?? siblingBaseUrl(defaults, api)
     if (baseUrl === undefined) {
       invalid(provider, `model "${entry.id}" needs a baseURL; the installed catalog does not describe this route`)
     }
@@ -855,6 +918,16 @@ export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
     const maxTokens = entry.maxTokens ?? base?.maxTokens ?? request.defaultMaxTokens
     if (!Number.isInteger(maxTokens) || maxTokens <= 0) {
       invalid(provider, `model "${entry.id}" maxTokens must be a positive integer`)
+    }
+    if (entry.thinkingTokenBudget !== undefined) {
+      if (!Number.isSafeInteger(entry.thinkingTokenBudget) || entry.thinkingTokenBudget <= 0) {
+        invalid(provider, `model "${entry.id}" thinkingTokenBudget must be a positive safe integer`)
+      }
+      if (api !== 'openai-completions') {
+        invalid(provider, `model "${entry.id}" sets thinkingTokenBudget, but its api is "${api}";`
+          + ' vLLM exposes thinking_token_budget only on OpenAI-compatible completions requests')
+      }
+      configuredThinkingTokenBudgets.set(entry.id, entry.thinkingTokenBudget)
     }
     // Only a value the profile named is a deployment choice; the catalog's is
     // the model's capability and stays out of request defaults.
@@ -889,5 +962,5 @@ export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
     invalid(provider, `sets compat "${field}", but no model on the route speaks a protocol that takes it;`
       + ` it exists on ${takers.join(', ')}`)
   }
-  return { models, configuredMaxTokens }
+  return { models, configuredMaxTokens, configuredThinkingTokenBudgets }
 }
