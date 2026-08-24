@@ -74,6 +74,46 @@ describe('ACP session listing', () => {
     await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
     await expect(harness.client.listSessions({})).rejects.toThrow(/session listing requires session persistence/)
   })
+
+  it('forks a persisted session into a live child carrying the source history', async () => {
+    harness = await makeBridgeHarness({
+      script: [textResponse('forked reply')],
+      persistence: {
+        headers: [{ id: 'topic-1', cwd: process.cwd() }],
+        eventsBySession: {
+          'topic-1': persistedConversation('earlier question', 'earlier answer'),
+        },
+      },
+    })
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+
+    const forked = await harness.client.unstable_forkSession({
+      sessionId: SessionId('topic-1'),
+      cwd: process.cwd(),
+      mcpServers: [],
+    })
+    expect(forked.sessionId).toBeDefined()
+    expect(String(forked.sessionId)).not.toBe('topic-1')
+
+    // The child's next prompt continues from the inherited history while the
+    // source stays untouched in the store.
+    const result = await harness.client.prompt({
+      sessionId: forked.sessionId,
+      prompt: [{ type: 'text', text: 'continue' }],
+    })
+    expect(result.stopReason).toBe('end_turn')
+    const request = harness.adapter.requests[0]
+    expect(request).toBeDefined()
+    expect(request!.messages.some(message =>
+      message.role === 'user' && message.content.some(block => block.type === 'text' && block.text === 'earlier question'))).toBe(true)
+
+    // Forking an unknown session fails loud.
+    await expect(harness.client.unstable_forkSession({
+      sessionId: SessionId('missing'),
+      cwd: process.cwd(),
+      mcpServers: [],
+    })).rejects.toThrow(/unknown session/)
+  })
 })
 
 describe('ACP session loading', () => {

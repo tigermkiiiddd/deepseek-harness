@@ -39,6 +39,8 @@ import {
   type SessionInfo,
   type SessionNotification,
   type SetSessionConfigOptionRequest,
+  type ForkSessionRequest,
+  type ForkSessionResponse,
   type SetSessionConfigOptionResponse,
   type StopReason,
   type Stream,
@@ -546,9 +548,10 @@ export function apply(ctx: Context, config: AcpConfig): void {
             // The bridge implements session/load, so it advertises loadSession and
             // the model selector the client gates setSessionConfigOption on.
             loadSession: true,
-            // The pinned SDK's SessionListCapabilities predates this
-            // experimental flag, so the object is cast to the capability shape.
-            sessionCapabilities: { list: { setSessionConfigOption: {} } } as SessionCapabilities,
+            // The pinned SDK's SessionListCapabilities predates the
+            // experimental fork flag, so the object is cast to the capability
+            // shape: this bridge serves list-config options and session/fork.
+            sessionCapabilities: { list: { setSessionConfigOption: {} }, fork: {} } as SessionCapabilities,
             // The dsh extension surface rides the protocol's extMethod
             // transport; this advertisement is what lets a host light its UI
             // per negotiated capability instead of probing.
@@ -615,6 +618,55 @@ export function apply(ctx: Context, config: AcpConfig): void {
           sessions.push({ sessionId: header.id, cwd: header.cwd })
         }
         return { sessions }
+      },
+
+      /**
+       * Fork a persisted session into a fresh live one carrying the source's
+       * whole log as its seed. The child is registered like a loaded session,
+       * so the next prompt continues from the inherited history while the
+       * source stays untouched. The protocol fork carries no anchor: it always
+       * forks the complete conversation.
+       * @param params - the source session id plus the child's workspace.
+       * @returns the child session id.
+       */
+      async unstable_forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse> {
+        assertOpen()
+        validateSessionParams(params)
+        const sourceId = SessionId(params.sessionId)
+        const persistence = ctx.get('sessionPersistence') as SessionPersistenceReader | undefined
+        if (persistence === undefined) {
+          throw internalError('forking requires session persistence')
+        }
+        let events: SessionEvent[]
+        try {
+          ({ events } = await persistence.load(sourceId))
+        } catch {
+          throw invalidParams(`unknown session: ${sourceId}`)
+        }
+        const model = await buildModelState(ctx, config)
+        const childId = `session-${randomUUID()}` as SessionId
+        const handle = await agents.create({
+          sessionId: childId,
+          meta: { cwd: params.cwd },
+          agentOptions: agentOptions(config),
+          seed: events,
+          setup: agentCtx => composeAgent(agentCtx, model),
+        })
+        /* v8 ignore next 4 -- a real stdio close can race an in-flight fork. */
+        if (closed) {
+          await handle.dispose()
+          throw internalError('connection closed during session/fork')
+        }
+        sessions.set(childId, {
+          agent: handle.agent,
+          dispose: () => handle.dispose(),
+          outputTail: Promise.resolve(),
+          inflight: undefined,
+          modelRef: model.ref,
+          modelOptions: model.options,
+          modelCatalog: model.catalog,
+        })
+        return { sessionId: childId }
       },
 
       async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
@@ -1055,10 +1107,10 @@ interface ModelState {
   readonly catalog: readonly CatalogEntry[]
 }
 
-/** Workspace fields shared by session creation and loading. */
+/** Workspace fields shared by session creation, loading, and forking. */
 interface SessionWorkspaceParams {
   readonly cwd: string
-  readonly mcpServers: readonly unknown[]
+  readonly mcpServers?: readonly unknown[]
   readonly additionalDirectories?: readonly string[]
 }
 
@@ -1092,5 +1144,7 @@ function validateSessionParams(params: SessionWorkspaceParams): void {
   if (params.additionalDirectories !== undefined && params.additionalDirectories.length > 0) {
     throw invalidParams('additionalDirectories is not supported')
   }
-  if (params.mcpServers.length > 0) throw invalidParams('mcpServers is not supported')
+  if (params.mcpServers !== undefined && params.mcpServers.length > 0) {
+    throw invalidParams('mcpServers is not supported')
+  }
 }

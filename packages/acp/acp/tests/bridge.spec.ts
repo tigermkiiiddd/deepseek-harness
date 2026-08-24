@@ -25,7 +25,7 @@ describe('automation-only ACP bridge', () => {
       agentCapabilities: {
         promptCapabilities: { image: false, audio: false, embeddedContext: false },
         loadSession: true,
-        sessionCapabilities: { list: { setSessionConfigOption: {} } },
+        sessionCapabilities: { list: { setSessionConfigOption: {} }, fork: {} },
         _meta: {
           dsh: { extensions: ['dsh/session/historyPage', 'dsh/session/rename'] },
         },
