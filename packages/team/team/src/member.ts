@@ -893,9 +893,11 @@ export class MemberConnection {
     if (!Array.isArray(questions)) {
       return Promise.reject(new Error('dsh/user/question requires a questions array'))
     }
+    const sessionId = params['sessionId']
     const request: TeamUserQuestionRequest = {
       requestId: randomUUID(),
       memberId: this.config.id,
+      ...(typeof sessionId === 'string' && sessionId.length > 0 ? { sessionId } : {}),
       questions: questions as TeamUserQuestionRequest['questions'],
     }
     return new Promise<Record<string, unknown>>((resolve) => {

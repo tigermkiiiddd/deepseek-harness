@@ -1353,6 +1353,40 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     // `team.permission`. Returning `undefined` lets the event-driven bridge own
     // the pending approval and the eventual `approval/resolved` frame.
     ctx.effect(() => team.onPermissionRequest(() => undefined), 'api-proxy: member permission subscriber')
+    // Member question batches ride the SAME mux question frames the main
+    // instance uses: map the member's topic onto its virtual session id and
+    // push one answerable server-request. The client's existing question panel
+    // answers it; the response settles the batch back through
+    // `team.answerUserQuestion`, and a client cancellation declines with an
+    // empty answer set (the member's ask fails soft).
+    ctx.effect(() => team.onUserQuestion((request) => {
+      if (request.sessionId === undefined) return undefined
+      const sessionId = ensureMemberTopicSeen(request.memberId, request.sessionId)
+      const rpcId = RpcId(randomUUID())
+      const pending: PendingQuestion = {
+        rpcId,
+        sessionId,
+        questions: request.questions,
+        resolve: (answer) => {
+          void team.answerUserQuestion(request.memberId, request.requestId, answer).catch((error: unknown) => {
+            ctx.logger.warn(`api-proxy: failed to answer member question batch: ${String(error)}`)
+          })
+        },
+        reject: (error) => {
+          void team.answerUserQuestion(request.memberId, request.requestId, { answers: [] }).catch(() => {
+            /* the batch is already gone member-side; nothing to decline */
+          })
+          throw error
+        },
+      }
+      pendingQuestions.set(rpcId, pending)
+      const envelope: RpcRequest<MuxFrame> = {
+        rpcId,
+        payload: { type: 'question/requested', sessionId, questions: request.questions },
+      }
+      for (const queue of muxQueues) queue.push(envelope)
+      return undefined
+    }), 'api-proxy: member question subscriber')
   }
   ctx.on('team/member-update', (memberId, topicId, update) => {
     const sessionId = ensureMemberTopicSeen(memberId, topicId)

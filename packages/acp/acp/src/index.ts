@@ -944,12 +944,19 @@ export function apply(ctx: Context, config: AcpConfig): void {
   // bridge registers as the member process's question provider and forwards
   // each batch verbatim over one `dsh/user/question` round-trip, so the host
   // answers with the same wire-safe shapes its own UI already speaks.
+  interface MemberQuestionAsk {
+    questions: unknown
+    agent?: { id: string }
+  }
   const userQuestions = ctx.get('userQuestions') as
-    | { registerProvider(provider: { ask(request: { questions: unknown }): Promise<{ answers: unknown }> }): () => void }
+    | { registerProvider(provider: { ask(request: MemberQuestionAsk): Promise<{ answers: unknown }> }): () => void }
     | undefined
   userQuestions?.registerProvider({
     ask: async (request) => {
-      const response = await conn.extMethod('dsh/user/question', { questions: request.questions }) as { answers?: unknown }
+      const response = await conn.extMethod('dsh/user/question', {
+        questions: request.questions,
+        ...(request.agent === undefined ? {} : { sessionId: request.agent.id }),
+      }) as { answers?: unknown }
       if (response === null || !Array.isArray(response.answers)) {
         throw internalError('the client returned a malformed question answer')
       }

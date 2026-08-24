@@ -243,6 +243,11 @@ export interface TeamUserQuestionRequest {
   readonly requestId: string
   /** The member that raised the questions. */
   readonly memberId: string
+  /**
+   * The member's own session (topic) the questions belong to, when the ask
+   * came from an agent-owned tool call; absent for unbound batches.
+   */
+  readonly sessionId?: string
   /** The questions awaiting answers, verbatim from the wire-safe types. */
   readonly questions: readonly AskUserQuestionItem[]
 }
