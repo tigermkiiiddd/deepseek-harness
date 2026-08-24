@@ -26,6 +26,9 @@ describe('automation-only ACP bridge', () => {
         promptCapabilities: { image: false, audio: false, embeddedContext: false },
         loadSession: true,
         sessionCapabilities: { list: { setSessionConfigOption: {} } },
+        _meta: {
+          dsh: { extensions: ['dsh/session/historyPage', 'dsh/session/rename'] },
+        },
       },
       authMethods: [],
     })
