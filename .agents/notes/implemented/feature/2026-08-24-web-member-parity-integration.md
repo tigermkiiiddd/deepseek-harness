@@ -2,6 +2,8 @@
 
 Status: implemented
 
+> **Superseded (2026-08-25):** the hide/refuse-based member gating here is replaced by full capability projection with real implementations for every surface — see [ACP full self-encapsulation](2026-08-25-acp-full-self-encapsulation.md). Kept for decision history.
+
 English | [中文](2026-08-24-web-member-parity-integration.zh.md)
 
 ## Problem

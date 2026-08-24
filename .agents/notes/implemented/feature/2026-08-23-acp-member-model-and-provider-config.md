@@ -2,6 +2,8 @@
 
 Status: implemented
 
+> **Superseded (2026-08-25):** the refusal/hide-based posture here is replaced by full capability projection — see [ACP full self-encapsulation](2026-08-25-acp-full-self-encapsulation.md). Kept for decision history.
+
 English | [中文](2026-08-23-acp-member-model-and-provider-config.zh.md)
 
 ## Problem

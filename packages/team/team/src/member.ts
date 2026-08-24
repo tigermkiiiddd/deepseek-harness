@@ -507,6 +507,47 @@ export class MemberConnection {
   }
 
   /**
+   * Rename one member topic through the `dsh/session/rename` extension.
+   * @param sessionId - the member's session (topic) id.
+   * @param title - the new title.
+   * @returns the accepted title and its log seq on the member side.
+   */
+  async renameTopic(sessionId: string, title: string): Promise<{ title: string; seq: number }> {
+    const conn = this.requireRunning()
+    const result = await conn.extMethod('dsh/session/rename', { sessionId, title }) as { title?: unknown; seq?: unknown }
+    if (typeof result?.title !== 'string' || typeof result.seq !== 'number') {
+      throw new Error(`team: member "${this.config.id}" returned a malformed rename response`)
+    }
+    return { title: result.title, seq: result.seq }
+  }
+
+  /**
+   * Run one pending-queue operation against a member topic through the
+   * `dsh/session/queue` extension; payload and result pass through verbatim.
+   */
+  async queueOp(sessionId: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const conn = this.requireRunning()
+    return await conn.extMethod('dsh/session/queue', { sessionId, ...payload })
+  }
+
+  /**
+   * Fork one member topic into a fresh live conversation through the native
+   * `session/fork`. The fork inherits the source topic's workspace.
+   * @param sessionId - the member's session (topic) id to fork.
+   * @returns the new forked topic id.
+   */
+  async forkTopic(sessionId: string): Promise<string> {
+    const conn = this.requireRunning()
+    const cwd = (await this.listSessions()).find(topic => topic.sessionId === sessionId)?.cwd ?? this.cwd
+    const forked = await conn.unstable_forkSession({
+      sessionId,
+      cwd,
+      mcpServers: [],
+    } as Parameters<ClientSideConnection['unstable_forkSession']>[0])
+    return String(forked.sessionId)
+  }
+
+  /**
    * Open a new topic on the member.
    * @returns the new topic id.
    */

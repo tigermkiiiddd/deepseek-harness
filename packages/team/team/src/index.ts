@@ -135,6 +135,26 @@ export interface TeamService {
    */
   newSession(memberId: string): Promise<string>
   /**
+   * Rename one member topic through the `dsh/session/rename` extension.
+   * @param memberId - the member that owns the topic.
+   * @param sessionId - the topic to rename.
+   * @param title - the new title.
+   * @returns the accepted title and its log seq on the member side.
+   */
+  renameTopic(memberId: string, sessionId: string, title: string): Promise<{ title: string; seq: number }>
+  /**
+   * Fork one member topic into a fresh live conversation (native `session/fork`).
+   * @param memberId - the member that owns the source topic.
+   * @param sessionId - the topic to fork.
+   * @returns the new forked topic id.
+   */
+  forkTopic(memberId: string, sessionId: string): Promise<string>
+  /**
+   * Run one pending-queue operation against a member topic; payload and
+   * result pass through to the `dsh/session/queue` extension verbatim.
+   */
+  queueOp(memberId: string, sessionId: string, payload: Record<string, unknown>): Promise<Record<string, unknown>>
+  /**
    * The member's resolved session configuration set plus the model shortcut.
    * The snapshot is derived from options cached when the topic was created,
    * loaded, or updated — create or load the topic first.
@@ -456,6 +476,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     },
     isTurnInFlight: (memberId, sessionId) => requireMember(connections, memberId).isTurnInFlight(sessionId),
     newSession: async memberId => requireMember(connections, memberId).newSession(),
+    renameTopic: async (memberId, sessionId, title) =>
+      requireMember(connections, memberId).renameTopic(sessionId, title),
+    forkTopic: async (memberId, sessionId) => requireMember(connections, memberId).forkTopic(sessionId),
+    queueOp: async (memberId, sessionId, payload) =>
+      requireMember(connections, memberId).queueOp(sessionId, payload),
     getConfig: async (memberId, sessionId) => {
       await ensureRoster()
       return requireMember(connections, memberId).getConfig(sessionId)

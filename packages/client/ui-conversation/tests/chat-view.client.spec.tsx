@@ -743,18 +743,17 @@ describe('ChatView', () => {
     expect(h.forkAt.mock.calls).toEqual([[2]])
   })
 
-  it('hides the branch action entirely on member topic sessions', () => {
+  it('offers the branch action on member topic sessions like any other', () => {
     const h = makeHarness({
       nodes: [user(1, 'question'), assistant(2, 'answer')],
       turnEnds: new Map([[1, 3]]),
     })
     // The node renderers close over the harness props object, so the member
-    // id is set on it before rendering.
+    // id is set on it before rendering. Member topics fork through the
+    // session backend (native session/fork), so the button stays.
     h.props.sessionId = 'member:architect:topic-1' as SessionId
-    // Member topics cannot be forked through the dsh ACP bridge: no branch
-    // button at all, while copy stays available on both bubbles.
     const view = render(<h.ChatView {...h.props} />)
-    expect(view.queryByRole('button', { name: '在新对话中分支' })).toBeNull()
+    expect(view.getByRole('button', { name: '在新对话中分支' })).toBeDefined()
     expect(view.getAllByRole('button', { name: '复制' })).toHaveLength(2)
   })
 

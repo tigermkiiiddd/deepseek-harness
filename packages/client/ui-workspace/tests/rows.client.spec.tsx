@@ -429,20 +429,19 @@ describe('workspace browser rows', () => {
     expect(screen.queryByRole('menu')).toBeNull()
   })
 
-  it('hides rename and fork on member topic rows but keeps archive', () => {
+  it('offers the same rename/fork/archive verbs on member topic rows', () => {
     const node: SessionNode = {
       id: sid('member:architect:topic-1'), title: '架构师 · topic-1', blank: false, running: false,
       runningSubagentCount: 0, completed: false, updatedAt: 0,
     }
+    const onRename = vi.fn()
     render(<SessionNodeItem node={node} currentId={undefined} now={0} onOpen={vi.fn()}
-      onRename={vi.fn()} onFork={vi.fn()} onArchive={vi.fn()} t={t} />)
+      onRename={onRename} onFork={vi.fn()} onArchive={vi.fn()} t={t} />)
     fireEvent.click(screen.getByRole('button', { name: '会话“架构师 · topic-1”的操作' }))
-    // Member topics cannot be renamed or forked through the dsh ACP bridge —
-    // those verbs stay out of the menu rather than failing on click.
-    expect(screen.queryByRole('menuitem', { name: '重命名' })).toBeNull()
-    expect(screen.queryByRole('menuitem', { name: '分叉会话' })).toBeNull()
-    fireEvent.click(screen.getByRole('menuitem', { name: '归档会话' }))
-    expect(screen.queryByRole('menu')).toBeNull()
+    // Member topics fork and rename through the session backend like any
+    // other session — the menu is identical.
+    fireEvent.click(screen.getByRole('menuitem', { name: '重命名' }))
+    expect(onRename).toHaveBeenCalledWith(node.id, '架构师 · topic-1')
   })
 
 
