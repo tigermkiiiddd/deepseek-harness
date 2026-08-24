@@ -24,6 +24,9 @@
       "path": "../../core/agent"
     },
     {
+      "path": "../../session/session-title"
+    },
+    {
       "path": "../../interaction/user-approval"
     },
     {

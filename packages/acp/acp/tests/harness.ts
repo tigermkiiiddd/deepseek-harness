@@ -18,6 +18,7 @@ import { type GenerateOptions, LlmAdapter, CallId, type LlmResolvedModelInfo, ty
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { SessionTitleInvalidError } from '@deepseek-ai/dsh-session-title'
 import * as AcpPlugin from '../src/index.ts'
 import type { AcpConfig } from '../src/index.ts'
 
@@ -223,6 +224,8 @@ export async function makeBridgeHarness(options: {
   attachments?: boolean
   contextWindow?: number
   persistence?: PersistenceFixture
+  /** Session-title seam posture for rename coverage; default `none` mounts nothing. */
+  titleService?: 'none' | 'ok' | 'invalid'
 } = {}): Promise<BridgeHarness> {
   const adapter = new MockAdapter(
     options.script ?? [],
@@ -234,6 +237,17 @@ export async function makeBridgeHarness(options: {
   if (options.attachments !== false) await ctx.plugin(MemoryAttachmentStore)
   const loopFiber = await ctx.plugin(AgentLoop, { agents: [] })
   ctx.llm.registerAdapter(['mock', 'mock-alt'], adapter)
+  if (options.titleService === 'ok') {
+    ctx.provide('sessionTitle', {
+      rename: () => ({ title: 'accepted', eventSeq: 5 }),
+    })
+  } else if (options.titleService === 'invalid') {
+    ctx.provide('sessionTitle', {
+      rename: () => {
+        throw new SessionTitleInvalidError('the title is empty')
+      },
+    })
+  }
 
   if (options.persistence !== undefined) {
     const fixture = options.persistence

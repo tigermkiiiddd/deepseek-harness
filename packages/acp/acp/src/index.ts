@@ -15,6 +15,7 @@ import { isAbsolute } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import Schema from '@deepseek-ai/schemastery'
 import { createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
+import { SessionTitleInvalidError } from '@deepseek-ai/dsh-session-title'
 import {
   AgentSideConnection,
   ndJsonStream,
@@ -167,13 +168,70 @@ async function dshHistoryPage(ctx: Context, raw: Record<string, unknown>): Promi
 }
 
 /**
+ * The session-title seam the bridge reads for `dsh/session/rename`. Declared
+ * structurally so this package does not hard-depend on the Service.
+ */
+interface SessionTitles {
+  /** Rename one live agent's session, persisting the title on its log. */
+  rename(session: object, title: string): { title: string; eventSeq: number }
+}
+
+/**
+ * Serve `dsh/session/rename`: rename a live session through the harness's own
+ * title service, exactly as the main instance's rename does.
+ * @param ctx - the bridge context carrying the title seam.
+ * @param sessions - the bridge's live-session records.
+ * @param raw - the extension parameters: `sessionId` and `title`.
+ * @returns `{ title, seq }` for the accepted rename.
+ * @throws invalid-parameter errors for an unknown session or a rejected title,
+ *   and an internal error when no title service is mounted.
+ */
+async function dshRename(
+  ctx: Context,
+  sessions: Map<SessionId, SessionRecord>,
+  raw: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const sessionId = raw['sessionId']
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
+    throw invalidParams('sessionId must be a non-empty string')
+  }
+  const title = raw['title']
+  if (typeof title !== 'string' || title.length === 0) {
+    throw invalidParams('title must be a non-empty string')
+  }
+  const record = sessions.get(SessionId(sessionId))
+  if (record === undefined) {
+    throw invalidParams(`unknown session: ${sessionId}`)
+  }
+  const titles = ctx.get('sessionTitle') as SessionTitles | undefined
+  if (titles === undefined) {
+    throw internalError('renaming requires a session-title service')
+  }
+  try {
+    const accepted = titles.rename(record.agent.session as unknown as object, title)
+    return { title: accepted.title, seq: accepted.eventSeq }
+  } catch (error: unknown) {
+    // Only the input's fault is a parameter error; liveness races are
+    // deployment trouble, matching the main instance's rename classification.
+    if (error instanceof SessionTitleInvalidError) {
+      throw invalidParams(`invalid title: ${error.message}`)
+    }
+    throw internalError(`failed to rename session "${sessionId}": ${String(error)}`)
+  }
+}
+
+/**
  * The dsh extension methods this bridge serves over ACP `extMethod`, keyed by
  * wire method name. The initialize capability advertisement lists exactly
  * these keys, so a client can drive every surface data-driven.
  */
-function dshExtensions(ctx: Context): Record<string, (params: Record<string, unknown>) => Promise<Record<string, unknown>>> {
+function dshExtensions(
+  ctx: Context,
+  sessions: Map<SessionId, SessionRecord>,
+): Record<string, (params: Record<string, unknown>) => Promise<Record<string, unknown>>> {
   return {
     'dsh/session/historyPage': params => dshHistoryPage(ctx, params),
+    'dsh/session/rename': params => dshRename(ctx, sessions, params),
   }
 }
 
@@ -251,6 +309,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
   const agents = ctx.agents
   const logger = ctx.logger
   const sessions = new Map<SessionId, SessionRecord>()
+  const extensions = dshExtensions(ctx, sessions)
   let closed = false
   /**
    * Per-connection negotiation: a client that sent
@@ -478,7 +537,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
         // Single-version agent: the spec's "same version if supported, else
         // the latest supported" both resolve to this server's one version.
         imagePromptEnabled = await supportsAcpImagePrompts(ctx, config.provider, config.model)
-        const extensions = dshExtensions(ctx)
+        const extensionNames = Object.keys(extensions)
         return {
           protocolVersion: PROTOCOL_VERSION,
           agentInfo: { name: 'deepseek-harness-acp', version: '0.0.1' },
@@ -493,7 +552,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
             // The dsh extension surface rides the protocol's extMethod
             // transport; this advertisement is what lets a host light its UI
             // per negotiated capability instead of probing.
-            _meta: { dsh: { extensions: Object.keys(extensions) } },
+            _meta: { dsh: { extensions: extensionNames } },
           },
           authMethods: [],
         }
@@ -532,7 +591,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
        */
       async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
         assertOpen()
-        const handler = dshExtensions(ctx)[method]
+        const handler = extensions[method]
         if (handler === undefined) {
           throw invalidParams(`unsupported dsh extension: ${method}`)
         }

@@ -115,4 +115,48 @@ describe('dsh extension surface', () => {
       sessionId: 'missing', limit: 5,
     })).rejects.toThrow(/unknown session/)
   })
+
+  it('renames a live session through the title service', async () => {
+    harness = await makeBridgeHarness({ titleService: 'ok' })
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const { sessionId } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+
+    const result = await harness.client.extMethod('dsh/session/rename', {
+      sessionId,
+      title: 'New Name',
+    }) as { title: string; seq: number }
+    expect(result).toEqual({ title: 'accepted', seq: 5 })
+  })
+
+  it('classifies a rejected title as a parameter error and a miss as unknown session', async () => {
+    harness = await makeBridgeHarness({ titleService: 'invalid' })
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const { sessionId } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+
+    await expect(harness.client.extMethod('dsh/session/rename', {
+      sessionId,
+      title: '',
+    })).rejects.toThrow(/title must be a non-empty string/)
+
+    await expect(harness.client.extMethod('dsh/session/rename', {
+      sessionId,
+      title: 'bad',
+    })).rejects.toThrow(/invalid title: the title is empty/)
+
+    await expect(harness.client.extMethod('dsh/session/rename', {
+      sessionId: 'nope',
+      title: 'bad',
+    })).rejects.toThrow(/unknown session/)
+  })
+
+  it('fails loud when no title service is mounted', async () => {
+    harness = await makeBridgeHarness({ titleService: 'none' })
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const { sessionId } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+
+    await expect(harness.client.extMethod('dsh/session/rename', {
+      sessionId,
+      title: 'Any',
+    })).rejects.toThrow(/requires a session-title service/)
+  })
 })
