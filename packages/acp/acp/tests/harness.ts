@@ -199,6 +199,8 @@ export interface BridgeHarness {
   permissionRequests: RequestPermissionRequest[]
   onPermission: (request: RequestPermissionRequest) => RequestPermissionResponse
   onSessionUpdateError: (() => void) | undefined
+  /** Session ids the compaction stub received, for call assertions. */
+  compactedWith: unknown[]
   closeClientTransport: () => Promise<void>
   abortClientTransport: () => Promise<void>
   acpFiber: Awaited<ReturnType<Context['plugin']>>
@@ -228,6 +230,8 @@ export async function makeBridgeHarness(options: {
   titleService?: 'none' | 'ok' | 'invalid'
   /** Session-query seam posture for search coverage; default `none` mounts nothing. */
   sessionQuery?: 'none' | 'disabled' | 'ok'
+  /** Compaction seam posture for manual-compact coverage; default `none` mounts nothing. */
+  compaction?: 'none' | 'ok'
 } = {}): Promise<BridgeHarness> {
   const adapter = new MockAdapter(
     options.script ?? [],
@@ -266,6 +270,16 @@ export async function makeBridgeHarness(options: {
       },
     })
   }
+  let compactedWith: unknown[] | undefined
+  if (options.compaction === 'ok') {
+    compactedWith = []
+    ctx.provide('compaction', {
+      compactNow: (agent: unknown) => {
+        compactedWith.push(agent)
+        return Promise.resolve(null)
+      },
+    })
+  }
 
   if (options.persistence !== undefined) {
     const fixture = options.persistence
@@ -300,6 +314,7 @@ export async function makeBridgeHarness(options: {
     permissionRequests,
     onPermission: () => ({ outcome: { outcome: 'cancelled' } }),
     onSessionUpdateError: undefined,
+    compactedWith: compactedWith ?? [],
     client: undefined as unknown as ClientSideConnection,
     acpFiber: undefined as unknown as BridgeHarness['acpFiber'],
     loopFiber,

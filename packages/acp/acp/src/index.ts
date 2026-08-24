@@ -417,6 +417,80 @@ async function dshSearch(ctx: Context, raw: Record<string, unknown>): Promise<Re
 }
 
 /**
+ * Serve `dsh/session/state`: the collaboration-state snapshot folded from the
+ * session log — the todo list (`todo/write`, last wins), plan mode
+ * (`plan/mode`, last wins), and the durable goal (`goal/change`, last wins).
+ * Live changes already stream as session updates; this is the initial read.
+ * @param ctx - the bridge context carrying the persistence seam.
+ * @param raw - the extension parameters: `sessionId`.
+ * @returns `{ todo?, planMode?, goal? }`, each present only when its log has one.
+ */
+async function dshState(ctx: Context, raw: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const sessionId = raw['sessionId']
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
+    throw invalidParams('sessionId must be a non-empty string')
+  }
+  const persistence = ctx.get('sessionPersistence') as SessionPersistenceReader | undefined
+  if (persistence === undefined) {
+    throw internalError('state reads require session persistence')
+  }
+  let events: SessionEvent[]
+  try {
+    ({ events } = await persistence.load(SessionId(sessionId)))
+  } catch {
+    throw invalidParams(`unknown session: ${sessionId}`)
+  }
+  const state: Record<string, unknown> = {}
+  // The fold reads the persisted log structurally: `plan/mode` and
+  // `goal/change` belong to packages this bridge does not depend on, so their
+  // variants live outside the imported event union.
+  const log = events as readonly { type: string; data?: unknown }[]
+  for (const event of log) {
+    if (event.type === 'todo/write') {
+      state['todo'] = { todos: (event.data as { todos?: unknown }).todos }
+    } else if (event.type === 'plan/mode') {
+      state['planMode'] = { active: (event.data as { active?: unknown }).active }
+    } else if (event.type === 'goal/change') {
+      state['goal'] = event.data
+    }
+  }
+  return state
+}
+
+/**
+ * Serve `dsh/session/compact`: run the member's manual compaction over the
+ * live agent's durable history — the same operation the main instance's
+ * `/compact` drives.
+ * @param ctx - the bridge context carrying the compaction seam.
+ * @param sessions - the bridge's live-session records.
+ * @param raw - the extension parameters: `sessionId`.
+ * @returns `{ accepted: true }`; the durable `compaction/start`..`end` pair
+ *   lands on the session log either way.
+ */
+async function dshCompact(
+  ctx: Context,
+  sessions: Map<SessionId, SessionRecord>,
+  raw: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const sessionId = raw['sessionId']
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
+    throw invalidParams('sessionId must be a non-empty string')
+  }
+  const record = sessions.get(SessionId(sessionId))
+  if (record === undefined) {
+    throw invalidParams(`unknown session: ${sessionId}`)
+  }
+  const compaction = ctx.get('compaction') as
+    | { compactNow(agent: object, signal: AbortSignal): Promise<unknown> }
+    | undefined
+  if (compaction === undefined) {
+    throw internalError('manual compaction requires a compaction service')
+  }
+  await compaction.compactNow(record.agent as unknown as object, new AbortController().signal)
+  return { accepted: true }
+}
+
+/**
  * The dsh extension methods this bridge serves over ACP `extMethod`, keyed by
  * wire method name. The initialize capability advertisement lists exactly
  * these keys, so a client can drive every surface data-driven.
@@ -431,6 +505,8 @@ function dshExtensions(
     'dsh/session/queue': params => dshQueue(sessions, params),
     'dsh/attachment/get': params => dshAttachmentGet(ctx, params),
     'dsh/session/search': params => dshSearch(ctx, params),
+    'dsh/session/state': params => dshState(ctx, params),
+    'dsh/session/compact': params => dshCompact(ctx, sessions, params),
   }
 }
 

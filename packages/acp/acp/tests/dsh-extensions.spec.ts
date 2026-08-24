@@ -305,4 +305,65 @@ describe('dsh extension surface', () => {
       await expect(harness.client.extMethod('dsh/session/search', { query: 'x', limit: 0 })).rejects.toThrow(/limit must be a positive integer/)
     })
   })
+
+  describe('dsh/session/state and dsh/session/compact', () => {
+    let harness: BridgeHarness | undefined
+
+    afterEach(async () => {
+      await harness?.dispose()
+      harness = undefined
+    })
+
+    const STATE_EVENTS: Record<string, SessionEvent[]> = {
+      topic: [
+        { type: 'todo/write', data: { todos: [{ content: 'a', status: 'completed' }] } },
+        { type: 'plan/mode', data: { active: true } },
+        { type: 'goal/change', data: { objective: 'ship it' } },
+      ] as unknown as SessionEvent[],
+      empty: [],
+    }
+
+    async function stateHarness(compaction: 'none' | 'ok'): Promise<BridgeHarness> {
+      return makeBridgeHarness({
+        compaction,
+        persistence: { headers: [{ id: 'topic', cwd: process.cwd() }, { id: 'empty', cwd: process.cwd() }], eventsBySession: STATE_EVENTS },
+      })
+    }
+
+    it('folds the collaboration-state snapshot from the log, each domain optional', async () => {
+      harness = await stateHarness('ok')
+      await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+
+      const full = await harness.client.extMethod('dsh/session/state', { sessionId: 'topic' }) as Record<string, unknown>
+      expect(full).toEqual({
+        todo: { todos: [{ content: 'a', status: 'completed' }] },
+        planMode: { active: true },
+        goal: { objective: 'ship it' },
+      })
+
+      const blank = await harness.client.extMethod('dsh/session/state', { sessionId: 'empty' }) as Record<string, unknown>
+      expect(blank).toEqual({})
+    })
+
+    it('drives the member compaction service against the live agent', async () => {
+      harness = await makeBridgeHarness({ compaction: 'ok', script: [textResponse('ok')] })
+      await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+      const { sessionId } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+
+      const result = await harness.client.extMethod('dsh/session/compact', { sessionId }) as { accepted: boolean }
+      expect(result.accepted).toBe(true)
+      expect(harness.compactedWith).toHaveLength(1)
+      expect(harness.compactedWith[0]).toBeDefined()
+
+      await expect(harness.client.extMethod('dsh/session/compact', { sessionId: 'missing' }))
+        .rejects.toThrow(/unknown session/)
+
+      await harness.dispose()
+      harness = await makeBridgeHarness()
+      await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+      const created = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+      await expect(harness.client.extMethod('dsh/session/compact', { sessionId: created.sessionId }))
+        .rejects.toThrow(/requires a compaction service/)
+    })
+  })
 })
