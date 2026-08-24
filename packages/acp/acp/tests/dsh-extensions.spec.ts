@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
-import { makeBridgeHarness, type BridgeHarness } from './harness.ts'
+import { makeBridgeHarness, textResponse, type BridgeHarness } from './harness.ts'
 
 /**
  * dsh extension surface coverage: the bridge advertises its extMethod registry
@@ -215,6 +215,94 @@ describe('dsh extension surface', () => {
       await expect(queue({ sessionId: id, op: 'enqueue', text: '' })).rejects.toThrow(/non-empty string/)
       await expect(queue({ sessionId: id, op: 'wat' })).rejects.toThrow(/unsupported queue op/)
       await expect(queue({ sessionId: 'missing', op: 'list' })).rejects.toThrow(/unknown session/)
+    })
+  })
+
+  describe('dsh/attachment/get', () => {
+    let harness: BridgeHarness | undefined
+
+    afterEach(async () => {
+      await harness?.dispose()
+      harness = undefined
+    })
+
+    it('serves an admitted image back as base64 and rejects unknown ids', async () => {
+      // The prompt path admits the image into the store; reading it back is
+      // the same record.
+      const PNG_1PX = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+        'base64',
+      )
+      harness = await makeBridgeHarness({ imageCapable: true, script: [textResponse('ok')] })
+      await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+      const { sessionId } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+      const saved = harness.attachments?.saved.at(-1)
+      // Drive admission through a real image prompt so an id exists to read.
+      await harness.client.prompt({
+        sessionId,
+        prompt: [{ type: 'image', data: PNG_1PX.toString('base64'), mimeType: 'image/png' }],
+      })
+
+      const storedId = harness.attachments?.objects.keys().next().value as string | undefined
+      expect(storedId).toBeDefined()
+      void saved
+      const result = await harness.client.extMethod('dsh/attachment/get', {
+        attachmentId: storedId,
+      }) as { mediaType: string; bytes: number; data: string }
+      expect(result.mediaType).toBe('image/png')
+      expect(result.bytes).toBe(PNG_1PX.byteLength)
+      expect(Buffer.from(result.data, 'base64').equals(PNG_1PX)).toBe(true)
+
+      await expect(harness.client.extMethod('dsh/attachment/get', {
+        attachmentId: 'sha256:unknown',
+      })).rejects.toThrow(/unknown attachment/)
+    })
+  })
+
+  describe('dsh/session/search', () => {
+    let harness: BridgeHarness | undefined
+
+    afterEach(async () => {
+      await harness?.dispose()
+      harness = undefined
+    })
+
+    it('projects hits from the member query service', async () => {
+      harness = await makeBridgeHarness({ sessionQuery: 'ok' })
+      await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+      const result = await harness.client.extMethod('dsh/session/search', {
+        query: 'matched',
+      }) as { hits: { sessionId: string; title?: string; snippet: string }[]; disabled?: boolean }
+      expect(result.hits).toEqual([{
+        sessionId: 'topic',
+        title: 'Topic',
+        snippet: '…matched text…',
+      }])
+      expect(result.disabled).toBeUndefined()
+    })
+
+    it('answers disabled instead of erroring when search is off or unmounted', async () => {
+      harness = await makeBridgeHarness({ sessionQuery: 'disabled' })
+      await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+      const off = await harness.client.extMethod('dsh/session/search', {
+        query: 'x',
+      }) as { hits: unknown[]; disabled?: boolean }
+      expect(off).toEqual({ hits: [], disabled: true })
+
+      await harness.dispose()
+      harness = await makeBridgeHarness()
+      await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+      const unmounted = await harness.client.extMethod('dsh/session/search', {
+        query: 'x',
+      }) as { hits: unknown[]; disabled?: boolean }
+      expect(unmounted).toEqual({ hits: [], disabled: true })
+    })
+
+    it('validates parameters', async () => {
+      harness = await makeBridgeHarness({ sessionQuery: 'ok' })
+      await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+      await expect(harness.client.extMethod('dsh/session/search', {})).rejects.toThrow(/query must be a non-empty string/)
+      await expect(harness.client.extMethod('dsh/session/search', { query: 'x', limit: 0 })).rejects.toThrow(/limit must be a positive integer/)
     })
   })
 })

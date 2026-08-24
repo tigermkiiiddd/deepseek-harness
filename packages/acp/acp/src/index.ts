@@ -16,6 +16,7 @@ import { Readable, Writable } from 'node:stream'
 import Schema from '@deepseek-ai/schemastery'
 import { createUserMessage, deepFreeze, errorChain } from '@deepseek-ai/dsh-llm'
 import { SessionTitleInvalidError } from '@deepseek-ai/dsh-session-title'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import {
   AgentSideConnection,
   ndJsonStream,
@@ -315,6 +316,107 @@ async function dshQueue(
 }
 
 /**
+ * Serve `dsh/attachment/get`: read one admitted image back out of the member
+ * process's durable attachment store. This is the read side of prompt image
+ * admission — the host forwards the bytes to its client instead of keeping a
+ * registry of its own.
+ * @param ctx - the bridge context carrying the attachment store.
+ * @param raw - the extension parameters: `attachmentId`.
+ * @returns `{ mediaType, bytes, data }` with base64-encoded bytes.
+ */
+async function dshAttachmentGet(ctx: Context, raw: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const attachmentId = raw['attachmentId']
+  if (typeof attachmentId !== 'string' || attachmentId.length === 0) {
+    throw invalidParams('attachmentId must be a non-empty string')
+  }
+  const attachments = ctx.get('attachments') as
+    | { readImage(ref: { attachmentId: string }): Promise<{ ref: { mediaType: string; bytes: number }; data: Uint8Array }> }
+    | undefined
+  if (attachments === undefined) {
+    throw internalError('attachment reads require an attachment store')
+  }
+  let stored: { ref: { mediaType: string; bytes: number }; data: Uint8Array }
+  try {
+    stored = await attachments.readImage({ attachmentId: AttachmentId(attachmentId) })
+  } catch {
+    throw invalidParams(`unknown attachment: ${attachmentId}`)
+  }
+  return {
+    mediaType: stored.ref.mediaType,
+    bytes: stored.ref.bytes,
+    data: Buffer.from(stored.data).toString('base64'),
+  }
+}
+
+/**
+ * The structural session-query seam the bridge reads for `dsh/session/search`;
+ * declared locally so this package does not hard-depend on the query service.
+ */
+interface SessionQuerySearch {
+  searchSessions(request: {
+    query: string
+    eventFilters?: readonly { kind: string; values: readonly string[] }[]
+    limit?: number
+  }, exec?: { signal?: AbortSignal }): Promise<{
+    items: readonly {
+      header: { id: string; title?: string | null }
+      bestMatch: { snippet: string }
+    }[]
+  }>
+}
+
+/** Upper bound on one search page served over the wire. */
+const SEARCH_PAGE_MAX = 50
+
+/**
+ * Serve `dsh/session/search`: content search across the member's own sessions,
+ * projected straight onto its session-query service. A deployment that has
+ * search disabled answers `disabled` rather than an error, so the host can
+ * present the absence as data.
+ * @param ctx - the bridge context carrying the query seam.
+ * @param raw - the extension parameters: `query` and optional `limit`.
+ * @returns `{ hits }`, plus `disabled: true` when the member's search is off.
+ */
+async function dshSearch(ctx: Context, raw: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const query = raw['query']
+  if (typeof query !== 'string' || query.length === 0) {
+    throw invalidParams('query must be a non-empty string')
+  }
+  const limitRaw = raw['limit']
+  const limit = limitRaw === undefined ? 20 : limitRaw
+  if (typeof limit !== 'number' || !Number.isInteger(limit) || limit <= 0) {
+    throw invalidParams('limit must be a positive integer')
+  }
+  const sessionQuery = ctx.get('sessionQuery') as SessionQuerySearch | undefined
+  if (sessionQuery === undefined) {
+    return { hits: [], disabled: true }
+  }
+  let page: Awaited<ReturnType<SessionQuerySearch['searchSessions']>>
+  try {
+    page = await sessionQuery.searchSessions({
+      query,
+      eventFilters: [
+        { kind: 'type', values: ['user/message', 'assistant/message'] },
+        { kind: 'surface', values: ['current'] },
+      ],
+      limit: Math.min(limit, SEARCH_PAGE_MAX),
+    })
+  } catch (error: unknown) {
+    if ((error as { code?: string }).code === 'SESSION_QUERY_SEARCH_DISABLED') {
+      return { hits: [], disabled: true }
+    }
+    throw internalError(`session search failed: ${String(error)}`)
+  }
+  return {
+    hits: page.items.map(item => ({
+      sessionId: item.header.id,
+      ...(item.header.title !== undefined && item.header.title !== null ? { title: item.header.title } : {}),
+      snippet: item.bestMatch.snippet,
+    })),
+  }
+}
+
+/**
  * The dsh extension methods this bridge serves over ACP `extMethod`, keyed by
  * wire method name. The initialize capability advertisement lists exactly
  * these keys, so a client can drive every surface data-driven.
@@ -327,6 +429,8 @@ function dshExtensions(
     'dsh/session/historyPage': params => dshHistoryPage(ctx, params),
     'dsh/session/rename': params => dshRename(ctx, sessions, params),
     'dsh/session/queue': params => dshQueue(sessions, params),
+    'dsh/attachment/get': params => dshAttachmentGet(ctx, params),
+    'dsh/session/search': params => dshSearch(ctx, params),
   }
 }
 

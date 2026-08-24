@@ -226,6 +226,8 @@ export async function makeBridgeHarness(options: {
   persistence?: PersistenceFixture
   /** Session-title seam posture for rename coverage; default `none` mounts nothing. */
   titleService?: 'none' | 'ok' | 'invalid'
+  /** Session-query seam posture for search coverage; default `none` mounts nothing. */
+  sessionQuery?: 'none' | 'disabled' | 'ok'
 } = {}): Promise<BridgeHarness> {
   const adapter = new MockAdapter(
     options.script ?? [],
@@ -245,6 +247,22 @@ export async function makeBridgeHarness(options: {
     ctx.provide('sessionTitle', {
       rename: () => {
         throw new SessionTitleInvalidError('the title is empty')
+      },
+    })
+  }
+  if (options.sessionQuery === 'ok') {
+    ctx.provide('sessionQuery', {
+      searchSessions: () => Promise.resolve({
+        items: [{
+          header: { id: 'topic', title: 'Topic' },
+          bestMatch: { snippet: '…matched text…' },
+        }],
+      }),
+    })
+  } else if (options.sessionQuery === 'disabled') {
+    ctx.provide('sessionQuery', {
+      searchSessions: () => {
+        throw Object.assign(new Error('search is disabled'), { code: 'SESSION_QUERY_SEARCH_DISABLED' })
       },
     })
   }
