@@ -919,6 +919,26 @@ describe('catalog cache overlay', () => {
     expect(models.map(model => model.id))
       .toEqual(getBuiltinModels('deepseek').map(model => model.id))
   })
+
+  it('consults the cache when the schema materializes an empty models list', async () => {
+    const dir = await cacheDir()
+    await writeCatalogCache(dir, 'deepseek', {
+      format: CATALOG_CACHE_FORMAT,
+      fingerprint: catalogFingerprint(catalogModels('deepseek')),
+      fetchedAt: new Date().toISOString(),
+      endpoints: ['https://api.deepseek.com/models'],
+      models: [{ id: 'upstream-new', api: 'openai-completions' }],
+    })
+    // The settings seam materializes an absent `models` key as `[]`; an empty
+    // list is the same "serve the catalog" request as a missing one, so the
+    // cached upstream listing must still replace the frozen snapshot.
+    const resolved = resolveProfiles({
+      deepseek: { apiKeyEnv: KEY_ENV, models: [] },
+    }, dir)
+    const models = resolved.get('deepseek')?.piProvider.getModels() ?? []
+
+    expect(models.map(model => model.id)).toEqual(['upstream-new'])
+  })
 })
 
 describe('compat switches', () => {

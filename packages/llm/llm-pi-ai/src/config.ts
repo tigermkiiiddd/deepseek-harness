@@ -467,7 +467,12 @@ export function resolveProfiles(
     // The cache is a serving concern, not a configuration fact: it is read only
     // when a cache directory is named (the adapter, never the validator) and
     // only for a route that has not spoken for itself with models or overrides.
-    const cachedModels = cacheDir === undefined || source.models !== undefined || source.modelOverrides !== undefined
+    // The schema materializes an absent `models` key as `[]` — the same "serve
+    // the installed catalog" request as a truly empty list (see resolveRouteModels)
+    // — so only a NON-empty list counts as the route having declared models;
+    // otherwise the cache would never be consulted on a real settings seam.
+    const declaredModels = source.models !== undefined && source.models.length > 0
+    const cachedModels = cacheDir === undefined || declaredModels || source.modelOverrides !== undefined
       ? undefined
       : cachedCatalogModels(cacheDir, provider)
     const catalog = resolveRouteModels({
