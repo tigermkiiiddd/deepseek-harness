@@ -1058,7 +1058,11 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     const { provider, model } = defaults.defaultModelSelection()
     return { provider, model }
   }
-  type WebModelSelectionRef = ModelSelectionRef & { current: ModelSelection }
+  type WebModelSelectionRef = ModelSelectionRef & {
+    current: ModelSelection
+    /** The selection made in this process, or undefined when the ref still derives one. */
+    pickedSelection(): ModelSelection | undefined
+  }
   const selections = new WeakMap<Agent, WebModelSelectionRef>()
   /**
    * Serializes `agentPreset.select` per session. Two concurrent selects both
@@ -1132,6 +1136,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       set current(next: ModelSelection) {
         picked = next
       },
+      pickedSelection: () => picked,
       assembled: undefined,
     }
     installModelSelection(agent.ctx, selection)
@@ -3097,13 +3102,21 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
           // reason a forked child does: the kept history was produced under
           // those tools.
           const composition = await composeAgent(resolveSessionPreset(source))
+          // The rerun does not restore the cut version's model: the rebuilt
+          // session runs on the user's latest selection — the one made in this
+          // process, else the saved default — never the logged header the kept
+          // prefix would otherwise restore. It is installed on the rebuilt ref
+          // before the queued follow-up turn assembles, so the rerun turn
+          // itself goes out under it.
+          const latest = selections.get(live)?.pickedSelection() ?? defaults.defaultModelSelection()
           try {
-            await ctx.agents.reseed({
+            const rebuilt = await ctx.agents.reseed({
               sessionId,
               keepSeqs: cut,
               agentOptions: agentOptions(),
               setup: composition.setup,
             })
+            selectionFor(rebuilt.agent).current = latest
           } catch (error: unknown) {
             return err(request, {
               code: 'internal',

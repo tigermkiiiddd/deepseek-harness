@@ -243,8 +243,8 @@ async function prepareCliMockFixture(cwd: string): Promise<void> {
 }
 
 describe('headless stream-json snapshots', () => {
-  it('runs one task through the product headless profile command', async () => {
-    const task = 'Prove the product headless profile path with one real tool round trip.'
+  it('recovers from a lazy-bridge misroute through the product headless profile command', async () => {
+    const task = 'Prove the product headless lazy-tool path with one real tool round trip.'
     const result = await runLoaderSmoke({
       label: 'product headless profile snapshot',
       tempDirPrefix: 'headless-snapshot-profile-',
@@ -263,6 +263,10 @@ describe('headless stream-json snapshots', () => {
         expect(logs).toHaveLength(1)
         const actual = logs[0]
         if (actual === undefined) throw new Error('the headless profile did not persist its session')
+        expect(actual.content).toContain('Only the deferred end tools listed below use `tool_describe` and `tool_call`.')
+        expect(actual.content).toContain(
+          'tool_call cannot invoke bridge tool \\"tool_describe\\"; call \\"tool_describe\\" directly.',
+        )
         const context = contextFromLogs([actual.content])
         const session = normalizeSessionSnapshot(actual.content, context)
         if (refreshing) await writeFile(headlessSessionExpected, session)

@@ -5,7 +5,9 @@ import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentHandle, ReseedAgentOptions } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import SessionStore from '@deepseek-ai/dsh-session'
+import { canonicalHeader } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
@@ -174,6 +176,70 @@ describe('sessions.rerun', () => {
     const response = await api(ctx).sessions.rerun(request({ sessionId: session.id, atSeq: 1 }))
     expect(response.result).toMatchObject({ ok: true, value: { accepted: true } })
     expect(ctx.agents.get(session.id)?.session.events.map(event => event.type)).toEqual(['session/end-seed'])
+    await ctx.fiber.dispose()
+  })
+
+  it('runs the rebuilt session on the latest selection instead of the kept version model', async () => {
+    const { ctx, live } = await composed()
+    const { session } = liveAgent(ctx, live, 'session-rerun-select', 2)
+    // The kept prefix's last header names the OLD route (the same model id as
+    // the pick, as when official and a gateway route both serve one id). A
+    // restore-from-log would resurrect it; the rerun must keep the pick.
+    session.append('request/header', {
+      header: canonicalHeader({ config: { provider: 'deepseek-official', model: 'deepseek-v4-flash' } }),
+      reason: 'change',
+    })
+    ctx.provide('llm', {
+      resolveCallConfig: (config: LlmCallConfig) => Promise.resolve(config),
+      listProviders: () => [],
+    } as never)
+    const proxy = api(ctx)
+
+    const selected = await proxy.sessions.selectModel(request({
+      sessionId: session.id,
+      provider: 'opencode-go',
+      model: 'deepseek-v4-flash',
+    }))
+    expect(selected.result).toMatchObject({
+      ok: true,
+      value: { selected: { provider: 'opencode-go', model: 'deepseek-v4-flash' } },
+    })
+
+    // Anchor on turn 2's user message (seq 5): turn 2 is dropped, turn 1 and
+    // its request/header survive in the kept prefix.
+    const rerun = await proxy.sessions.rerun(request({ sessionId: session.id, atSeq: 5 }))
+    expect(rerun.result).toMatchObject({ ok: true, value: { accepted: true } })
+
+    const models = await proxy.sessions.models(request({ sessionId: session.id }))
+    expect(models.result).toMatchObject({
+      ok: true,
+      value: { current: { provider: 'opencode-go', model: 'deepseek-v4-flash' } },
+    })
+    await ctx.fiber.dispose()
+  })
+
+  it('falls back to the saved default selection on rerun without an in-process pick', async () => {
+    const { ctx, live } = await composed()
+    const { session } = liveAgent(ctx, live, 'session-rerun-default', 2)
+    session.append('request/header', {
+      header: canonicalHeader({ config: { provider: 'deepseek-official', model: 'deepseek-v4-flash' } }),
+      reason: 'change',
+    })
+    ctx.provide('llm', {
+      resolveCallConfig: (config: LlmCallConfig) => Promise.resolve(config),
+      listProviders: () => [],
+    } as never)
+    const proxy = api(ctx)
+    const response = await proxy.sessions.rerun(request({ sessionId: session.id, atSeq: 5 }))
+    expect(response.result).toMatchObject({ ok: true, value: { accepted: true } })
+
+    // The kept prefix still carries the old header, but the rebuilt session
+    // reports the saved default, never the cut version's model.
+    const models = await proxy.sessions.models(request({ sessionId: session.id }))
+    expect(models.result).toMatchObject({
+      ok: true,
+      value: { current: { provider: 'default-provider', model: 'default-model' } },
+    })
     await ctx.fiber.dispose()
   })
 

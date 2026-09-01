@@ -258,7 +258,9 @@ describe('the shipped Web composition', () => {
     try {
       const before = await ctx.systemPrompt.assemble({ scope: handle.agent })
       expect(before.tools.map(tool => tool.name)).toEqual(['tool_call', 'tool_describe', 'tool_search'])
-      expect(before.sections.find(section => section.name === 'tools:lazy-catalog')?.text).toContain('web_search')
+      const catalog = before.sections.find(section => section.name === 'tools:lazy-catalog')?.text
+      expect(catalog).toContain('todo_write')
+      expect(catalog).toContain('web_search')
       expect(toolNames(ctx, handle.agent)).toContain('web_search')
       expect(await ctx.systemPrompt.assemble({ scope: handle.agent })).toEqual(before)
     } finally {

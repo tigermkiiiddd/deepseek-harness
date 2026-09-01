@@ -104,6 +104,44 @@ describe('ACP model selector', () => {
     expect(request!.model).toBe('alt-model')
   })
 
+  it('keeps the switched selection across a dsh/session/rerun', async () => {
+    harness = await makeBridgeHarness({
+      script: [textResponse('ok'), textResponse('after rerun')],
+      persistence: { headers: [], eventsBySession: {} },
+    })
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const { sessionId } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+
+    await harness.client.setSessionConfigOption({
+      sessionId,
+      configId: 'model',
+      value: 'mock-alt/alt-model',
+    })
+    await harness.client.prompt({
+      sessionId,
+      prompt: [{ type: 'text', text: 'go' }],
+    })
+
+    // Rerun the completed turn, then send the follow-up: the rebuilt agent
+    // keeps the switched route instead of re-seeding the default mock/mock.
+    const lastSeq = harness.ctx.sessions
+      .get(SessionId(sessionId))!.events.at(-1)!.seq
+    const result = await harness.client.extMethod('dsh/session/rerun', {
+      sessionId,
+      at: lastSeq,
+    }) as { accepted: boolean }
+    expect(result.accepted).toBe(true)
+
+    await harness.client.prompt({
+      sessionId,
+      prompt: [{ type: 'text', text: 'again' }],
+    })
+    const request = harness.adapter.requests[1]
+    expect(request).toBeDefined()
+    expect(request!.provider).toBe('mock-alt')
+    expect(request!.model).toBe('alt-model')
+  })
+
   it('rejects a value not in the provider catalog', async () => {
     harness = await makeBridgeHarness()
     const { sessionId } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })

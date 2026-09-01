@@ -7,7 +7,9 @@
  * ToggleButton) shows both: model name + effort in the caption tone.
  * Data and submission ride the SAME per-session ModelDirectory as the
  * /model popup; exact-model reasoning metadata and the selected effort come
- * from the Host rather than a client-owned vocabulary. A rejected selection
+ * from the Host rather than a client-owned vocabulary. The model pane pins a
+ * recency section (`Provider · Model` rows, browser-local) above the provider
+ * groups for quick switching. A rejected selection
  * announces through the shared transient Toast anchored to the composer
  * card; the in-menu strip with Retry remains the catalog-load surface.
  */
@@ -23,6 +25,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ModelSelectInjected } from './slots.ts'
+import { modelRecents, type ModelRecent } from './recents.ts'
 import css from './ModelSelect.module.css'
 
 /** Which pane the dropdown shows: the two-row root or one drilled-in list. */
@@ -55,6 +58,9 @@ export function ModelSelect(
   // The model pane's filter: a case-insensitive substring over model name and
   // id, or over the provider group name (which keeps every one of its models).
   const [query, setQuery] = useState('')
+  // Recency-ordered quick switches for the section above the groups. Storage
+  // is not reactive, so the read happens per menu open rather than per render.
+  const [recents, setRecents] = useState<readonly ModelRecent[]>([])
   // The in-menu error strip serves catalog loads (its Retry re-runs the
   // load); a rejected SELECTION announces through the transient toast
   // instead, so the strip renders only while the latest failure-capable
@@ -89,6 +95,22 @@ export function ModelSelect(
   // emptied group drops out. `choices` above stays unfiltered — selection and
   // the check mark must not depend on what the user is typing.
   const needle = query.trim().toLowerCase()
+  // Each stored pick resolves against the loaded groups so a recent row reads
+  // `Provider · Model`; a pick the catalog stopped advertising falls back to
+  // raw ids and stays selectable, because catalog membership is advisory.
+  const recentChoices = useMemo(() => {
+    const groups = new Map(state.groups.map(group => [group.id, group]))
+    return recents.map((recent) => {
+      const group = groups.get(recent.provider)
+      const model = group?.models.find(entry => entry.id === recent.model)
+      return {
+        ...recent,
+        label: group === undefined || model === undefined
+          ? `${recent.provider} · ${recent.model}`
+          : `${group.name} · ${model.name}`,
+      }
+    })
+  }, [recents, state.groups])
   const visibleGroups = useMemo(() => {
     if (needle === '') return state.groups
     return state.groups.flatMap((group) => {
@@ -152,6 +174,7 @@ export function ModelSelect(
   const show = (): void => {
     setPane('root')
     setOpen(true)
+    setRecents(modelRecents())
     reload()
   }
 
@@ -226,7 +249,12 @@ export function ModelSelect(
     void select(selection).then(settleSelection)
   }
 
-  const modelLabel = currentChoice?.model.name ?? t('trigger.fallback')
+  // The provider group is part of the label: the same model id can be served by
+  // several routes, so a name-only trigger cannot tell a reverted provider from
+  // the selected one.
+  const modelLabel = currentChoice === undefined
+    ? t('trigger.fallback')
+    : `${currentChoice.group.name} · ${currentChoice.model.name}`
   const triggerLabel = effortLabel === undefined ? modelLabel : `${modelLabel} · ${effortLabel}`
   const triggerAria = currentChoice === undefined
     ? t('trigger.selectAria')
@@ -341,6 +369,37 @@ export function ModelSelect(
                 </div>
               ))}
               <div className={clsx(css.groups, 'scrollable')}>
+                {/* The recency section sits above the groups and only serves
+                    free browsing: a search means the target is already known,
+                    so the section yields the whole card to matching groups. */}
+                {needle === '' && recentChoices.length > 0 && (
+                  <section role="group" aria-labelledby={`${id}-recent`} className={css.group}>
+                    <div className={css.groupTitle} id={`${id}-recent`}>{t('section.recent')}</div>
+                    {recentChoices.map((choice) => {
+                      const selected = state.current?.provider === choice.provider && state.current.model === choice.model
+                      return (
+                        <button
+                          ref={itemRef()}
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={selected}
+                          className={clsx(css.option, selected && css.selected)}
+                          key={`recent:${choice.provider}/${choice.model}`}
+                          title={choice.label}
+                          disabled={busy}
+                          onClick={() => { choose({ provider: choice.provider, model: choice.model }) }}
+                        >
+                          <span className={css.optionCopy}>
+                            <span className={css.modelName}>{choice.label}</span>
+                          </span>
+                          <span className={css.check}>
+                            {selected ? <IconCheckOutline16 /> : null}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </section>
+                )}
                 {visibleGroups.map((group) => {
                   const headingId = `${id}-${group.id}`
                   return (

@@ -365,9 +365,11 @@ export interface SessionsApi {
    * the live agent is rebuilt in place under the SAME session id from the kept
    * prefix — no new session is created. Pending queue/inbox state dies with
    * the rebuild. An anchor beyond the log end fails with `rerun-unavailable`.
-   * Live sessions go through `ctx.agents.reseed`; a persisted-but-not-live
-   * session is truncated directly and rebuilds on its next resume.
-   * Session-backed subagents reject with `agent-busy`.
+   * The rebuilt session runs on the user's latest model selection — the one
+   * made in this process, else the saved default — never the cut version's
+   * logged model. Live sessions go through `ctx.agents.reseed`; a
+   * persisted-but-not-live session is truncated directly and rebuilds on its
+   * next resume. Session-backed subagents reject with `agent-busy`.
    */
   rerun(request: RpcRequest<{ sessionId: SessionId; atSeq: number }>):
   Promise<RpcResponse<{ accepted: true }>>

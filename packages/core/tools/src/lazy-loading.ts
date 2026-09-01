@@ -127,8 +127,9 @@ export function estimateToolSchemaTokens(definitions: Iterable<ToolDefinition>):
       } else if (Array.isArray(value)) {
         characters += value.length + 2
         for (const child of value as unknown[]) pending.push(child)
-      } else if (typeof value === 'object') {
-        const entries = Object.entries(value)
+      } else {
+        // Registered schema nodes are lossless JSON, so every remaining value is an object.
+        const entries = Object.entries(value as Record<string, unknown>)
         characters += entries.length + 2
         for (const [key, child] of entries) {
           characters += key.length + 3
@@ -174,8 +175,9 @@ export function renderLazyCatalog(state: LazyLoadingState, config: ResolvedLazyL
     '## Deferred tools',
     '',
     `${state.deferred.length} tool definitions stay server-side (~${state.estimatedTokens} tokens avoided).`,
-    `Use \`${TOOL_SEARCH_NAME}\` to discover tools, \`${TOOL_DESCRIBE_NAME}\` to read one exact schema, then \`${TOOL_CALL_NAME}\` to invoke it.`,
-    'The compact listing below may be truncated; search before concluding that a capability is unavailable.',
+    `Only the deferred end tools listed below use \`${TOOL_DESCRIBE_NAME}\` and \`${TOOL_CALL_NAME}\`. Top-level tools, including these bridge tools and configured always-visible tools, must be called directly and must never be passed to \`${TOOL_CALL_NAME}\`.`,
+    `If the exact deferred name is listed below, call \`${TOOL_DESCRIBE_NAME}\` directly, then \`${TOOL_CALL_NAME}\` directly; \`${TOOL_SEARCH_NAME}\` is unnecessary.`,
+    `Use \`${TOOL_SEARCH_NAME}\` directly only when you need to find a deferred tool by capability or when this listing is truncated.`,
     '',
   ]
   const maximumCharacters = config.listingMaxTokens * CHARS_PER_TOKEN
@@ -194,6 +196,7 @@ export function renderLazyCatalog(state: LazyLoadingState, config: ResolvedLazyL
 
 function searchScore(definition: ToolDefinition, query: string): number {
   const normalized = query.toLowerCase().trim()
+  /* v8 ignore next -- the search bridge rejects an empty trimmed query before scoring */
   if (normalized.length === 0) return 0
   const name = definition.name.toLowerCase()
   const description = definition.description.toLowerCase()
@@ -220,6 +223,19 @@ export interface LazyBridgeHost {
   executeUnderlying(name: string, args: JsonValue, exec: ToolRunContext): Promise<JsonValue>
 }
 
+function unavailableDeferredTool(operation: typeof TOOL_DESCRIBE_NAME | typeof TOOL_CALL_NAME, name: string): Error {
+  if (LAZY_BRIDGE_NAMES.has(name)) {
+    return new Error(
+      `${operation} cannot ${operation === TOOL_CALL_NAME ? 'invoke' : 'describe'} bridge tool "${name}"; call "${name}" directly. `
+      + `${operation} accepts only deferred end-tool names listed under Deferred tools or returned by ${TOOL_SEARCH_NAME}.`,
+    )
+  }
+  return new Error(
+    `${operation} cannot ${operation === TOOL_CALL_NAME ? 'invoke' : 'describe'} "${name}" because it is not deferred in this scope. `
+    + `Call it directly if it is a top-level tool; otherwise use ${TOOL_SEARCH_NAME} and pass one exact returned name.`,
+  )
+}
+
 /**
  * Build the three reserved bridge definitions inserted outside ordinary registration layers.
  * @param host - scoped catalog lookup and nested dispatch operations.
@@ -228,9 +244,9 @@ export interface LazyBridgeHost {
 export function createLazyBridgeTools(host: LazyBridgeHost): ReadonlyMap<string, ToolDefinition> {
   const search = defineTool({
     name: TOOL_SEARCH_NAME,
-    description: 'Search deferred tools by capability, action, object, or exact tool name.',
+    description: `Search the deferred catalog by capability when an exact deferred tool name is unknown or the compact listing is truncated. Call ${TOOL_SEARCH_NAME} directly, never through ${TOOL_CALL_NAME}; top-level tools and known deferred names do not need search.`,
     parameters: {
-      query: { type: 'string', required: true, description: 'Capability or tool to search for.' },
+      query: { type: 'string', required: true, description: 'Capability or deferred tool to find.' },
       limit: { type: 'integer', description: `Maximum matches, 1-${MAX_SEARCH_LIMIT}.` },
     },
     output: { schema: { type: 'json' }, render: (_args, value) => renderJson(value) },
@@ -251,14 +267,14 @@ export function createLazyBridgeTools(host: LazyBridgeHost): ReadonlyMap<string,
 
   const describe = defineTool({
     name: TOOL_DESCRIBE_NAME,
-    description: `Return the exact input and output JSON schemas for one tool found by ${TOOL_SEARCH_NAME}.`,
+    description: `Return the exact input and output JSON schemas for one deferred end tool listed under Deferred tools or returned by ${TOOL_SEARCH_NAME}. Call ${TOOL_DESCRIBE_NAME} directly, never through ${TOOL_CALL_NAME}.`,
     parameters: {
-      name: { type: 'string', required: true, description: 'Exact deferred tool name.' },
+      name: { type: 'string', required: true, description: `Exact deferred end-tool name; never ${TOOL_SEARCH_NAME}, ${TOOL_DESCRIBE_NAME}, or ${TOOL_CALL_NAME}.` },
     },
     output: { schema: { type: 'json' }, render: (_args, value) => renderJson(value) },
     execute(args, exec) {
       const definition = host.state(exec.agent).deferred.find(candidate => candidate.name === args.name)
-      if (definition === undefined) throw new Error(`deferred tool "${args.name}" is not available in this scope`)
+      if (definition === undefined) throw unavailableDeferredTool(TOOL_DESCRIBE_NAME, args.name)
       return Promise.resolve({
         name: definition.name,
         description: definition.description,
@@ -270,9 +286,9 @@ export function createLazyBridgeTools(host: LazyBridgeHost): ReadonlyMap<string,
 
   const call = defineTool({
     name: TOOL_CALL_NAME,
-    description: `Invoke one deferred tool after reading its schema with ${TOOL_DESCRIBE_NAME}.`,
+    description: `Invoke one deferred end tool after reading its schema with ${TOOL_DESCRIBE_NAME}. Call ${TOOL_CALL_NAME} directly and pass only an end-tool name from Deferred tools or ${TOOL_SEARCH_NAME}; never pass a top-level tool or any bridge tool.`,
     parameters: {
-      name: { type: 'string', required: true, description: 'Exact deferred tool name.' },
+      name: { type: 'string', required: true, description: `Exact deferred end-tool name; never ${TOOL_SEARCH_NAME}, ${TOOL_DESCRIBE_NAME}, or ${TOOL_CALL_NAME}.` },
       arguments: { type: 'json', required: true, description: 'Arguments matching the described input schema.' },
     },
     output: { schema: { type: 'json' }, render: (_args, value) => renderJson(value) },
@@ -333,7 +349,7 @@ export async function executeDeferredTool(
 ): Promise<JsonValue> {
   const state = stateFor(exec.agent)
   if (!state.active || !state.deferred.some(definition => definition.name === name)) {
-    throw new Error(`deferred tool "${name}" is not available in this scope`)
+    throw unavailableDeferredTool(TOOL_CALL_NAME, name)
   }
   const result = await registry.execute({
     signal: exec.signal,

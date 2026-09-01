@@ -17,7 +17,7 @@ tools:
 
 `native` 以函数定义的形式贡献可见工具。`code` 会提供保留的 `run_code` 传输、生成的 `tools:sdk` 段，以及声明「只有 `run_code` 可被直接调用」的 `tools:code-only` 规则。执行器随后强制执行该规则：模型直接调用其他任何工具时，会在策略运行前将该调用解析为 `UNKNOWN_TOOL`；`both` 同时提供两种形式，且不声明该规则，因为其中的原生调用确实可以执行。没有单独声明呈现模式的 agent 默认采用此配置；agent preset 可通过 [`dsh-agent-tool-presentation`](../agent-tool-presentation/README.zh.md) 自行选择呈现模式。不能注册、遮蔽、限制或移除该保留传输，且无论配置何种模式，该名称都是保留的，因为任何 agent 都可能选择 code 模式。非原生模式要求所加载 `ctx.codeRuntime` 的 `language` 有已注册的 SDK 渲染器——TypeScript 经 [`dsh-code-runtime-worker-thread`](../../code-runtime/code-runtime-worker-thread/README.zh.md) 交付；Python 渲染器内置，驱动任何报告 `language: 'python'` 的运行时（第一方 `dsh-code-runtime-python` 后端另行交付）。没有渲染器的运行时语言会导致提示词组装明确失败；如果 `systemPrompt.toolOrder` 条目指向当前模式未贡献的工具，系统会拒绝组装提示词。`system-prompt/assemble` 监听器可以替换注册表贡献；它返回的组装结果具有权威性，因此该监听器负责保留可用的 Code Mode 协议。
 
-启用 `lazyLoading` 后，符合条件的完整 schema 保留在服务端。固定前缀只包含有界的名称／描述目录，以及稳定的 `tool_search`、`tool_describe`、`tool_call` 桥接；`tool_describe` 把一份完整 schema 返回到对话尾部，不会改变后续请求前缀。`alwaysVisible` 可保留指定的完整 schema，`listingMaxTokens` 限制精简目录大小，`activationThresholdTokens` 控制 `auto`。每个 preset 都可通过 `dsh-agent-tool-presentation` 设置此配置；`enabled: on` 开启，`enabled: off` 关闭。
+启用 `lazyLoading` 后，符合条件的完整 schema 保留在服务端。固定前缀只包含有界的名称／描述目录，以及稳定的 `tool_search`、`tool_describe`、`tool_call` 桥接。包括三个桥接与 `alwaysVisible` 工具在内的顶层工具一律直接调用，绝不经由 `tool_call`。如果目录中已有准确的延迟工具名，只需直接调用 `tool_describe`，再直接调用 `tool_call`；只有按能力查找名称或目录被截断时才需要 `tool_search`。`tool_describe` 把一份完整 schema 返回到对话尾部，不会改变后续请求前缀。通过 `tool_call` 路由桥接或非延迟名称时，错误会指明应改为直接调用还是搜索。`listingMaxTokens` 限制精简目录大小，`activationThresholdTokens` 控制 `auto`。每个 preset 都可通过 `dsh-agent-tool-presentation` 设置此配置；`enabled: on` 开启，`enabled: off` 关闭。
 
 ### 公开 API
 

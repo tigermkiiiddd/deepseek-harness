@@ -3,6 +3,12 @@
     provider: cli-mock
     model: cli-mock
 
+- id: tools
+  config:
+    mode: native
+    lazyLoading:
+      enabled: on
+
 - insert:
     - id: cli-mock-llm
       name: './snapshot-fixtures/cli-mock-llm.ts'

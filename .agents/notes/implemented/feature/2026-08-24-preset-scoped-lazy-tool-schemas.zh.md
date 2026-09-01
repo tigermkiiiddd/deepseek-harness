@@ -12,7 +12,7 @@ Status: implemented
 
 `dsh-tools` 将权威工具注册表保留在宿主平面，并新增按 preset scope 生效的呈现配置项。`dsh-agent-tool-presentation` 接受可选的 `lazyLoading` 块，并把它传给 `ctx.tools.presentAs(mode, lazyLoading)`。它只是现有 preset 中一行插件的普通配置。
 
-启用后，模型请求只包含有界的名称／描述目录与三个稳定桥接 schema：`tool_search`、`tool_describe`、`tool_call`。完整的延迟 schema 保留在注册表内。`tool_describe` 仅将一个 schema 作为普通工具结果返回到对话尾部，绝不修改 system prompt 段或下一次请求的原生工具列表。`tool_call` 重新进入常规执行流水线，因此限制、守卫、策略、结果渲染、附加上下文与结束轮次语义仍然具有权威性。
+启用后，模型请求只包含有界的名称／描述目录与三个稳定桥接 schema：`tool_search`、`tool_describe`、`tool_call`。完整的延迟 schema 保留在注册表内。目录明确区分直接调用的顶层工具与延迟的最终能力工具：已知延迟名称直接经过 `tool_describe` 再到 `tool_call`，只有查找名称或目录截断时才需要 `tool_search`。桥接 schema 与 `alwaysVisible` 工具仍是直接调用入口，不能成为 `tool_call` 的目标；误把桥接作为目标时，错误会给出这条纠正，而不是笼统地报告工具不可用。`tool_describe` 仅将一个 schema 作为普通工具结果返回到对话尾部，绝不修改 system prompt 段或下一次请求的原生工具列表。`tool_call` 重新进入常规执行流水线，因此限制、守卫、策略、结果渲染、附加上下文与结束轮次语义仍然具有权威性。
 
 内置 `standard` preset 设置 `lazyLoading.enabled: on`。把这个配置项改为 `off` 即可恢复全量 schema。Desktop 启动器与 Web／Headless bundle patch 不再提供 lazy-loading 环境变量开关。
 

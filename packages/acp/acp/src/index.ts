@@ -591,7 +591,10 @@ async function dshRerun(
 
   const record = sessions.get(id)
   if (record !== undefined) {
-    const model = await buildModelState(ctx, scope.config)
+    // The rerun does not restore the cut version's model: the topic keeps the
+    // selection it already carried, and the selector pins that value instead of
+    // the freshly resolved initial one.
+    const model = await buildModelState(ctx, scope.config, record.modelRef.current)
     const handle = await scope.reseed({
       sessionId: id,
       keepSeqs: cut,
@@ -1475,10 +1478,12 @@ async function readCatalog(ctx: Context): Promise<readonly CatalogEntry[]> {
  * falling back to the first entry when no initial selection exists.
  * @param ctx - the bridge context.
  * @param config - ACP provider/model configuration.
+ * @param carried - a selection this agent already made, pinned instead of the
+ *   freshly resolved one (the rerun rebuild keeps the topic's switched model).
  * @returns the resolved model state.
  */
-async function buildModelState(ctx: Context, config: AcpConfig): Promise<ModelState> {
-  const selection = initialSelection(ctx, config)
+async function buildModelState(ctx: Context, config: AcpConfig, carried?: ModelSelection): Promise<ModelState> {
+  const selection = carried ?? initialSelection(ctx, config)
   const ref: ModelSelectionRef = { current: selection, assembled: undefined }
   const catalog = await readCatalog(ctx)
   const first = catalog[0]

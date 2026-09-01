@@ -34,7 +34,7 @@ Settings 分节中的 `reasoningEffort` 在 agent-default-model 插件配置中�
 
 `session.fork` 将可选事件锚点映射到该锚点处或其后的首个 `turn/end`，使消息操作可包含该消息所在的完整轮次。锚点省略或超过末尾时，选择最后一个已完成轮次；若锚点已在日志中，而其所在轮次仍开放，则返回 `fork-unavailable`，不会向较早位置裁剪。发布后的子会话会先继承源会话的种子历史、cwd、日志中最新的 `ModelSelection` 及谱系，再加入源 Workspace。如果附加到 Workspace 失败，`workspace-attach-failed` 会携带已发布的子会话 id，供客户端对账。[SessionStore fork 决策](../../../.agents/notes/implemented/feature/2026-06-30-session-store-fork-api.zh.md)记录了为何锚点要映射到该 `turn/end`。
 
-`session.rerun` 原地回卷一个会话：切点是 `atSeq` 锚点之前最后一个 `turn/end`（在被丢弃轮次的前导 `agent/inbox/spliced` 准入事件前停下），持久日志在该处截断，live agent 以同一 session id 从保留前缀重建——不会多出新会话。持久但未 live 的会话直接截断，下次 resume 时重建。锚点越界返回 `rerun-unavailable`。[原地 rerun 决策](../../../.agents/notes/implemented/bug-fix/2026-08-16-rerun-truncates-and-rebuilds-in-place.zh.md)记录了三层设计。
+`session.rerun` 原地回卷一个会话：切点是 `atSeq` 锚点之前最后一个 `turn/end`（在被丢弃轮次的前导 `agent/inbox/spliced` 准入事件前停下），持久日志在该处截断，live agent 以同一 session id 从保留前缀重建——不会多出新会话。重建后的会话运行在用户最新的模型选择上——本进程内作过的选择，否则是已保存的默认——绝不恢复被截断版本的日志模型，rerun 永远不会在另一条 route 的同名模型下悄悄切换 provider。持久但未 live 的会话直接截断，下次 resume 时重建。锚点越界返回 `rerun-unavailable`。[原地 rerun 决策](../../../.agents/notes/implemented/bug-fix/2026-08-16-rerun-truncates-and-rebuilds-in-place.zh.md)记录了三层设计，[rerun 选择决策](../../../.agents/notes/implemented/bug-fix/2026-08-29-rerun-runs-on-latest-model-selection.zh.md)记录了重建会话为何保留最新选择。
 
 会话模型选择属于会话领域约定。`session.models` 将当前 `ModelSelection` 与按提供方分组的建议性模型、精确模型的推理元数据和逐提供方查询失败记录分开返回。该选择可能不在这些分组中，也绝不会作为合成行注入；客户端可以提示用户作出另一项选择，而无需把目录变成路由白名单。`session.selectModel` 校验由适配器持有的可选推理强度，并指定下次组装提示词时使用的完整选择。目录成员关系不构成校验：适配器可以解析未列出的模型，而不可用的提供方或不受支持的推理强度会返回 `model-unavailable`。`session.models` 还会报告 `routable`，即当前是否有适配器为所选提供方提供服务。该值刻意不从分组推导，因为适配器可以服务未公布的模型。`session.prompt` 会依据同一事实，在开启轮次之前以 `model-unavailable` 拒绝；客户端禁用 composer 只是提示性设计，这个方法始终可被调用。
 
@@ -82,5 +82,6 @@ Workspace 列表与 Session 列表是相互独立的重连基线。`workspace.cr
 - **预留 seam 不进入 `RpcMethodMap`**：`prompt.mode: 'inject'`、`job.list` 和描述字段 `hostInstanceId` 都是已记录的预留项；模型发现使用 `llm.models`。未知方法会在信封解析时直接失败，而不会返回「尚未实现」错误码。
 - **没有协议版本字段**：客户端与宿主一同发布；只有出现独立发布的客户端后，`host.describe` 才会增加版本协商字段。
 - **搜索失败会包含提供方诊断信息**：网关是单用户本地服务。将其暴露给多名用户的载体必须用可安全公开的诊断信息替代内部搜索细节。
+- **Member 会话不进入 `session.search`**：查询服务索引的是宿主会话日志，member topic 没有宿主日志（其历史保存在 member 自己的存储里）；网关把它们从授权集合中过滤掉，而不是呈现无法重新校验的匹配。对 member 会话记录的内容搜索要等 team 服务暴露查询 seam 后再做，此项暂缓。
 - **Linux 原生选择器依赖桌面工具**：在 `native` 能力下，Zenity 和 KDialog 均未安装时，`host.pickDirectory` 会给出包含解决建议的错误提示；组合层面的回退是 browse 后端（见 [native 后端 README](../directory-picker-native/README.zh.md)）。
 - **冷列表提示只向“保持可见、排序偏旧”降级**：cache miss 或陈旧的 `lastPromptAt` 会回退到 `createdAt`，直到一次性 heal 读取提供精确折叠，因此最近工作过的 Session 可能在其首次冷列表前排得偏低。heal 读取不可用的空白工件保持可见；其 fail-soft 写回使成本有界，下一次列表零 I/O。[有界空白验证决策](../../../.agents/notes/implemented/bug-fix/2026-08-13-bounded-cold-blank-verification.zh.md)规定了这个安全方向；权威且精确的最近时间索引仍属于[最后活动索引提案](../../../.agents/notes/proposed/architecture/2026-07-29-durable-last-activity-index.zh.md)的范围。

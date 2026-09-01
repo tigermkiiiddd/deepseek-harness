@@ -10,6 +10,7 @@ import type {
 } from '@deepseek-ai/dsh-api-remotes/client'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
+import { recordModelRecent } from './recents.ts'
 
 /** Directory snapshot both entries render from. */
 export interface ModelDirectoryState {
@@ -112,7 +113,9 @@ export class ModelDirectory {
       throw new Error(`session.selectModel failed: ${result.error.code}: ${result.error.message}`)
     }
     // The Host validated the route before accepting it, so a selection that
-    // landed is by construction one it can serve.
+    // landed is by definition one it can serve. Both entries submit through
+    // this one funnel, so an accepted switch from either records as recent.
+    recordModelRecent(selection)
     this.store.update((s) => {
       s.current = result.value.selected
       s.routable = true
