@@ -17,7 +17,11 @@ export default defineConfig(({ env }) => {
   const client = isBuildFaceClient(env?.DSH_BUILD_FACE)
   return {
     workspace: ['vendor/*', 'packages/*/*', 'apps/cli'],
-    entry: client ? '' : ['lib/types/{index,invariant,startup}.js'],
+    // WORKAROUND (this Windows box only): the brace-expansion form
+    // `['lib/types/{index,invariant,startup}.js']` is not expanded by tsdown/rolldown
+    // on Windows, so the dsh-root entry resolves to a literal `{...}` path and the
+    // host build fails with "Cannot find entry". Upstream Linux/macOS CI is fine.
+    entry: '',
     outDir: 'lib',
     format: ['esm'],
     platform: 'node',
