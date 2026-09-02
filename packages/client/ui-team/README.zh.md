@@ -2,13 +2,13 @@
 
 [English](README.md) | 中文
 
-Web 团队视图：框架顶部一条**全局可视化栏**（`shell.topbar`），把每个 agent——主实例加每个成员——渲染为带实时状态与连线的节点。成员会话现在已是主对话 UI 中的普通一等会话：点击成员节点会通过常规会话选择路径（`ctx.sessions.open`）打开该成员当前话题，会话 id 格式为 `member:<memberId>:<topicId>`。全局栏还承载成员管理控件：一个“新建成员”表单（命令、参数、工作目录、环境变量、权限策略、自启动）以及每个节点的移除/启动/停止/重启。
+Web 团队视图：侧栏底部一条**全局可视化栏**（`sidebar.footer.action`），把每个 agent——主实例加每个成员——渲染为带实时状态与连线的节点。成员会话是主对话 UI 中的普通一等会话：点击成员节点会通过常规会话选择路径（`ctx.sessions.open`）打开该成员当前话题，会话 id 格式为 `member:<memberId>:<topicId>`。全局栏还承载成员管理控件：一个“新建成员”表单（命令、参数、工作目录、环境变量、权限策略、自启动）以及每个节点的移除/启动/停止/重启。
 
 ## 架构
 
-- **Host 半边**（`src/index.ts`）：空 apply，让插件对 Loader 可见。`team` 域由 host API-proxy 提供（`team.*` RPC 方法，由 `@deepseek-ai/dsh-team` 实现）。
-- **浏览器半边**（`src/client/index.ts`）：状态推送桥订阅转发的 `team/status` 远程事件，折叠进一个 `TeamController` store（经 inject `hooks` 舱以 `useTeamLive` 暴露）；全局栏（`TeamTopbar`，SVG 节点图）读取该 store，并经正式 host API（`@deepseek-ai/dsh-client-connection`）驱动 `api.team.*`。点击成员节点会解析该成员最新话题（`team.sessions`）并通过 `ctx.sessions.open` 选择 `member:<memberId>:<topicId>` 会话；若成员尚无话题，控制器会先新建一个（`team.newSession`）再选择。话题可能比本客户端的列表基线更新（页面加载后创建），select 若错过它，会先重拉一次会话列表（`sessions.refresh`）再重试，仍失败才显示错误。点击主实例节点则返回主对话视图（`ctx.sessions.clear`）。从不轮询。
-- **框架**（`@deepseek-ai/dsh-client-ui-layout`）：在三列之上声明并渲染 `shell.topbar` 栏。
+- **Host 半边**（`@deepseek-ai/dsh-team`）：拥有生成式 `team` Remote 命名空间，提供名册、生命周期和成员话题操作。
+- **浏览器半边**（`src/client/index.ts`）：先挂载该 Remote 贡献，再创建 UI 控制器，随后把 `TeamTopbar` 注册进 `sidebar.footer.action`。控制器驱动 `ctx.remote.team`，通过 `ctx.sessions.open` 选择 `member:<memberId>:<topicId>`；新建话题尚未进入本地基线时，经 `sessions.refresh` 重拉一次再重试。销毁按反序进行，使 Remote 命名空间始终比所有 UI 消费者活得更久。从不轮询。
+- **框架**（`@deepseek-ai/dsh-client-ui-sidebar`）：声明并渲染侧栏底部动作槽位。
 
 ## 数据归属
 

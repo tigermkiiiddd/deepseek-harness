@@ -15,6 +15,8 @@
     { "path": "../../../packages/llm/llm" },
     { "path": "../../../packages/preset/agent-presets" },
     { "path": "../../../packages/core/session" },
+    { "path": "../../../packages/todo/tool-todo" },
+    { "path": "../../../packages/typert/protocol" },
     { "path": "../../../packages/interaction/user-questions" }
   ]
 }

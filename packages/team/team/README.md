@@ -32,6 +32,8 @@ Team-member connections for the DSH ACP virtual team. A **member** is a persiste
 
 Status events (`team/status`) fire on every migration; member output arrives as lossless `team/member-update` events. Nothing polls.
 
+The plugin also mounts a generated browser-safe `team` Remote namespace. Its methods expose roster rows without ACP capability objects and provide lifecycle, topic-list, topic-create, add, and remove operations to Web clients.
+
 ## Member configuration
 
 ```yaml

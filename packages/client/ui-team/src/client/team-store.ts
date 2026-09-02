@@ -7,18 +7,28 @@
  * the component only reads the snapshot and calls the controller's verbs.
  */
 
-import type { SessionId, ISessions } from '@deepseek-ai/dsh-client-runtime/client'
-import { memberSessionOwner, MEMBER_SESSION_PREFIX } from '@deepseek-ai/dsh-host-apiproxy/src/team-sessions.ts'
-import type { TeamMemberView } from '@deepseek-ai/dsh-client-connection/client'
-import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
+import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { MemberStatus, TeamMemberRow } from '@deepseek-ai/dsh-team/types'
 import type { TeamFacade } from './team-facade.ts'
+
+const MEMBER_SESSION_PREFIX = 'member:'
+
+function memberSessionOwner(sessionId: SessionId): string | undefined {
+  const value = String(sessionId)
+  if (!value.startsWith(MEMBER_SESSION_PREFIX)) return undefined
+  const separator = value.indexOf(':', MEMBER_SESSION_PREFIX.length)
+  if (separator <= MEMBER_SESSION_PREFIX.length) return undefined
+  return value.slice(MEMBER_SESSION_PREFIX.length, separator)
+}
 
 /** The current agent whose session the main conversation UI shows. */
 export interface TeamViewState {
   /** Member id when a member session is open; undefined = main instance. */
   currentAgentId: string | undefined
   /** The roster (baseline from team.list, then upserted by status events). */
-  members: TeamMemberView[]
+  members: TeamMemberRow[]
   /** The last operation's error, for views. */
   error: string | undefined
 }
@@ -178,11 +188,11 @@ export class TeamController {
    * @param status - new public status: idle, running, offline, or failed.
    * @param error - optional last start or runtime error.
    */
-  onStatus(memberId: string, status: string, error?: string): void {
+  onStatus(memberId: string, status: MemberStatus, error?: string): void {
     this.store.update((draft) => {
       const index = draft.members.findIndex(member => member.id === memberId)
       if (index < 0) return
-      const current = draft.members[index] as TeamMemberView
+      const current = draft.members[index] as TeamMemberRow
       draft.members = [
         ...draft.members.slice(0, index),
         { ...current, status, ...error === undefined ? {} : { lastError: error } },

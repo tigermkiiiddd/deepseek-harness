@@ -194,6 +194,24 @@ export interface MemberSession {
   readonly updatedAt?: string | undefined
 }
 
+/** Browser-safe member row exposed through the generated Team Remote namespace. */
+export interface TeamMemberRow {
+  readonly id: string
+  readonly title: string
+  readonly description: string | null
+  readonly kind: 'dsh' | null
+  readonly status: MemberStatus
+  readonly autostart: boolean
+  readonly lastError: string | null
+  readonly model: string | null
+}
+
+/** Browser-safe member topic row exposed through the generated Team Remote namespace. */
+export interface TeamSessionRow {
+  readonly sessionId: string
+  readonly cwd: string
+}
+
 /** One replayed conversation message (the member's own record of a topic). */
 export interface MemberHistoryEntry {
   readonly role: 'user' | 'assistant'

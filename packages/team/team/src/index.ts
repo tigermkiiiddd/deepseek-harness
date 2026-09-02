@@ -21,6 +21,7 @@ import { teamRosterDomainSpec, type TeamRosterRecord } from './spec.ts'
 import { MemberCache, type MemberCacheRecord } from './cache.ts'
 import { seedMemberHome } from './member-home.ts'
 import { resolveMemberSpec } from './resolve.ts'
+import TeamRemoteService from './remote.ts'
 export { AcpUpdateTranslator, stopReasonToTurnEnd, type TranslatedEventType, type TranslatedSessionEvent } from './fidelity-reverse.ts'
 export { resolveMemberSpec } from './resolve.ts'
 export type {
@@ -560,6 +561,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     },
   }
   ctx.provide('team', service)
+  ctx.plugin(TeamRemoteService)
   // Cordis awaits a disposer's returned promise (fiber disposal chains
   // thenables), so returning disposeAll lets plugin unload wait for every
   // member process to reach quiescence instead of fire-and-forget.

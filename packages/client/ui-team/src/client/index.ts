@@ -1,63 +1,59 @@
 /**
- * Team view, browser half: the frame-wide global visualization lane
- * (`shell.topbar`) showing every agent (the main instance plus each member)
- * as nodes with live status. Member sessions are first-class sessions in the
- * main conversation UI; clicking a member node opens that member's current
- * topic through the regular session-selection path (`ctx.sessions.open`).
- * All data crosses the formal host API (`api.team.*`) and the forwarded
- * `team/status` Remote events; the member processes own their sessions. The
- * push bridge folds host status events into the controller's store — nothing
- * polls.
+ * Team view browser plugin: mounts the generated Team Remote namespace and
+ * registers the member lane in the sidebar footer.
  *
  * @module @deepseek-ai/dsh-client-ui-team/client
  */
 
-import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
-// Type-only: pulls the generated Remote face (ctx.remote.$on key set) through
-// the Client assembly boundary.
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import teamRemote from '@deepseek-ai/dsh-team/remote'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
-// Type-only: pulls the ui-layout SlotMap merge ('shell.topbar').
-import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
-import type { MemberStatus } from '@deepseek-ai/dsh-team/types'
+import type {} from '@deepseek-ai/dsh-api-session-controller/client'
+import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { TeamTopbar } from './TeamTopbar.tsx'
 import { createTeamFacade } from './team-facade.ts'
 import { TeamController } from './team-store.ts'
 
-/** Required services (cordis fiber inject). */
-export const inject = ['slots', 'connection', 'remote', 'sessions']
+/** Services required before this plugin can mount its Team Remote contribution. */
+export const inject = ['remote', 'sessions', 'slots']
 
-/**
- * Mount the global team lane and the status push bridge that keeps it live.
- * @param ctx - the browser plugin context.
- */
-export function apply(ctx: ClientContext): void {
-  const { api } = ctx.get('connection') as ConnectionHandle
-  const controller = new TeamController(createTeamFacade(api.team), ctx.sessions)
-
-  // The push bridge: forwarded host team status events fold into the
-  // controller's store. The subscription is an effect of this fiber and
-  // disposes with it.
-  ctx.effect(() => {
-    const dispose = ctx.remote.$on('team/status', (memberId: string, status: MemberStatus, error?: string) => {
-      controller.onStatus(memberId, status, error)
-    })
-    return dispose
-  }, 'ui-team: status bridge')
-
+function registerUi(ctx: ClientContext): void {
+  const controller = new TeamController(createTeamFacade(ctx.remote.team), ctx.sessions)
   const teamFace = {
-    hooks: { teamLive: controller.store },
+    hooks: { teamLive: controller.store, sessions: ctx.sessions.list },
     loadMembers: () => { controller.loadMembers() },
     openMember: (memberId: string | undefined) => { controller.openMember(memberId) },
     start: (memberId: string) => { controller.start(memberId) },
     stop: (memberId: string) => { controller.stop(memberId) },
     restart: (memberId: string) => { controller.restart(memberId) },
-    addMember: (config: import('@deepseek-ai/dsh-client-connection/client').TeamAddMemberRequest) => controller.addMember(config),
+    addMember: (config: Parameters<TeamController['addMember']>[0]) => controller.addMember(config),
     removeMember: (memberId: string) => controller.removeMember(memberId),
   }
 
-  ctx.slots.inject('shell.topbar', () => ctx.slots.register({
-    name: 'shell.topbar',
-    inject: () => teamFace,
-  }, TeamTopbar))
+  ctx.effect(() => () => { controller.dispose() }, 'client-ui-team: controller')
+  ctx.slots.inject('sidebar.footer.action', () =>
+    ctx.slots.register({ name: 'sidebar.footer.action', id: 'team', inject: () => teamFace }, TeamTopbar))
+}
+
+/**
+ * Mount the generated Team Remote contribution before the UI fiber requires
+ * `remote.team`, then dispose both in reverse order.
+ * @param ctx - browser plugin context.
+ * @returns disposer for the UI registrations and Remote namespace.
+ */
+export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
+  const disposeRemote = await ctx.remote.$mount(teamRemote)
+  const ui = ctx.inject(['remote.team', 'sessions', 'slots'], registerUi)
+  try {
+    await ui
+  } catch (error) {
+    await ui.dispose()
+    await disposeRemote()
+    throw error
+  }
+  return async () => {
+    await ui.dispose()
+    await disposeRemote()
+  }
 }

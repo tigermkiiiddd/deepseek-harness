@@ -1,19 +1,21 @@
 /** Team view controller: state transitions and session selection through the runtime. */
 import { describe, expect, it, vi } from 'vitest'
-import { createSnapshotStore, type SessionId, type ISessions, type SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
-import type { TeamMemberView } from '@deepseek-ai/dsh-client-connection/client'
+import type { ISessions, SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { TeamMemberRow } from '@deepseek-ai/dsh-team/types'
 import type { TeamFacade } from '../src/client/team-facade.ts'
 import { TeamController } from '../src/client/team-store.ts'
 
-const member = (overrides: Partial<TeamMemberView> = {}): TeamMemberView => ({
+const member = (overrides: Partial<TeamMemberRow> = {}): TeamMemberRow => ({
   id: 'architect',
   title: '架构师',
-  description: undefined,
-  kind: undefined,
+  description: null,
+  kind: null,
   status: 'running',
-  capabilities: undefined,
   autostart: true,
-  lastError: undefined,
+  lastError: null,
+  model: null,
   ...overrides,
 })
 

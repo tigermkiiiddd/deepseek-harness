@@ -4,19 +4,21 @@
  * current topic through the regular session-selection path. */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { createSnapshotStore, type ISessions, type SessionId, type SessionListState, type SessionSummary, type WorkspaceListState } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ISessions, SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-test-runtime'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { MemberConfigInput, TeamMemberRow } from '@deepseek-ai/dsh-team/types'
 import { TeamTopbar } from '../src/client/TeamTopbar.tsx'
 import type { TeamTopbarProps } from '../src/client/TeamTopbar.tsx'
-import type { TeamAddMemberRequest } from '@deepseek-ai/dsh-client-connection/client'
 import type { TeamFacade } from '../src/client/team-facade.ts'
 import { TeamController } from '../src/client/team-store.ts'
 
 afterEach(cleanup)
 
-const MEMBERS = [
-  { id: 'writer', title: 'Writer', description: undefined as string | undefined, kind: undefined as 'dsh' | undefined, status: 'idle', capabilities: undefined, autostart: true, lastError: undefined },
-  { id: 'reviewer', title: 'Reviewer', description: undefined, kind: undefined as 'dsh' | undefined, status: 'running' as const, capabilities: undefined, autostart: true, lastError: undefined },
+const MEMBERS: TeamMemberRow[] = [
+  { id: 'writer', title: 'Writer', description: null, kind: null, status: 'idle', autostart: true, lastError: null, model: null },
+  { id: 'reviewer', title: 'Reviewer', description: null, kind: null, status: 'running', autostart: true, lastError: null, model: null },
 ]
 
 function stubFacade(overrides: Partial<TeamFacade> = {}): TeamFacade {
@@ -27,9 +29,9 @@ function stubFacade(overrides: Partial<TeamFacade> = {}): TeamFacade {
     restart: vi.fn(async () => {}),
     sessions: vi.fn(async () => [{ sessionId: 'topic-1', cwd: '' }]),
     newSession: vi.fn(async () => 'topic-1'),
-    addMember: vi.fn(async (config: TeamAddMemberRequest) => ({
-      id: config.id, title: config.title ?? config.id, description: undefined, kind: undefined as 'dsh' | undefined, status: 'idle' as const,
-      capabilities: undefined, autostart: true, lastError: undefined,
+    addMember: vi.fn(async (config: MemberConfigInput): Promise<TeamMemberRow> => ({
+      id: config.id, title: config.title ?? config.id, description: null, kind: null, status: 'idle',
+      autostart: true, lastError: null, model: null,
     })),
     removeMember: vi.fn(async () => undefined),
     ...overrides,
@@ -71,16 +73,8 @@ function sessionsStore(initial: Partial<SessionListState> = {}) {
   })
   return { store, useSessions: bindSnapshotSelector(store) }
 }
-function emptyWorkspaces() {
-  const store = createSnapshotStore<WorkspaceListState>({
-    items: [], archivedSessionIds: [], state: 'idle', phase: 'ready', error: null,
-    baselinesReady: true, recentWorkspaceId: undefined,
-  })
-  return bindSnapshotSelector(store)
-}
-
 /** Build the injected props face for a controller (same shape apply() provides). */
-function injected(controller: TeamController): Omit<TeamTopbarProps, 'useSessions' | 'useWorkspaces' | 'renderSlot'> {
+function injected(controller: TeamController): Omit<TeamTopbarProps, 'wide' | 'useSessions'> {
   return {
     useTeamLive: bindSnapshotSelector(controller.store),
     loadMembers: () => { controller.loadMembers() },
@@ -96,9 +90,8 @@ function injected(controller: TeamController): Omit<TeamTopbarProps, 'useSession
 function mount(team: TeamFacade, sessions = sessionsStore(), sessionsSvc = sessionsDouble()): TeamController & { sessionsStore: ReturnType<typeof sessionsStore>['store']; sessionsSvc: ReturnType<typeof sessionsDouble> } {
   const controller = new TeamController(team, sessionsSvc)
   const props: TeamTopbarProps = {
+    wide: true,
     useSessions: sessions.useSessions as never,
-    useWorkspaces: emptyWorkspaces() as never,
-    renderSlot: (() => null) as never,
     ...injected(controller),
   } as TeamTopbarProps
   render(<TeamTopbar {...props} />)
@@ -187,10 +180,10 @@ describe('TeamTopbar', () => {
   it('paints distinct status classes for idle, running, failed, and offline members', async () => {
     const team = stubFacade({
       list: vi.fn(async () => [
-        { id: 'i', title: 'I', description: undefined, kind: undefined as 'dsh' | undefined, status: 'idle' as const, capabilities: undefined, autostart: true, lastError: undefined },
-        { id: 'r', title: 'R', description: undefined, kind: undefined as 'dsh' | undefined, status: 'running' as const, capabilities: undefined, autostart: true, lastError: undefined },
-        { id: 'f', title: 'F', description: undefined, kind: undefined as 'dsh' | undefined, status: 'failed' as const, capabilities: undefined, autostart: true, lastError: undefined },
-        { id: 'o', title: 'O', description: undefined, kind: undefined as 'dsh' | undefined, status: 'offline' as const, capabilities: undefined, autostart: true, lastError: undefined },
+        { id: 'i', title: 'I', description: null, kind: null, status: 'idle', autostart: true, lastError: null, model: null },
+        { id: 'r', title: 'R', description: null, kind: null, status: 'running', autostart: true, lastError: null, model: null },
+        { id: 'f', title: 'F', description: null, kind: null, status: 'failed', autostart: true, lastError: null, model: null },
+        { id: 'o', title: 'O', description: null, kind: null, status: 'offline', autostart: true, lastError: null, model: null },
       ]),
     })
     mount(team)

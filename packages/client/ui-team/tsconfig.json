@@ -21,13 +21,16 @@
       "path": "../connection/tsconfig.client.json"
     },
     {
-      "path": "../../host/apiproxy"
+      "path": "../../api/session-controller/tsconfig.client.json"
     },
     {
-      "path": "../runtime"
+      "path": "../store"
     },
     {
-      "path": "../ui-layout"
+      "path": "../../core/session"
+    },
+    {
+      "path": "../ui-renderer"
     },
     {
       "path": "../ui-sidebar"

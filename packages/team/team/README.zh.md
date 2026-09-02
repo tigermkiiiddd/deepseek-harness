@@ -32,6 +32,8 @@ DSH ACP 虚拟团队的成员连接。**成员**是持久 ACP agent 进程，**�
 
 每次状态迁移发出 `team/status` 事件；成员输出以无损 `team/member-update` 事件到达。从不轮询。
 
+插件还会挂载一个生成式、浏览器安全的 `team` Remote 命名空间。其方法用不含 ACP 能力对象的名册行向 Web 客户端提供生命周期、话题列表、话题创建、添加和移除操作。
+
 ## 成员配置
 
 ```yaml
@@ -140,4 +142,5 @@ provider 配置（`providers/list`、`providers/set`）受 `initialize` 中声�
 - **仅本地工作区**——成员进程运行在同一台机器上；远程 ACP agent 需要自己的工作区映射。
 - **远程工具调用不透明**——成员在自己进程内执行自己的工具；harness 只能看到协议流。
 - **成员↔成员直发尚未开放**——通信经协调 agent（或用户经团队视图）。
+- **成员不能向用户提出自由形式问题**——ACP 没有问题原语，dsh bridge 也未实现该能力，因此成员能打开的唯一交互通道是 `session/requestPermission`，Web 客户端把它作为审批处理。`ask_user` 类交互需要 ACP 扩展或 bridge 映射的问题接缝，留待后续实现。
 - **preset 创建时固定**——`dsh` 成员自己的 preset 只播种一次，重播种绝不覆盖成员的修改；要改就得编辑成员 home 的 preset 文件，或删除并重新添加该成员。

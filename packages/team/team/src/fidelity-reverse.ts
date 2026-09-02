@@ -21,8 +21,9 @@
  */
 
 import type { SessionUpdate, StopReason } from '@agentclientprotocol/sdk'
-import { CallId, createAssistantMessage, createToolResultMessage, createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionEventMap, SurfaceEventType, SurfaceIntent, TurnEndReason } from '@deepseek-ai/dsh-session/types'
+import type {} from '@deepseek-ai/dsh-tool-todo/types'
 
 /** The session event types the reverse translation can produce. */
 export type TranslatedEventType =
@@ -240,7 +241,7 @@ export class AcpUpdateTranslator {
       data: {
         turn: this.turn,
         step: this.step,
-        callId: CallId(update.toolCallId),
+        callId: ToolCallId(update.toolCallId),
         name: update.title,
         // The forward direction parses the raw arguments JSON when valid and
         // keeps the raw string otherwise. Reproduce the original model output:
@@ -273,7 +274,7 @@ export class AcpUpdateTranslator {
         turn: this.turn,
         step: this.step,
         message: createToolResultMessage({
-          callId: CallId(update.toolCallId),
+          callId: ToolCallId(update.toolCallId),
           content,
           isError: update.status === 'failed',
         }),

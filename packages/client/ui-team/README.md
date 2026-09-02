@@ -2,13 +2,13 @@
 
 English | [中文](README.zh.md)
 
-The Web team view: a **global visualization lane** at the top of the frame (`shell.topbar`) that shows every agent — the main instance plus each member — as nodes with live status and links between them. Member sessions are first-class sessions in the main conversation UI: clicking a member node opens that member's current topic through the regular session-selection path (`ctx.sessions.open`) as a session id of the form `member:<memberId>:<topicId>`. The lane also hosts the member-management controls: a "new member" form (command, args, cwd, env, permission policy, autostart) and per-node remove/start/stop/restart.
+The Web team view: a **global visualization lane** in the sidebar footer (`sidebar.footer.action`) that shows every agent — the main instance plus each member — as nodes with live status and links between them. Member sessions are first-class sessions in the main conversation UI: clicking a member node opens that member's current topic through the regular session-selection path (`ctx.sessions.open`) as a session id of the form `member:<memberId>:<topicId>`. The lane also hosts the member-management controls: a "new member" form (command, args, cwd, env, permission policy, autostart) and per-node remove/start/stop/restart.
 
 ## Architecture
 
-- **Host half** (`src/index.ts`): an empty apply that keeps the plugin visible to the Loader. The `team` domain is served by the host API-proxy (`team.*` RPC methods, implemented by `@deepseek-ai/dsh-team`).
-- **Browser half** (`src/client/index.ts`): the status push bridge subscribes to forwarded `team/status` remote events and folds them into one `TeamController` store (exposed through the inject `hooks` compartment as `useTeamLive`). The global lane (`TeamTopbar`, an SVG node graph) reads that store and drives `api.team.*` through the formal host API (`@deepseek-ai/dsh-client-connection`). Clicking a member node resolves the member's latest topic (`team.sessions`) and selects the `member:<memberId>:<topicId>` session through `ctx.sessions.open`; if the member has no topics, the controller creates one (`team.newSession`) and then selects it. The topic can be newer than this client's list baseline (created after the page loaded), so a select that misses it re-baselines the session list once (`sessions.refresh`) and retries before surfacing the error. Clicking the main-instance node returns to the main conversation view (`ctx.sessions.clear`). Nothing polls.
-- **Frame** (`@deepseek-ai/dsh-client-ui-layout`): declares and renders the `shell.topbar` lane above the three columns.
+- **Host half** (`@deepseek-ai/dsh-team`): owns a generated `team` Remote namespace for roster, lifecycle, and member-topic operations.
+- **Browser half** (`src/client/index.ts`): mounts that generated Remote contribution before creating the UI controller, then registers `TeamTopbar` in `sidebar.footer.action`. The controller drives `ctx.remote.team`, selects `member:<memberId>:<topicId>` through `ctx.sessions.open`, and retries once after `sessions.refresh` when a newly created topic is not in the local baseline. Disposal reverses this order so the Remote namespace outlives every UI consumer. Nothing polls.
+- **Frame** (`@deepseek-ai/dsh-client-ui-sidebar`): declares and renders the footer action slot.
 
 ## Data ownership
 

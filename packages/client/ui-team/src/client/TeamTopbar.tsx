@@ -1,5 +1,5 @@
 /**
- * The frame-wide global visualization lane (ui-layout's `shell.topbar`): one
+ * The sidebar footer's global visualization lane: one
  * node per agent — the main instance first, then every member — with links
  * between them. Node color carries the live status pushed by the host
  * (`team/status` events folded into the shared store; nothing polls); clicking
@@ -11,28 +11,33 @@
  */
 
 import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-// Type-only: pulls the ui-layout SlotMap merge ('shell.topbar').
-import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+// Type-only: pulls the sidebar SlotMap merge.
+import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import * as React from 'react'
-import type { SessionListState, SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
+import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
+import type { MemberConfigInput } from '@deepseek-ai/dsh-team/types'
 import type { TeamViewState } from './team-store.ts'
 import css from './TeamTopbar.module.css'
 
 /** The inject face the topbar receives (hooks + drive verbs). */
 export interface TeamViewInjected {
   /** Live team snapshot bound by the renderer as `useTeamLive`. */
-  hooks: { teamLive: SnapshotStore<TeamViewState> }
+  hooks: {
+    teamLive: SnapshotStore<TeamViewState>
+    sessions: SnapshotStore<SessionListState>
+  }
   loadMembers(): void
   openMember(memberId: string | undefined): void
   start(memberId: string): void
   stop(memberId: string): void
   restart(memberId: string): void
-  addMember(config: import('@deepseek-ai/dsh-client-connection/client').TeamAddMemberRequest): Promise<void>
+  addMember(config: MemberConfigInput): Promise<void>
   removeMember(memberId: string): Promise<void>
 }
 
 /** Composed props of the topbar entry. */
-export type TeamTopbarProps = PropsRuntime<'shell.topbar'> & InjectFace<TeamViewInjected>
+export type TeamTopbarProps = PropsRuntime<'sidebar.footer.action'> & InjectFace<TeamViewInjected>
 
 /** Node geometry: one horizontal lane, circles with links between them. */
 const NODE_R = 9

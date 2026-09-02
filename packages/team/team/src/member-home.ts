@@ -25,9 +25,7 @@
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { Document, parseDocument } from 'yaml'
-import {
-  COMPOSITION_FILE, PRESET_ID, SETTINGS_NAMESPACE, USER_PRESET_DIR, compositionTextProblem,
-} from '@deepseek-ai/dsh-agent-presets'
+import { COMPOSITION_FILE, SETTINGS_NAMESPACE } from '@deepseek-ai/dsh-agent-presets'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { MemberConfig } from './types.ts'
 
@@ -36,6 +34,22 @@ const CREDENTIALS_FILENAME = '.credentials.yaml'
 
 /** Extensions the file-backed settings provider accepts, in lookup order. */
 const SETTINGS_EXTENSIONS = ['.yaml', '.yml', '.json']
+const PRESET_ID = /^[a-z0-9][a-z0-9-]*$/
+const USER_PRESET_DIR = '.agent-presets'
+
+function compositionTextProblem(composition: string): string | undefined {
+  const document = parseDocument(composition)
+  if (document.errors.length > 0) return document.errors[0]?.message ?? 'the composition is invalid YAML'
+  const rows = document.toJS() as unknown
+  if (!Array.isArray(rows)) return 'the composition must be a top-level list of plugin rows'
+  for (const [index, row] of rows.entries()) {
+    if (typeof row !== 'object' || row === null || Array.isArray(row)
+      || typeof (row as { name?: unknown }).name !== 'string') {
+      return `row ${String(index + 1)} is not a plugin row with a "name" string`
+    }
+  }
+  return undefined
+}
 
 /**
  * Seed one `kind:'dsh'` member's home from the main instance, backfilling any
