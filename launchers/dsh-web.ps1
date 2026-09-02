@@ -1,4 +1,4 @@
-﻿<#
+<#
   DSH Web UI 启动器 — 启动（或直接打开）DeepSeek Harness 的 Web UI（web 模式）。
 
   互动窗口:
@@ -35,14 +35,19 @@ $Url  = "http://localhost:$Port"
 $Log  = Join-Path $env:USERPROFILE '.dsh\launcher-web.log'
 
 # 服务端开了浏览器会话鉴权: 裸 / 返回 401, 有效 token 才会 303。
-# 启动器把 node 打印的 token URL(带 ?token=) tee 到 $Log, 故 "日志里出现新 token" 本身就是就绪信号,
-# 再探一次 303 确认端口真在听。
+# 启动器把 node 打印的 token URL(带 ?token=) tee 到 $Log, 再探一次 303 确认端口真在听。
+# 注意: 内层 shell 是 Windows PowerShell 5.1, Tee-Object 默认以 UTF-16 写日志, 而日志头是 Set-Content
+# 按系统码页写的单字节文本——同一文件混了两种编码。按单一编码整读会丢 token(曾把健康服务器误判成
+# "就绪超时", 窗口倒计时关闭时连带杀掉服务器)。故 Get-LatestToken 分别按 UTF-16 / 默认码页取日志头部
+# 行再匹配, 两种落盘形态都覆盖; token 行紧跟日志头, 前 200 行足够。
 function Get-LatestToken {
     if (-not (Test-Path $Log)) { return $null }
-    $m = Select-String -Path $Log -Pattern 'token=([A-Za-z0-9_-]+)' -AllMatches -ErrorAction SilentlyContinue |
-        Select-Object -Last 1
-    if ($m -and $m.Matches.Count -gt 0) {
-        return ($m.Matches | Select-Object -Last 1).Groups[1].Value
+    foreach ($enc in @('Unicode', 'Default')) {
+        $token = $null
+        foreach ($line in (Get-Content $Log -TotalCount 200 -Encoding $enc -ErrorAction SilentlyContinue)) {
+            if ($line -match 'token=([A-Za-z0-9_-]+)') { $token = $Matches[1] }
+        }
+        if ($token) { return $token }
     }
     return $null
 }
@@ -68,14 +73,18 @@ function Test-DshAuthProbe([int]$P, [string]$Token) {
 }
 
 function Test-DshServer([int]$P) {
+    # 最强信号: token 探 303(端口在听且 token 有效)
     $token = Get-LatestToken
-    if ($token) {
-        return (Test-DshAuthProbe $P $token)
-    }
-    # 无 token(旧配置/未开鉴权): 退回裸 / 探测
+    if ($token -and (Test-DshAuthProbe $P $token)) { return $true }
+    # token 不可用(日志尚未写出/读不到)或 token 探测失败: 退回裸 / 状态码
     try {
         $r = Invoke-WebRequest -Uri "http://localhost:$P/" -UseBasicParsing -TimeoutSec 3
+        # 200 + boot 标记 = 未开鉴权的旧配置, 就绪
         return ($r.StatusCode -eq 200 -and $r.Content -match '__DSH_BOOT__')
+    } catch [System.Net.WebException] {
+        # 401 = 端口在听且浏览器会话鉴权开启: 服务器已就绪(鉴权下裸 / 恒 401)
+        if ($_.Exception.Response) { return ([int]$_.Exception.Response.StatusCode -eq 401) }
+        return $false
     } catch {
         return $false
     }
@@ -145,9 +154,12 @@ function Start-DshWebAndServe([int]$usePort) {
 
     # 输出经内层 powershell tee 到 $Log: 窗口照常显示, 磁盘留档; 内层与 node 同控制台,
     # 关窗/Ctrl+C 仍然连着服务器一起退出(窗口 ⟺ 服务器 不变)
+    # EAP=Continue 必须显式带回内层: 本脚本顶部是 Stop, 而 node 2>&1|Tee 会把 stderr
+    # (如 ACP SDK 的 "Error handling notification" 噪音) 在 Stop 下转成 NativeCommandError
+    # 终止错误 → 第一条 stderr 就杀掉内层 shell 和服务器(曾表现为"跑一段时间才死")。
     Set-Content -Path $Log -Value "=== dsh web started $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') port $usePort ==="
     $openFlag = if ($NoOpen) { ' --no-open' } else { '' }
-    $inner = "& '$Node' --import tsx/esm '$Cli' web --port $usePort$openFlag 2>&1 | Tee-Object -FilePath '$Log' -Append"
+    $inner = "`$ErrorActionPreference='Continue'; & '$Node' --import tsx/esm '$Cli' web --port $usePort$openFlag 2>&1 | Tee-Object -FilePath '$Log' -Append"
     $p = Start-Process -FilePath 'powershell.exe' `
         -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $inner) `
         -WorkingDirectory $Repo `
@@ -165,7 +177,11 @@ function Start-DshWebAndServe([int]$usePort) {
     if ($ready) {
         Write-Host ""
         Write-Host "DSH Web UI 已就绪: $useUrl"
-        if (-not $NoOpen) { Start-Process $useUrl }
+        if (-not $NoOpen) {
+            # 鉴权开启时裸 URL 会 401, 必须带 token 打开(CLI 自身也会开 token URL, 至多多一个同页标签)
+            $openTok = Get-LatestToken
+            if ($openTok) { Start-Process "$useUrl/?token=$openTok" } else { Start-Process $useUrl }
+        }
         Write-Host "服务器日志将显示在本窗口; 关闭窗口或 Ctrl+C 即停止服务器。"
         $p.WaitForExit()
         Close-Window-After "服务器进程已退出。" 10
