@@ -1,0 +1,143 @@
+.bar {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  min-width: 0;
+}
+
+.lane {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+}
+
+.link {
+  stroke: var(--dsw-alias-border-l2);
+  stroke-width: 1.5;
+}
+
+.node {
+  cursor: pointer;
+}
+
+.remove {
+  cursor: pointer;
+}
+
+.removeMark {
+  fill: var(--dsw-alias-fg-weak);
+  font-size: 10px;
+}
+
+.halo {
+  fill: none;
+  stroke: var(--dsw-accent, #4c6ef5);
+  stroke-width: 1.5;
+  opacity: 0.85;
+}
+
+/* The four external member states: idle = connected, no turn in flight
+   (gray); running = turn in flight (green); offline = process not running
+   (slate); failed = spawn or handshake error (red). */
+.status.idle {
+  fill: var(--dsw-status-idle, #868e96);
+}
+
+.status.running {
+  fill: var(--dsw-status-running, #40c057);
+}
+
+.status.offline {
+  fill: var(--dsw-status-offline, #adb5bd);
+}
+
+.status.failed {
+  fill: var(--dsw-status-failed, #e03131);
+}
+
+.label {
+  fill: var(--dsw-alias-fg-strong, #e9ecef);
+  font-size: 12px;
+}
+
+.addButton {
+  flex: 0 0 auto;
+  align-self: center;
+  margin-right: 12px;
+  padding: 5px 12px;
+  font-size: 12px;
+  border: 1px dashed var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: none;
+  color: var(--dsw-alias-fg-strong);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.addButton:hover {
+  border-color: var(--dsw-accent, #4c6ef5);
+}
+
+.form {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 12px;
+  max-width: 62%;
+}
+
+.formGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.formGrid input,
+.formGrid select {
+  min-width: 0;
+  width: 170px;
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-raised, #2a2a3a);
+  color: inherit;
+}
+
+.autostart {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--dsw-alias-fg-strong);
+}
+
+.formActions {
+  display: flex;
+  gap: 6px;
+}
+
+.formActions button {
+  padding: 4px 10px;
+  font-size: 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: var(--dsw-alias-button-floating-fill);
+  color: inherit;
+  cursor: pointer;
+}
+
+.formActions button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.formError {
+  font-size: 11px;
+  color: var(--dsw-status-failed, #e03131);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
