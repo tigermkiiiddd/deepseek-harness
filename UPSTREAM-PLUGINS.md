@@ -20,6 +20,7 @@
      - 2026-09-02 时点：已 bump **v0.19.0-alpha.0**（PR #516，适配 DSH 0.1.2-alpha.5），另有 terminal resize / 文件树聚焦刷新 / 折叠开关对齐 / editor 选区弹窗等修复；**尚未发 npm**。
 - **升级方式**：npm alpha 发布后在 web profile 目录 `pnpm update`（或升 `dsh-web-all`）；急用则直接 `dsh-better-sidebar@github:omdsh-dev/DSH-better-sidebar#main`。
 - **当前实际安装（2026-09-02 起）**：本地克隆 `G:\projects\DSH-better-sidebar`（upstream main @ v0.19.0-alpha.0，已 `pnpm install` + prepare 构建 lib/）；web profile 经**目录联接** `C:\Users\shinobi\.dsh\profiles\web\dsh-better-sidebar-local` → 该克隆，并在 `pnpm-workspace.yaml` 里 override：`dsh-better-sidebar: 'file:./dsh-better-sidebar-local'`（profile 的 pnpm-lock.yaml 已固化；package.json 未动）。以后同步 = 在克隆里 `git pull && pnpm install`（prepare 自动重建 lib/），profile 侧无需再动。
+- **2026-09-02 乌龙根因（为什么"装过却跑不起来"）**：① web-ui-upgrade 把聚合包从 `dsh-web-ui-all`(0.2.x) 改名为 `dsh-web-all`(0.3.12) 时，**没有把它加回 `dsh.profile.bundles`**——bundles 之外的包其 patch 层根本不会应用，sidebar 连同全家桶 ~20 个插件全部未挂载（已修复：bundles 追加 `@linxin666/dsh-web-all`）。② 本 checkout 的 `packages/llm/llm`、`packages/subagent/subagent` 缺 `lib/index.js`（tsx 源码启动不需要，但社区插件走普通 Node 解析需要）——已用根 `pnpm run build:lib:host` 补齐。排查此类问题：profile 挂载 = `package.json` 的 `dsh.profile.bundles` 列表 + profile `cordis.patch.yml`，两处都没有就是没挂。
 
 ## "上游"对照表（防混淆）
 
