@@ -100,6 +100,22 @@
     - id: workspace-controller
       name: '@deepseek-ai/dsh-api-workspace-controller'
 
+    # Team members: persistent ACP agent processes, each owning its own
+    # sessions (topics). The roster is deployment-specific — fill `members` in
+    # the profile's cordis.patch.yml (an id-targeted patch replaces this whole
+    # config) or mount the row there instead.
+    - id: team
+      name: '@deepseek-ai/dsh-team'
+      config:
+        members: []
+
+    # Team model tools: `member_*` — enumerate, add, remove, start, stop,
+    # restart members and chat with them. The tools are a permanent team
+    # capability (the team is a deployment shape, not a mode), so the row stays
+    # in the host plane and every session sees it.
+    - id: tool-team
+      name: '@deepseek-ai/dsh-tool-team'
+
     - id: cordis-host-runner
       name: '@deepseek-ai/dsh-cordis-host-runner'
 
@@ -191,6 +207,10 @@
 
     - id: ui-sidebar
       name: '@deepseek-ai/dsh-client-ui-sidebar'
+
+    # Team panel: the sidebar lane showing every agent with live status.
+    - id: ui-team
+      name: '@deepseek-ai/dsh-client-ui-team'
 
     - id: ui-settings
       name: '@deepseek-ai/dsh-client-ui-settings'

@@ -151,6 +151,8 @@
     { "path": "./packages/api/gateway/tsconfig.host.json" },
     { "path": "./packages/api/remotes/tsconfig.host.json" },
     { "path": "./packages/api/session-controller/tsconfig.host.json" },
+    { "path": "./packages/team/team" },
+    { "path": "./packages/team/tool-team" },
     { "path": "./packages/api/settings-controller" },
     { "path": "./packages/api/workspace-controller/tsconfig.host.json" },
     { "path": "./packages/typert/loader" },
