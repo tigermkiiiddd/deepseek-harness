@@ -1,4 +1,4 @@
-<#
+﻿<#
   DSH Web UI 启动器 — 启动（或直接打开）DeepSeek Harness 的 Web UI（web 模式）。
 
   互动窗口:

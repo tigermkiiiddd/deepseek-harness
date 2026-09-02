@@ -44,20 +44,17 @@ function sessionsDouble(current?: SessionId) {
   })
   return {
     list,
-    currentProvideInfo: {} as never,
     searchResultLimit: 20,
+    create: vi.fn(async () => 'created' as SessionId),
     open: vi.fn(),
     openSubagent: vi.fn(),
     subagentAddress: vi.fn(),
     setSubagentCatalogOpen: vi.fn(),
     refreshSubagents: vi.fn(),
-    noteAgentPreset: vi.fn(),
     clear: vi.fn(),
     refresh: vi.fn(async () => {}),
     search: vi.fn(),
     fork: vi.fn(),
-    rerun: vi.fn(),
-    provide: vi.fn(() => () => {}),
     scope: vi.fn(),
     scopeOf: vi.fn(),
     sessionOf: vi.fn(),
@@ -74,7 +71,10 @@ function sessionsStore(initial: Partial<SessionListState> = {}) {
   return { store, useSessions: bindSnapshotSelector(store) }
 }
 /** Build the injected props face for a controller (same shape apply() provides). */
-function injected(controller: TeamController): Omit<TeamTopbarProps, 'wide' | 'useSessions'> {
+function injected(controller: TeamController): Omit<
+  TeamTopbarProps,
+  'wide' | 'useSessions' | 'useSessionPendingInteraction' | 'useWorkspaces'
+> {
   return {
     useTeamLive: bindSnapshotSelector(controller.store),
     loadMembers: () => { controller.loadMembers() },
@@ -179,7 +179,7 @@ describe('TeamTopbar', () => {
 
   it('paints distinct status classes for idle, running, failed, and offline members', async () => {
     const team = stubFacade({
-      list: vi.fn(async () => [
+      list: vi.fn(async (): Promise<TeamMemberRow[]> => [
         { id: 'i', title: 'I', description: null, kind: null, status: 'idle', autostart: true, lastError: null, model: null },
         { id: 'r', title: 'R', description: null, kind: null, status: 'running', autostart: true, lastError: null, model: null },
         { id: 'f', title: 'F', description: null, kind: null, status: 'failed', autostart: true, lastError: null, model: null },

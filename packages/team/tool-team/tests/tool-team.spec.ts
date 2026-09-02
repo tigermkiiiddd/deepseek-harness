@@ -5,7 +5,7 @@ import { Context } from '@deepseek-ai/cordis'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import * as team from '@deepseek-ai/dsh-team'
 import * as toolTeam from '../src/index.ts'
 
@@ -58,7 +58,7 @@ let callCounter = 0
 function execute(ctx: Context, name: string, args: unknown): Promise<{ content: { type: string; text?: string }[] }> {
   return ctx.tools.execute({
     signal: new AbortController().signal,
-    callId: CallId(`call-${++callCounter}`),
+    callId: ToolCallId(`call-${++callCounter}`),
     name,
     arguments: args,
   })
@@ -278,7 +278,7 @@ describe('member lifecycle tools', () => {
     const controller = new AbortController()
     const pending = ctx.tools.execute({
       signal: controller.signal,
-      callId: CallId(`call-${++callCounter}`),
+      callId: ToolCallId(`call-${++callCounter}`),
       name: 'member_chat',
       arguments: { member_id: 'architect', topic: 'topic-design', text: 'hang' },
     })
