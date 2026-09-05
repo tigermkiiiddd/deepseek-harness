@@ -37,6 +37,7 @@ import {
 } from '@agentclientprotocol/sdk'
 import type { Context } from '@deepseek-ai/cordis'
 import { DSH_ENV_PREFIX, type SubprocessHandle, type SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
+import { expandAssistantStream } from '@deepseek-ai/dsh-llm'
 import { AcpUpdateTranslator, type TranslatedSessionEvent } from './fidelity-reverse.ts'
 import type { MemberCache } from './cache.ts'
 import { resolveMemberSpec } from './resolve.ts'
@@ -132,12 +133,19 @@ function textEntriesFromEvents(events: readonly TranslatedSessionEvent[]): Membe
         .map(block => block.text)
         .join('')
       if (text.length > 0) entries.push({ role: 'user', text })
-    } else if (event.type === 'assistant/chunk' && event.data.chunk.type === 'text-delta') {
-      const last = entries[entries.length - 1]
-      if (last?.role === 'assistant') {
-        entries[entries.length - 1] = { role: 'assistant', text: last.text + event.data.chunk.text }
-      } else {
-        entries.push({ role: 'assistant', text: event.data.chunk.text })
+    } else if (event.type === 'assistant/message') {
+      const texts: string[] = []
+      for (const { chunk } of expandAssistantStream(event.data.stream)) {
+        if (chunk.type === 'text-delta') texts.push(chunk.text)
+      }
+      const text = texts.join('')
+      if (text.length > 0) {
+        const last = entries[entries.length - 1]
+        if (last?.role === 'assistant') {
+          entries[entries.length - 1] = { role: 'assistant', text: last.text + text }
+        } else {
+          entries.push({ role: 'assistant', text })
+        }
       }
     }
   }

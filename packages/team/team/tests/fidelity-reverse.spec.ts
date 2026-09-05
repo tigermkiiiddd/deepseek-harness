@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
+import { expandAssistantStream, type AssistantStreamRecord } from '@deepseek-ai/dsh-llm'
 import { AcpUpdateTranslator, stopReasonToTurnEnd } from '../src/fidelity-reverse.ts'
 
 /**
@@ -62,20 +63,24 @@ describe('AcpUpdateTranslator user chunks', () => {
 })
 
 describe('AcpUpdateTranslator agent chunks', () => {
-  it('opens step and text block once, then emits text-deltas', () => {
+  it('opens step and text block once, then embeds text-deltas in the assistant message stream', () => {
     const translator = new AcpUpdateTranslator()
     const events = [
       ...translator.update(agentChunk('Hello')),
       ...translator.update(agentChunk(' world')),
+      ...translator.finish(),
     ]
     expect(events.map(e => e.type)).toEqual([
       'turn/start',
       'step/start',
-      'assistant/chunk',
-      'assistant/chunk',
-      'assistant/chunk',
+      'assistant/message',
+      'step/end',
+      'turn/end',
     ])
-    const chunks = events.filter(e => e.type === 'assistant/chunk').map(e => e.data.chunk)
+    const message = events.find(e => e.type === 'assistant/message')
+    expect(message?.data.message.content).toEqual([{ type: 'text', text: 'Hello world' }])
+    const chunks = expandAssistantStream((message as { data: { stream: AssistantStreamRecord[] } } | undefined)?.data.stream ?? [])
+      .map(member => member.chunk)
     expect(chunks[0]).toEqual({ type: 'block-start', index: 0, blockType: 'text' })
     expect(chunks[1]).toEqual({ type: 'text-delta', index: 0, text: 'Hello' })
     expect(chunks[2]).toEqual({ type: 'text-delta', index: 0, text: ' world' })
@@ -86,8 +91,11 @@ describe('AcpUpdateTranslator agent chunks', () => {
     const events = [
       ...translator.update(thoughtChunk('thinking')),
       ...translator.update(agentChunk('answer')),
+      ...translator.finish(),
     ]
-    const chunks = events.filter(e => e.type === 'assistant/chunk').map(e => e.data.chunk)
+    const message = events.find(e => e.type === 'assistant/message')
+    const chunks = expandAssistantStream((message as { data: { stream: AssistantStreamRecord[] } } | undefined)?.data.stream ?? [])
+      .map(member => member.chunk)
     expect(chunks[0]).toEqual({ type: 'block-start', index: 0, blockType: 'reasoning' })
     expect(chunks[1]).toEqual({ type: 'reasoning-delta', index: 0, text: 'thinking' })
     expect(chunks[2]).toEqual({ type: 'block-start', index: 1, blockType: 'text' })
@@ -213,7 +221,7 @@ describe('AcpUpdateTranslator turn boundaries', () => {
       ...translator.endTurn('end_turn'),
     ]
     expect(events.map(e => e.type)).toEqual([
-      'turn/start', 'step/start', 'assistant/chunk', 'assistant/chunk', 'assistant/message', 'step/end', 'turn/end',
+      'turn/start', 'step/start', 'assistant/message', 'step/end', 'turn/end',
     ])
     const message = events.find(e => e.type === 'assistant/message')?.data.message
     expect(message?.content).toEqual([{ type: 'text', text: 'hi' }])
@@ -240,8 +248,8 @@ describe('AcpUpdateTranslator turn boundaries', () => {
       ...translator.finish(),
     ]
     expect(events.map(e => e.type)).toEqual([
-      'turn/start', 'user/message', 'step/start', 'assistant/chunk', 'assistant/chunk',
-      'assistant/message', 'step/end', 'turn/end', 'turn/start', 'user/message', 'turn/end',
+      'turn/start', 'user/message', 'step/start', 'assistant/message', 'step/end',
+      'turn/end', 'turn/start', 'user/message', 'turn/end',
     ])
   })
 
@@ -267,8 +275,7 @@ describe('AcpUpdateTranslator turn boundaries', () => {
       ...translator.endTurn('end_turn'),
     ]
     expect(events.map(e => e.type)).toEqual([
-      'turn/start', 'step/start', 'assistant/chunk', 'assistant/chunk', 'assistant/chunk',
-      'assistant/chunk', 'assistant/message', 'step/end', 'turn/end',
+      'turn/start', 'step/start', 'assistant/message', 'step/end', 'turn/end',
     ])
     const message = events.find(e => e.type === 'assistant/message')?.data.message
     expect(message?.content).toEqual([
@@ -302,7 +309,7 @@ describe('AcpUpdateTranslator deduplicates echoed user messages', () => {
       ...translator.endTurn('end_turn'),
     ]
     expect(events.map(e => e.type)).toEqual([
-      'turn/start', 'user/message', 'turn/end', 'turn/start', 'step/start', 'assistant/chunk', 'assistant/chunk', 'assistant/message', 'step/end', 'turn/end',
+      'turn/start', 'user/message', 'turn/end', 'turn/start', 'step/start', 'assistant/message', 'step/end', 'turn/end',
     ])
     const userMessages = events.filter(e => e.type === 'user/message')
     expect(userMessages).toHaveLength(1)

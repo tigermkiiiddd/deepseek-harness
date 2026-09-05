@@ -21,7 +21,10 @@
  */
 
 import type { SessionUpdate, StopReason } from '@agentclientprotocol/sdk'
-import { ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
+import {
+  AssistantStreamAccumulator, ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage,
+  type AssistantStreamRecord, type ContentBlock, type StreamChunk,
+} from '@deepseek-ai/dsh-llm'
 import type { SessionEventMap, SurfaceEventType, SurfaceIntent, TurnEndReason } from '@deepseek-ai/dsh-session/types'
 import type {} from '@deepseek-ai/dsh-tool-todo/types'
 
@@ -33,7 +36,6 @@ export type TranslatedEventType =
   | 'step/end'
   | 'user/message'
   | 'assistant/message'
-  | 'assistant/chunk'
   | 'tool/call'
   | 'tool/result'
   | 'todo/write'
@@ -115,6 +117,12 @@ export class AcpUpdateTranslator {
   private textBlockText = ''
   /** Accumulated text for the open step's reasoning block, used to mint `assistant/message`. */
   private reasoningBlockText = ''
+  /**
+   * The open step's lossless model stream, accumulated from every streamed
+   * chunk and embedded in the step's settling `assistant/message`. Replaced
+   * per step so each step's message embeds only its own chunks.
+   */
+  private assistantStream = new AssistantStreamAccumulator()
 
   /**
    * Translate one ACP session update to zero or more session events.
@@ -208,7 +216,7 @@ export class AcpUpdateTranslator {
     return events
   }
 
-  /** Emit one agent text/reasoning chunk, opening the turn, step, and block on first use. */
+  /** Accumulate one agent text/reasoning chunk, opening the turn, step, and block on first use. */
   private agentChunk(
     update: SessionUpdate & { sessionUpdate: 'agent_message_chunk' | 'agent_thought_chunk' },
     kind: 'text' | 'reasoning',
@@ -220,14 +228,14 @@ export class AcpUpdateTranslator {
       index = this.nextBlock++
       if (kind === 'text') this.textBlock = index
       else this.reasoningBlock = index
-      events.push(this.chunk({ type: 'block-start', index, blockType: kind }))
+      this.pushChunk({ type: 'block-start', index, blockType: kind })
     }
     if (kind === 'text') {
       this.textBlockText += update.content.text
-      events.push(this.chunk({ type: 'text-delta', index, text: update.content.text }))
+      this.pushChunk({ type: 'text-delta', index, text: update.content.text })
     } else {
       this.reasoningBlockText += update.content.text
-      events.push(this.chunk({ type: 'reasoning-delta', index, text: update.content.text }))
+      this.pushChunk({ type: 'reasoning-delta', index, text: update.content.text })
     }
     return events
   }
@@ -329,6 +337,7 @@ export class AcpUpdateTranslator {
       this.reasoningBlock = undefined
       this.textBlockText = ''
       this.reasoningBlockText = ''
+      this.assistantStream = new AssistantStreamAccumulator()
       events.push({ type: 'step/start', data: { turn: this.turn, step: this.step } })
     }
     return events
@@ -352,6 +361,7 @@ export class AcpUpdateTranslator {
             content: this.assembleAssistantBlocks(),
             source: { provider: 'member', model: 'member' },
           }),
+          stream: [...this.assistantStream.snapshot()] as AssistantStreamRecord[],
         },
         surfaceOp: 'append',
       })
@@ -378,9 +388,9 @@ export class AcpUpdateTranslator {
     return blocks
   }
 
-  /** One raw stream chunk event for the open step. */
-  private chunk(chunk: SessionEventMap['assistant/chunk']['chunk']): TranslatedSessionEvent {
-    return { type: 'assistant/chunk', data: { turn: this.turn, step: this.step, chunk } }
+  /** Record one raw stream chunk for the open step's embedded assistant stream. */
+  private pushChunk(chunk: StreamChunk): void {
+    this.assistantStream.push({ time: Date.now(), chunk })
   }
 
   /** Reproduce the raw arguments JSON string the model produced. */
