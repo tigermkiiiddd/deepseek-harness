@@ -8,7 +8,7 @@
     - 端口被非 DSH 程序占用时: 报告冲突并中止(不自动换端口), 需要换端口请用 -Port 显式指定
 
   残留主进程处理:
-    - 只清 DSH 自己的主进程(bin.ts web); ACP agent 等子进程不在清理范围(脱离存活属预期)
+    - 只清 DSH 自己的主进程(bin.ts web); ACP 成员等子进程不在清理范围(独立进程, 脱离存活属预期)
 
   用法:
     dsh-web.ps1                 固定端口上干净重启 Web 服务器(清旧起新)
@@ -198,9 +198,9 @@ function Start-DshWebAndServe([int]$usePort) {
 if ($Stop) {
     $pid0 = Get-ListenerPid $Port
     if ($pid0) {
-        # 只停主进程, 不树杀: ACP agent 等子进程按约定保留
+        # 只停主进程, 不树杀: ACP 成员等子进程是独立进程, 脱离存活属预期
         & taskkill /PID $pid0 /F 2>$null | Out-Null
-        Write-Host "已停止 Web 服务器主进程 (PID $pid0, 端口 $Port); ACP agent 子进程未清理。"
+        Write-Host "已停止 Web 服务器主进程 (PID $pid0, 端口 $Port); ACP 成员等子进程未清理。"
     } else {
         Write-Host "端口 $Port 上没有正在运行的 Web 服务器"
     }
@@ -222,7 +222,7 @@ if ($Status) {
 }
 
 # —— 清理: 干掉 DSH 自己的旧 Web UI 主进程, 保证双击 = 干净重启 ——
-# 只清 DSH 主进程(bin.ts web); ACP agent 等子进程不动。
+# 只清 DSH 主进程(bin.ts web); ACP 成员等子进程是独立进程, 不动。
 function Get-DshMainServers {
     try {
         Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue | Where-Object {
