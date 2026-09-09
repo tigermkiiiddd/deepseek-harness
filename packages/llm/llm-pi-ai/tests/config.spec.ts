@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { assertServiceable, Config } from '../src/config.ts'
+import { assertServiceable, Config, resolveProfiles } from '../src/config.ts'
 
 /** Validate one hand-declared route, with the caller's fields layered onto it. */
 const routeWith = (profile: Record<string, unknown>): (() => unknown) =>
@@ -96,5 +96,33 @@ describe('request image policy bounds', () => {
     expect(() => {
       assertServiceable(programmatic)
     }).toThrow(message)
+  })
+})
+
+describe('session header', () => {
+  const profileWith = (sessionHeader: unknown) => ({
+    providers: {
+      'acme-gateway': {
+        api: 'openai-completions',
+        baseURL: 'https://acme.test',
+        models: [{ id: 'm' }],
+        sessionHeader,
+      },
+    },
+  } as unknown as Config)
+
+  it('refuses an empty header name at service resolution', () => {
+    // The schema admits the empty string as well-typed; the namespace
+    // validator is what refuses it, naming the route.
+    expect(() => assertServiceable(profileWith(''))).toThrow(/empty sessionHeader/)
+  })
+
+  it('refuses a header name Fetch cannot represent', () => {
+    expect(() => assertServiceable(profileWith('bad name\n'))).toThrow(/not valid for Fetch/)
+  })
+
+  it('resolves a valid name through to the request profile', () => {
+    const resolved = resolveProfiles(profileWith('x-opencode-session').providers)
+    expect(resolved.get('acme-gateway')?.sessionHeader).toBe('x-opencode-session')
   })
 })
