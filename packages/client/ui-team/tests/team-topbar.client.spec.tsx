@@ -7,10 +7,11 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { ISessions, SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-test-runtime'
+import type { InjectFace } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { MemberConfigInput, TeamMemberRow } from '@deepseek-ai/dsh-team/types'
 import { TeamTopbar } from '../src/client/TeamTopbar.tsx'
-import type { TeamTopbarProps } from '../src/client/TeamTopbar.tsx'
+import type { TeamTopbarProps, TeamViewInjected } from '../src/client/TeamTopbar.tsx'
 import type { TeamFacade } from '../src/client/team-facade.ts'
 import { TeamController } from '../src/client/team-store.ts'
 
@@ -71,12 +72,13 @@ function sessionsStore(initial: Partial<SessionListState> = {}) {
   return { store, useSessions: bindSnapshotSelector(store) }
 }
 /** Build the injected props face for a controller (same shape apply() provides). */
-function injected(controller: TeamController): Omit<
-  TeamTopbarProps,
-  'wide' | 'useSessions' | 'useSessionPendingInteraction' | 'useWorkspaces'
-> {
+function injected(
+  controller: TeamController,
+  useSessions: InjectFace<TeamViewInjected>['useSessions'],
+): InjectFace<TeamViewInjected> {
   return {
     useTeamLive: bindSnapshotSelector(controller.store),
+    useSessions,
     loadMembers: () => { controller.loadMembers() },
     openMember: (memberId) => { controller.openMember(memberId) },
     start: (memberId) => { controller.start(memberId) },
@@ -91,8 +93,7 @@ function mount(team: TeamFacade, sessions = sessionsStore(), sessionsSvc = sessi
   const controller = new TeamController(team, sessionsSvc)
   const props: TeamTopbarProps = {
     wide: true,
-    useSessions: sessions.useSessions as never,
-    ...injected(controller),
+    ...injected(controller, sessions.useSessions),
   } as TeamTopbarProps
   render(<TeamTopbar {...props} />)
   return Object.assign(controller, { sessionsStore: sessions.store, sessionsSvc })

@@ -19,11 +19,12 @@ export default defineConfig(({ env }) => {
     workspace: client
       ? ['vendor/*', 'packages/*/*', 'apps/cli']
       : ['vendor/*', 'packages/*/*', 'apps/cli', 'apps/desktop', 'apps/desktop-host'],
-    // WORKAROUND (this Windows box only): the brace-expansion form
-    // `['lib/types/{index,invariant,startup}.js']` is not expanded by tsdown/rolldown
-    // on Windows, so the dsh-root entry resolves to a literal `{...}` path and the
-    // host build fails with "Cannot find entry". Upstream Linux/macOS CI is fine.
-    entry: '',
+    // Keep the entry alternatives as independent globs: brace expansion is not
+    // portable to tsdown/rolldown on Windows, while an empty entry skips
+    // packages that rely on this workspace default.
+    entry: client
+      ? ''
+      : ['lib/types/[i]ndex.js', 'lib/types/[i]nvariant.js', 'lib/types/[s]tartup.js'],
     outDir: 'lib',
     format: ['esm'],
     platform: 'node',

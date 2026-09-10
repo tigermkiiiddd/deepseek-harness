@@ -154,20 +154,11 @@ function textEntriesFromEvents(events: readonly TranslatedSessionEvent[]): Membe
 
 /** Cooperative process teardown: EOF window, then termination escalation. */
 async function disposeMemberProcess(child: SubprocessHandle, eofGraceMs: number): Promise<void> {
-  if (child.pid <= 0) {
-    await child.done.catch(() => {})
-    return
-  }
   child.stdin?.end()
-  const deadline = Date.now() + eofGraceMs
-  const exitPromise = child.waitForExit()
-  const withinGrace = await Promise.race([
-    exitPromise.then(() => true, () => true),
-    new Promise<boolean>(resolve => setTimeout(() => { resolve(false) }, Math.max(0, deadline - Date.now()))),
-  ])
+  const withinGrace = await child.waitForExit(AbortSignal.timeout(eofGraceMs))
   if (!withinGrace) {
     child.terminate()
-    await exitPromise
+    await child.waitForExit()
   }
 }
 

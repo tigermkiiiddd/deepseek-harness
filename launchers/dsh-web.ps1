@@ -2,6 +2,7 @@
   DSH Web UI 启动器 — 启动（或直接打开）DeepSeek Harness 的 Web UI（web 模式）。
 
   互动窗口:
+    - 当前提交没有完整产物时，先同步依赖、安全清理并执行完整构建
     - 窗口生命周期 = 服务器生命周期: 服务器停止(无论何种原因)后窗口倒计时关闭
     - 因此 "窗口还在" 恒等于 "服务器还在跑", 关闭窗口/Ctrl+C 即停止服务器
     - 双击 = 干净重启: 先清掉固定端口上旧的 DSH Web UI 主进程, 再原地重新启动
@@ -16,15 +17,18 @@
     dsh-web.ps1 -Stop           停止端口上的 Web 服务器(仅主进程)
     dsh-web.ps1 -Port 63848     覆盖首选端口
     dsh-web.ps1 -NoOpen         就绪后不自动打开浏览器
+    dsh-web.ps1 -ForceBuild      强制重新构建后启动
 #>
 param(
     [switch]$Stop,
     [switch]$Status,
     [switch]$NoOpen,
+    [switch]$ForceBuild,
     [int]$Port = 63848
 )
 
 $ErrorActionPreference = 'Stop'
+$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
 $Host.UI.RawUI.WindowTitle = 'DSH Web UI'
 
 # 首选监听端口(默认 63848, 可用 -Port 覆盖)
@@ -33,6 +37,85 @@ $Cli  = Join-Path $Repo 'apps\cli\src\bin.ts'
 $Node = 'C:\Program Files\nodejs\node.exe'
 $Url  = "http://localhost:$Port"
 $Log  = Join-Path $env:USERPROFILE '.dsh\launcher-web.log'
+$BuildRecord = Join-Path $Repo '.dsh-build\client-build-environment.json'
+$WebIndex = Join-Path $Repo 'apps\web\dist\index.html'
+$Git = Get-Command 'git.exe' -ErrorAction SilentlyContinue
+$Pnpm = Get-Command 'pnpm.cmd' -ErrorAction SilentlyContinue
+
+function Get-MissingClientBundles {
+    $missing = @()
+    foreach ($group in (Get-ChildItem (Join-Path $Repo 'packages') -Directory)) {
+        foreach ($packageDir in (Get-ChildItem $group.FullName -Directory)) {
+            $manifest = Join-Path $packageDir.FullName 'package.json'
+            if (-not (Test-Path $manifest)) { continue }
+            try {
+                $package = Get-Content $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
+            } catch {
+                return @("unreadable manifest: $manifest")
+            }
+            $dshProperty = $package.PSObject.Properties['dsh']
+            if ($null -eq $dshProperty) { continue }
+            $clientProperty = $dshProperty.Value.PSObject.Properties['client']
+            if ($null -eq $clientProperty) { continue }
+            $bundle = Join-Path $packageDir.FullName 'lib\client.js'
+            if (-not (Test-Path $bundle)) { $missing += $bundle }
+        }
+    }
+    return $missing
+}
+
+function Get-BuildRequirement([switch]$IgnoreForceBuild) {
+    if ($ForceBuild -and -not $IgnoreForceBuild) { return '已指定 -ForceBuild' }
+    if (-not (Test-Path $BuildRecord)) { return '完整构建记录不存在' }
+    if (-not (Test-Path $WebIndex)) { return "Web 页面不存在: $WebIndex" }
+    if ($null -eq $Git) { return '找不到 git，无法核对当前版本' }
+
+    try {
+        $record = Get-Content $BuildRecord -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        return "完整构建记录无法读取: $BuildRecord"
+    }
+    $commitLines = @(& $Git.Source -C $Repo rev-parse --short=7 HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $commitLines.Count -eq 0) { return '无法读取当前 Git 版本' }
+    $currentCommit = [string]$commitLines[0]
+    if ($record.environment.DSH_CLIENT_COMMIT_HASH -ne $currentCommit) {
+        return "构建版本 $($record.environment.DSH_CLIENT_COMMIT_HASH) 与当前版本 $currentCommit 不一致"
+    }
+
+    $missing = @(Get-MissingClientBundles)
+    if ($missing.Count -gt 0) {
+        $examples = ($missing | Select-Object -First 3) -join ', '
+        return "缺少 $($missing.Count) 个客户端构建文件: $examples"
+    }
+    return $null
+}
+
+function Invoke-PnpmStep([string[]]$Arguments) {
+    Write-Host ""
+    Write-Host ("  pnpm {0}" -f ($Arguments -join ' '))
+    & $Pnpm.Source @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "pnpm $($Arguments -join ' ') 失败，退出码 $LASTEXITCODE"
+    }
+}
+
+function Invoke-RepositoryBuild([string]$Reason) {
+    if ($null -eq $Pnpm) { throw '找不到 pnpm.cmd，无法构建项目' }
+    Write-Host "检测到需要重新构建: $Reason"
+    Write-Host '首次启动或更新后可能需要几分钟，请保持本窗口打开。'
+    Push-Location $Repo
+    try {
+        Invoke-PnpmStep -Arguments @('install', '--frozen-lockfile')
+        Invoke-PnpmStep -Arguments @('run', 'clean')
+        Invoke-PnpmStep -Arguments @('run', 'build')
+    } finally {
+        Pop-Location
+    }
+    $remaining = Get-BuildRequirement -IgnoreForceBuild
+    if ($null -ne $remaining) { throw "构建完成后校验失败: $remaining" }
+    Write-Host ""
+    Write-Host '项目完整构建已完成。'
+}
 
 # 服务端开了浏览器会话鉴权: 裸 / 返回 401, 有效 token 才会 303。
 # 启动器把 node 打印的 token URL(带 ?token=) tee 到 $Log, 再探一次 303 确认端口真在听。
@@ -221,6 +304,26 @@ if ($Status) {
     exit 0
 }
 
+if (-not (Test-Path $Cli)) { Show-Error "找不到 CLI: $Cli"; exit 1 }
+if (-not (Test-Path $Node)) { Show-Error "找不到 node: $Node"; exit 1 }
+
+$buildRequirement = Get-BuildRequirement
+if ($null -ne $buildRequirement) {
+    try {
+        Invoke-RepositoryBuild $buildRequirement
+    } catch {
+        $buildError = "DSH Web UI 自动构建失败。`n$($_.Exception.Message)"
+        Show-Error $buildError
+        Write-Host ""
+        Write-Host '没有启动或替换服务器；上方的构建输出保留了具体错误。'
+        Write-Host '本窗口将在 20 秒后自动关闭。'
+        Start-Sleep -Seconds 20
+        exit 1
+    }
+} else {
+    Write-Host '构建产物与当前版本一致，跳过构建。'
+}
+
 # —— 清理: 干掉 DSH 自己的旧 Web UI 主进程, 保证双击 = 干净重启 ——
 # 只清 DSH 主进程(bin.ts web); ACP 成员等子进程是独立进程, 不动。
 function Get-DshMainServers {
@@ -274,9 +377,6 @@ if (Test-PortBusy $Port) {
     Show-Error ("端口 {0} 已被其他程序占用 (PID {1}), 不是 DSH Web UI。请释放该端口, 或用 -Port 指定其他端口。" -f $Port, $busyPid)
     exit 1
 }
-
-if (-not (Test-Path $Cli)) { Show-Error "找不到 CLI: $Cli"; exit 1 }
-if (-not (Test-Path $Node)) { Show-Error "找不到 node: $Node"; exit 1 }
 
 # —— 正常路径: 固定端口上干净重启 ——
 Start-DshWebAndServe $Port

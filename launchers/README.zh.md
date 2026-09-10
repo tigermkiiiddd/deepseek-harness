@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-启动（或直接打开）DeepSeek Harness 的 Web UI（浏览器模式）。
+必要时先构建项目，再以浏览器模式启动 DeepSeek Harness Web UI。
 
 ## 文件
 
@@ -13,9 +13,9 @@
 
 双击桌面快捷方式：
 
-- **有残留主进程时（启动它的窗口已退出）**：自动停止残留主进程，然后全新启动。残留主进程占着端口和 task-board 账本锁，不清掉新实例会启动失败（`ledger is already owned by process ...`）。
-- 服务器未运行时 → 弹出互动命令行窗口，实时显示服务器日志；就绪后自动打开浏览器。**Ctrl+C 或关闭窗口即停止服务器。**
-- 服务器已在运行（宿主窗口存活）时 → 打开浏览器，窗口常驻并每 10 秒刷新一条运行状态（PID / 已停止），**由用户自行关闭窗口退出，不自动关闭。**
+- **当前提交没有完整构建记录、记录属于其他提交，或 Web／客户端产物缺失时**：按锁文件同步依赖，删除仓库自有的生成物，执行完整构建，再替换正在运行的服务器。构建失败时不启动或替换服务器，并保留诊断信息 20 秒。
+- **构建与当前版本一致时**：跳过构建。停止正在选定端口监听的 DSH Web 主进程，清理孤立的 DSH Web 主进程，再启动新实例。
+- 互动窗口会显示服务器日志。通过带鉴权的就绪探测后，启动器自动打开浏览器。**Ctrl+C 或关闭窗口即停止服务器。**
 
 清理范围约定：**只处理主进程**（`bin.ts web` 主服务器）。ACP agent 等子进程不在清理范围；它们通常随主服务器断连自行退出，即使脱离存活也不受本启动器影响。
 
@@ -27,12 +27,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File dsh-web.ps1 -Status         
 powershell -NoProfile -ExecutionPolicy Bypass -File dsh-web.ps1 -Stop            # stop main process (no tree-kill of children)
 powershell -NoProfile -ExecutionPolicy Bypass -File dsh-web.ps1 -Port 63848      # override preferred port
 powershell -NoProfile -ExecutionPolicy Bypass -File dsh-web.ps1 -NoOpen          # ready without auto-opening browser
+powershell -NoProfile -ExecutionPolicy Bypass -File dsh-web.ps1 -ForceBuild       # rebuild before starting
 ```
 
 ## 细节
 
 - 端口：`63848`（默认，可用 `-Port` 覆盖）
+- 构建准备：`pnpm install --frozen-lockfile`、`pnpm run clean`，再执行 `pnpm run build`
+- 构建标识：当前 Git 短提交必须与 `.dsh-build/client-build-environment.json` 一致；`apps/web/dist/index.html` 和每个声明 `dsh.client` 的 workspace 包也必须具有已生成文件
 - 启动命令：`node --import tsx/esm G:\projects\deepseek-harness\apps\cli\src\bin.ts web --port 63848`
-- 若服务器正运行在默认端口 3080（未加 `--port` 手动启动），启动器会直接打开它
 - 服务器输出直接显示在启动窗口并 tee 到 `%USERPROFILE%\.dsh\launcher-web.log`
-- 端口被非 DSH 程序占用时提供互动选择：换端口 / 直接打开 / 退出
+- 端口被非 DSH 程序占用时，启动器停止并提示用户释放端口或选择其他端口
