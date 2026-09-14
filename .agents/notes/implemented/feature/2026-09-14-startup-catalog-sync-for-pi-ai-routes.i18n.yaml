@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-09-14-startup-catalog-sync-for-pi-ai-routes.md
+2026-09-14-startup-catalog-sync-for-pi-ai-routes.md: 1d168bc35b9ba69cee926a1f1150549923caa13b
+2026-09-14-startup-catalog-sync-for-pi-ai-routes.zh.md: 12689494aa312ef7bfb3ecaa9b5e056a847f8035

@@ -13,6 +13,8 @@ import { createModels, getSupportedThinkingLevels } from '@earendil-works/pi-ai'
 import type { Api, Model, OpenAICompletionsCompat, Provider } from '@earendil-works/pi-ai'
 import { resolveProfiles } from '../src/config.ts'
 import { buildProvider, supportedProtocols } from '../src/provider.ts'
+import { catalogModels, resolveRouteModels } from '../src/catalog.ts'
+import { catalogFingerprint, CATALOG_CACHE_FORMAT, writeCatalogCache } from '../src/catalog-cache.ts'
 import { assemble } from './assemble.ts'
 import { memoryAuth } from './auth-double.ts'
 import { closeMockServers, mockServer, textEvents } from './mock-server.ts'
@@ -1238,5 +1240,100 @@ describe('configurable-provider directory', () => {
       settingsPath: ['providers', 'openai-codex'],
       declared: false,
     })
+  })
+})
+
+describe('catalog cache overlay', () => {
+  const [snapshotModel] = getBuiltinModels('deepseek')
+  if (snapshotModel === undefined) throw new Error('the installed catalog ships no deepseek model')
+
+  function request(cachedModels: Parameters<typeof resolveRouteModels>[0]['cachedModels']): Parameters<typeof resolveRouteModels>[0] {
+    return {
+      provider: 'deepseek',
+      ...cachedModels === undefined ? {} : { cachedModels },
+      defaultInput: ['text', 'image'],
+      defaultContextWindow: 100_000,
+      defaultMaxTokens: 10_000,
+    }
+  }
+
+  it('serves the cached list instead of the frozen snapshot, keeping snapshot metadata for known ids', () => {
+    const catalog = resolveRouteModels(request([
+      { id: 'deepseek-v99' },
+      { id: snapshotModel.id, name: 'Cached Name', contextWindow: 54321 },
+    ]))
+    expect(catalog.models.map(model => model.id)).toEqual(['deepseek-v99', snapshotModel.id])
+    // An upstream addition the snapshot has not caught up with resolves from
+    // the route's defaults and the catalog's shared endpoint.
+    const added = catalog.models.find(model => model.id === 'deepseek-v99')
+    expect(added?.api).toBe(snapshotModel.api)
+    expect(added?.contextWindow).toBe(100_000)
+    expect(added?.maxTokens).toBe(10_000)
+    // A model the snapshot also describes keeps its metadata, with the cached
+    // name and capacities on top — the frozen list has not lost its detail.
+    const known = catalog.models.find(model => model.id === snapshotModel.id)
+    expect(known?.name).toBe('Cached Name')
+    expect(known?.contextWindow).toBe(54321)
+    expect(known?.input).toEqual(snapshotModel.input)
+    expect(known?.cost).toEqual(snapshotModel.cost)
+  })
+
+  it('ignores the cache beside an explicit models list or modelOverrides', () => {
+    const withList = resolveRouteModels({
+      ...request([{ id: 'cached-only' }]),
+      models: [{ id: snapshotModel.id }],
+    })
+    expect(withList.models.map(model => model.id)).toEqual([snapshotModel.id])
+    // Overrides customize the *installed* catalog, so the cache is set aside
+    // and every snapshot model serves, overridden.
+    const snapshotIds = [...catalogModels('deepseek').keys()].sort()
+    const withOverrides = resolveRouteModels({
+      ...request([{ id: 'cached-only' }]),
+      modelOverrides: { [snapshotModel.id]: { name: 'Overridden' } },
+    })
+    expect(withOverrides.models.map(model => model.id).sort()).toEqual(snapshotIds)
+    expect(withOverrides.models.find(model => model.id === snapshotModel.id)?.name).toBe('Overridden')
+  })
+
+  it('serves the route cache through resolveProfiles only while the directory is named', async () => {
+    const dir = await home()
+    const snapshotIds = [...catalogModels('deepseek').keys()]
+    await writeCatalogCache(dir, 'deepseek', {
+      format: CATALOG_CACHE_FORMAT,
+      fingerprint: catalogFingerprint(catalogModels('deepseek')),
+      fetchedAt: new Date(0).toISOString(),
+      endpoints: ['https://local.test/models'],
+      models: [{ id: 'deepseek-v99' }, { id: 'deepseek-v4-flash' }],
+    })
+
+    const withCache = resolveProfiles({ deepseek: { apiKeyEnv: KEY_ENV } }, 'deferred', dir)
+    expect([...withCache.get('deepseek')!.piProvider!.getModels().map(model => model.id)].sort())
+      .toEqual(['deepseek-v4-flash', 'deepseek-v99'])
+
+    // The validator/serviceability pass never consults the cache.
+    const withoutCache = resolveProfiles({ deepseek: { apiKeyEnv: KEY_ENV } }, 'deferred')
+    expect([...withoutCache.get('deepseek')!.piProvider!.getModels().map(model => model.id)].sort())
+      .toEqual(snapshotIds.sort())
+
+    // A route with an explicit models list keeps its own answer.
+    const withList = resolveProfiles({
+      deepseek: { apiKeyEnv: KEY_ENV, models: [{ id: snapshotModel.id }] },
+    }, 'deferred', dir)
+    expect([...withList.get('deepseek')!.piProvider!.getModels().map(model => model.id)]).toEqual([snapshotModel.id])
+  })
+
+  it('a corrupt cache file answers absence and the snapshot serves', async () => {
+    const dir = await home()
+    await writeCatalogCache(dir, 'deepseek', {
+      format: CATALOG_CACHE_FORMAT,
+      fingerprint: catalogFingerprint(catalogModels('deepseek')),
+      fetchedAt: new Date(0).toISOString(),
+      endpoints: [],
+      models: [{ id: 'deepseek-v99' }],
+    })
+    await writeFile(join(dir, 'deepseek.json'), '{oops', 'utf8')
+    const resolved = resolveProfiles({ deepseek: { apiKeyEnv: KEY_ENV } }, 'deferred', dir)
+    expect([...resolved.get('deepseek')!.piProvider!.getModels().map(model => model.id)].sort())
+      .toEqual([...catalogModels('deepseek').keys()].sort())
   })
 })

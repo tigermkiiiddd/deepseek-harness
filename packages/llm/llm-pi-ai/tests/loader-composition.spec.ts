@@ -8,7 +8,7 @@
  * same guard.
  */
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -121,6 +121,69 @@ describe('llm-pi-ai real dormant composition', () => {
     const result = await assemble(ctx, { provider: 'deepseek', model: 'deepseek-v4-flash', messages: [] })
     expect(result.message.content).toEqual([{ type: 'text', text: 'hello' }])
     expect(server.headers[0]?.authorization).toBe('Bearer key-from-store')
+  })
+
+  it('syncs an installed catalog route at mount and serves the synced listing', async () => {
+    vi.stubEnv('PI_COMPOSITION_KEY', '')
+    const server = await mockServer([{
+      body: JSON.stringify({ data: [
+        { id: 'deepseek-v41-flash' },
+        { id: 'deepseek-v4-flash' },
+        { id: 'deepseek-v4-pro' },
+      ] }),
+    }])
+    const { ctx, settingsPath } = await loadComposition()
+    const cacheDir = join(root ?? '', 'catalog-cache')
+
+    await writeFile(settingsPath, [
+      'llm-pi-ai:',
+      '  providers:',
+      '    deepseek:',
+      '      apiKeyEnv: PI_COMPOSITION_KEY',
+      `      baseURL: ${server.url}`,
+      '  catalogSyncEnabled: true',
+      `  catalogCacheDir: ${JSON.stringify(cacheDir)}`,
+      '',
+    ].join('\n'))
+
+    // The route registers from the settings section, the once-per-process
+    // forced sync answers the route's own endpoint, and the synced listing —
+    // an upstream addition the installed snapshot has not caught up with —
+    // becomes the served catalog without a restart or a settings edit.
+    await vi.waitFor(async () => {
+      expect((await ctx.llm.listModels('deepseek')).some(model => model.id === 'deepseek-v41-flash')).toBe(true)
+    }, { timeout: 5000 })
+    expect(server.paths).toContain('/models')
+    const cached = JSON.parse(await readFile(join(cacheDir, 'deepseek.json'), 'utf8'))
+    expect(cached.models.map((model: { id: string }) => model.id))
+      .toEqual(['deepseek-v41-flash', 'deepseek-v4-flash', 'deepseek-v4-pro'])
+    // The catalog route never lands in the settings document.
+    expect((await ctx.llm.listModels('deepseek')).map(model => model.id).sort())
+      .toEqual(['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v41-flash'])
+  })
+
+  it('keeps the installed snapshot serving when sync is off', async () => {
+    vi.stubEnv('PI_COMPOSITION_KEY', '')
+    const server = await mockServer([{
+      body: JSON.stringify({ data: [{ id: 'deepseek-v41-flash' }] }),
+    }])
+    const { ctx, settingsPath } = await loadComposition()
+
+    await writeFile(settingsPath, [
+      'llm-pi-ai:',
+      '  providers:',
+      '    deepseek:',
+      '      apiKeyEnv: PI_COMPOSITION_KEY',
+      `      baseURL: ${server.url}`,
+      '',
+    ].join('\n'))
+    await vi.waitFor(async () => {
+      expect(ctx.llm.listProviders().map(provider => provider.id)).toEqual(['deepseek'])
+    }, { timeout: 5000 })
+
+    // No cache, no network: the installed snapshot answers untouched.
+    expect((await ctx.llm.listModels('deepseek')).some(model => model.id === 'deepseek-v41-flash')).toBe(false)
+    expect(server.paths).not.toContain('/models')
   })
 
   it('uses settings-only route headers for model discovery', async () => {

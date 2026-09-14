@@ -21,6 +21,7 @@ import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { resolveRetryPolicy, RetryPolicySchema } from '@deepseek-ai/dsh-llm'
 import type { ResolvedRetryPolicy, RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
 import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
+import { cachedCatalogModels } from './catalog-cache.ts'
 import {
   CACHE_CONTROL_FORMATS,
   CHAT_TEMPLATE_VARS,
@@ -232,6 +233,22 @@ export interface Config {
    * and registers them the moment a settings section supplies profiles.
    */
   providers?: Record<string, PiAiProviderProfile>
+  /**
+   * Directory holding the per-route catalog cache files, which a startup sync
+   * refreshes and resolution serves in place of the frozen pi-ai snapshot (see
+   * `catalog-cache.ts`). Defaults to `$DSH_HOME/llm-pi-ai/catalog-cache`. A
+   * deployment that must never reach a provider endpoint keeps the directory
+   * and sets `catalogSyncEnabled` false.
+   */
+  catalogCacheDir?: string
+  /**
+   * Whether the adapter syncs each route's catalog from its own endpoints at
+   * mount — the "ask the route at every startup" refresh — and serves the
+   * synced cache in place of the frozen pi-ai snapshot while it exists. False
+   * (default) keeps every route serving the installed snapshot, with no
+   * network attempt; the Models surface can still fetch a listing on demand.
+   */
+  catalogSyncEnabled?: boolean
 }
 
 const thinkingBudgets = z.object({
@@ -355,6 +372,8 @@ const profile = z.object({
 /** Runtime schema for {@link Config}. */
 export const Config: z<Config> = z.object({
   providers: z.dict(profile).default({}),
+  catalogCacheDir: z.string(),
+  catalogSyncEnabled: z.boolean().default(false),
 })
 
 /**
@@ -409,11 +428,16 @@ function assertValidHeaders(provider: string, headers: Readonly<Record<string, s
  * routes. An omitted dict resolves to the empty, dormant route set.
  * @param providers - configured provider profiles keyed by route.
  * @param validation - writes require a complete catalog; stored reads retain catalog diagnostics.
+ * @param cacheDir - when named, a route's local catalog cache is read and, for
+ *   a route with no explicit `models` or `modelOverrides`, serves in place of
+ *   the installed snapshot. Validation passes omit it on purpose: whether a
+ *   settings write is serviceable must not depend on runtime cache state.
  * @returns validated profiles in configuration order.
  */
 export function resolveProfiles(
   providers: Readonly<Record<string, PiAiProviderProfile>> | undefined,
   validation: 'strict' | 'deferred' = 'strict',
+  cacheDir?: string,
 ): Map<string, ResolvedPiAiProviderProfile> {
   if (Array.isArray(providers)) {
     throw new Error('llm-pi-ai: providers is now a dict keyed by provider route, not an array of profiles')
@@ -474,6 +498,16 @@ export function resolveProfiles(
     let catalog: RouteCatalog | undefined
     let piProvider: Provider | undefined
     let catalogError: string | undefined
+    // The cache is a serving concern, not a configuration fact: it is read only
+    // when a cache directory is named (the adapter, never the validator) and
+    // only for a route that has not spoken for itself with models or overrides.
+    // The schema materializes `[]`/`{}` for those keys when absent, and
+    // resolution reads an empty one as "no answer here" besides — so the cache
+    // applies unless the deployment actually wrote entries.
+    const spokeForItself = (source.models?.length ?? 0) > 0 || Object.keys(source.modelOverrides ?? {}).length > 0
+    const cachedModels = cacheDir === undefined || spokeForItself
+      ? undefined
+      : cachedCatalogModels(cacheDir, provider)
     try {
       catalog = resolveRouteModels({
         provider,
@@ -481,6 +515,7 @@ export function resolveProfiles(
         ...source.baseURL === undefined ? {} : { baseURL: source.baseURL },
         ...source.models === undefined ? {} : { models: source.models },
         ...source.modelOverrides === undefined ? {} : { modelOverrides: source.modelOverrides },
+        ...cachedModels === undefined ? {} : { cachedModels },
         ...source.compat === undefined ? {} : { compat: source.compat },
         defaultInput,
         defaultContextWindow: source.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW,

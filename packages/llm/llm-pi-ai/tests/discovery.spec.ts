@@ -6,7 +6,7 @@ import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, { userAgent } from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import { getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
-import { discoverModels } from '../src/discovery.ts'
+import { discoverModels, fetchCatalogListing } from '../src/discovery.ts'
 
 const servers: Server[] = []
 /** Credential variables a test set, cleared so the next one starts unset. */
@@ -539,5 +539,105 @@ describe('recorded provider listings', () => {
     const ctx = await harness()
 
     await expect(ctx.llm.discoverModels('llm-pi-ai', { baseURL: server.url, api })).resolves.toEqual(models)
+  })
+})
+
+describe('catalog listing sync', () => {
+  const KEY = 'sync-key'
+
+  function options(server: string, overrides: Record<string, unknown> = {}): Parameters<typeof fetchCatalogListing>[0] {
+    return {
+      provider: 'deepseek',
+      endpoints: [{ api: 'openai-completions', baseURL: server }],
+      fingerprint: 'f'.repeat(64),
+      ...overrides,
+    } as Parameters<typeof fetchCatalogListing>[0]
+  }
+
+  it('asks each protocol family once and tags every model with the listing that named it', async () => {
+    const server = await listingServer({
+      body: JSON.stringify({ data: [{ id: 'completions-only' }] }),
+    })
+    const listed = await fetchCatalogListing(options(server.url))
+    expect(listed?.models.map(model => model.id)).toEqual(['completions-only'])
+    expect(listed?.models[0]?.api).toBe('openai-completions')
+    expect(server.paths).toEqual(['/models'])
+  })
+
+  it('deduplicates endpoints that resolve to the same listing URL', async () => {
+    const server = await listingServer({
+      body: JSON.stringify({ data: [{ id: 'once' }] }),
+    })
+    const listed = await fetchCatalogListing(options(server.url, {
+      endpoints: [
+        { api: 'openai-completions', baseURL: server.url },
+        { api: 'openai-responses', baseURL: server.url },
+      ],
+    }))
+    expect(listed?.models).toEqual([{ id: 'once', api: 'openai-completions', name: 'once' }])
+    expect(server.paths).toEqual(['/models'])
+  })
+
+  it('unions protocols and keeps the first listing\'s protocol for a shared model', async () => {
+    const server = await listingServer({
+      body: JSON.stringify({ data: [
+        { id: 'shared', name: 'Shared' },
+        { id: 'completions-only' },
+      ] }),
+    })
+    const listed = await fetchCatalogListing(options(server.url, {
+      endpoints: [
+        { api: 'openai-completions', baseURL: server.url },
+        { api: 'anthropic-messages', baseURL: server.url },
+      ],
+    }))
+    expect(listed?.models.map(model => model.id)).toEqual(['shared', 'completions-only'])
+    expect(listed?.models.find(model => model.id === 'shared')?.api).toBe('openai-completions')
+    expect(server.paths).toEqual(['/models', '/v1/models?limit=1000'])
+  })
+
+  it('carries the credential on the protocol\'s header and adopts disclosed capacities', async () => {
+    const server = await listingServer({
+      body: JSON.stringify({ data: [{ id: 'big', contextWindow: 262144, max_tokens: 8192 }] }),
+    })
+    const listed = await fetchCatalogListing(options(server.url, {
+      endpoints: [{ api: 'anthropic-messages', baseURL: server.url }],
+      resolveApiKey: async () => KEY,
+    }))
+    expect(listed?.models).toEqual([{ id: 'big', api: 'anthropic-messages', name: 'big', contextWindow: 262144, maxTokens: 8192 }])
+    expect(server.headers[0]?.['x-api-key']).toBe(KEY)
+    expect(server.headers[0]?.['anthropic-version']).toBeDefined()
+  })
+
+  it('drops an endpoint whose listing is empty and answers nothing when every endpoint is', async () => {
+    const failures: string[] = []
+    const server = await listingServer({ body: JSON.stringify({ data: [] }) })
+    const listed = await fetchCatalogListing(options(server.url, {
+      onEndpointFailure: (url: string) => { failures.push(url) },
+    }))
+    expect(listed).toBeUndefined()
+    expect(failures).toEqual([`${server.url}/models`])
+  })
+
+  it('keeps the other endpoints when one refuses, reporting the refusal', async () => {
+    const failures: string[] = []
+    const server = await listingServer({ body: JSON.stringify({ data: [{ id: 'alive' }] }) })
+    const listed = await fetchCatalogListing(options(server.url, {
+      endpoints: [
+        { api: 'openai-completions', baseURL: 'http://127.0.0.1:9' },
+        { api: 'openai-completions', baseURL: server.url },
+      ],
+      onEndpointFailure: (url: string) => { failures.push(url) },
+    }))
+    expect(listed?.models.map(model => model.id)).toEqual(['alive'])
+    expect(failures).toEqual(['http://127.0.0.1:9/models'])
+  })
+
+  it('answers a caller abort as ABORTED', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const server = await listingServer({ body: JSON.stringify({ data: [{ id: 'x' }] }) })
+    await expect(fetchCatalogListing(options(server.url, { signal: controller.signal })))
+      .rejects.toMatchObject({ code: 'ABORTED' })
   })
 })

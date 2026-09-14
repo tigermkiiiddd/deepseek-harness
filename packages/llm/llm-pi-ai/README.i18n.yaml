@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/llm/llm-pi-ai/README.md
-README.md: d7ce1ada50bdbd927a1cd9174a3ad9c2a0958e4a
-README.zh.md: b475b2751e3c86f84a05573421be03705491916f
+README.md: 325829a977d7c14b47e0d6e8b7ef1cd33c7ccc81
+README.zh.md: 7b1c531f45cfb6708a1bb521632b11812254ce81

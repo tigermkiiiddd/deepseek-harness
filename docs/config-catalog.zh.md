@@ -1113,6 +1113,22 @@ export interface Config {
    * and registers them the moment a settings section supplies profiles.
    */
   providers?: Record<string, PiAiProviderProfile>
+  /**
+   * Directory holding the per-route catalog cache files, which a startup sync
+   * refreshes and resolution serves in place of the frozen pi-ai snapshot (see
+   * `catalog-cache.ts`). Defaults to `$DSH_HOME/llm-pi-ai/catalog-cache`. A
+   * deployment that must never reach a provider endpoint keeps the directory
+   * and sets `catalogSyncEnabled` false.
+   */
+  catalogCacheDir?: string
+  /**
+   * Whether the adapter syncs each route's catalog from its own endpoints at
+   * mount — the "ask the route at every startup" refresh — and serves the
+   * synced cache in place of the frozen pi-ai snapshot while it exists. False
+   * (default) keeps every route serving the installed snapshot, with no
+   * network attempt; the Models surface can still fetch a listing on demand.
+   */
+  catalogSyncEnabled?: boolean
 }
 
 /** Configuration for one pi-ai provider route; the `providers` dict key IS the route. */
@@ -1378,7 +1394,7 @@ export type PiAiThinkingTokenBudgetField = NonNullable<OpenAICompletionsCompat['
 
 依赖：`Api` （`@earendil-works/pi-ai`） · `CacheRetention` （`@earendil-works/pi-ai`） · `Model` （`@earendil-works/pi-ai`） · `ModelThinkingLevel` （`@earendil-works/pi-ai`） · `OpenAICompletionsCompat` （`@earendil-works/pi-ai`） · [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts) · `ThinkingBudgets` （`@earendil-works/pi-ai`） · `Transport` （`@earendil-works/pi-ai`）
 
-来源：[`packages/llm/llm-pi-ai/src/config.ts:228`](../packages/llm/llm-pi-ai/src/config.ts)
+来源：[`packages/llm/llm-pi-ai/src/config.ts:229`](../packages/llm/llm-pi-ai/src/config.ts)
 
 <a id="deepseek-aidsh-llm-replay"></a>
 

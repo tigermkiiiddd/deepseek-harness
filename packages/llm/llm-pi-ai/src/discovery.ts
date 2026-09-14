@@ -25,6 +25,7 @@
 import { INVALID_CREDENTIAL_CODE, LlmError, normalizeApiKey } from '@deepseek-ai/dsh-llm'
 import type { LlmDiscoveredModel, LlmModelDiscoveryOperation } from '@deepseek-ai/dsh-llm'
 import { attributionHeaders } from '@deepseek-ai/dsh-llm'
+import type { CatalogCacheModel } from './catalog-cache.ts'
 import { catalogModels } from './catalog.ts'
 
 /**
@@ -66,6 +67,11 @@ interface ListingLimit {
 /** Per-route capacities OpenRouter nests under each entry. */
 interface ListingTopProvider {
   max_completion_tokens?: unknown
+}
+
+/** Whether one protocol has a listing this module can read. */
+export function isListableProtocol(api: string): boolean {
+  return LISTABLE_PROTOCOLS.has(api)
 }
 
 /** One entry of a supported `GET /models` reply. */
@@ -162,6 +168,17 @@ async function readBounded(response: Response, url: string): Promise<string> {
     offset += chunk.byteLength
   }
   return new TextDecoder().decode(body)
+}
+
+/**
+ * The listing URL for one route and protocol, for diagnostics and for the
+ * sync that writes the route's catalog cache.
+ * @param baseURL - the route's endpoint base.
+ * @param api - the protocol whose listing is read.
+ * @returns the absolute listing URL.
+ */
+export function catalogListingUrl(baseURL: string, api: string): string {
+  return listingUrl(baseURL, api)
 }
 
 /**
@@ -359,4 +376,131 @@ export async function discoverModels(
     throw new LlmError(`${url} did not answer with JSON`, 'DISCOVERY_FAILED', { cause: error })
   }
   return readListing(body)
+}
+
+/** One endpoint a route's catalog sync consults. */
+export interface CatalogSyncEndpoint {
+  /** Wire protocol whose listing this endpoint serves. */
+  readonly api: string
+  /** Endpoint base the listing path is joined to. */
+  readonly baseURL: string
+}
+
+/** Inputs one route's catalog sync needs beyond its endpoints. */
+export interface CatalogSyncOptions {
+  /** Provider route key; names the cache file and the diagnostics. */
+  readonly provider: string
+  /** Endpoints to interrogate, in order; duplicates by URL are consulted once. */
+  readonly endpoints: readonly CatalogSyncEndpoint[]
+  /** Fingerprint of the installed catalog at sync time, stored with the result. */
+  readonly fingerprint: string
+  /** Deployment headers configured on the route. */
+  readonly headers?: Readonly<Record<string, string>> | undefined
+  /** Resolve the route's credential; absent leaves the listings unauthenticated. */
+  readonly resolveApiKey?: (() => Promise<string | undefined>) | undefined
+  /** Aborts the remaining endpoints; already-read answers are kept. */
+  readonly signal?: AbortSignal | undefined
+  /** Diagnostic sink for an endpoint that refused or could not be read. */
+  readonly onEndpointFailure?: ((url: string, reason: string) => void) | undefined
+}
+
+/** One endpoint's readable listing, or `undefined` when it answered nothing usable. */
+async function readEndpoint(
+  endpoint: CatalogSyncEndpoint,
+  options: CatalogSyncOptions,
+): Promise<{ readonly url: string; readonly models: readonly LlmDiscoveredModel[] } | undefined> {
+  const url = listingUrl(endpoint.baseURL, endpoint.api)
+  const supplied = await options.resolveApiKey?.()
+  const apiKey = supplied === undefined ? undefined : usableProbeKey(supplied)
+  const headers = new Headers(options.headers === undefined ? undefined : Object.entries(options.headers))
+  headers.set('accept', 'application/json')
+  if (endpoint.api === 'anthropic-messages') {
+    headers.set('anthropic-version', ANTHROPIC_VERSION)
+    if (apiKey !== undefined) headers.set('x-api-key', apiKey)
+  } else if (apiKey !== undefined) {
+    headers.set('authorization', `Bearer ${apiKey}`)
+  }
+  for (const [header, value] of Object.entries(attributionHeaders())) headers.set(header, value)
+  const response = await fetch(url, {
+    method: 'GET',
+    headers,
+    ...options.signal === undefined ? {} : { signal: options.signal },
+  })
+  if (!response.ok) throw new LlmError(`${url} answered ${response.status}`, 'DISCOVERY_FAILED')
+  const body: unknown = JSON.parse(await readBounded(response, url))
+  const models = readListing(body)
+  // An endpoint that answers with no models is not a catalog: storing it would
+  // retire every model the route serves on the strength of one empty reply.
+  return models.length === 0 ? undefined : { url, models }
+}
+
+/**
+ * Interrogate a route's listable endpoints and answer the union of what they
+ * report, for the route's catalog cache.
+ *
+ * This is the operation the installed pi-ai snapshot cannot perform: its list
+ * is fixed at package-build time, so a provider that ships a new model keeps
+ * serving the old one until pi-ai publishes a release. A sync asks the route's
+ * own endpoints instead, which is where the addition already is.
+ *
+ * The union is taken across protocols because one route may serve several — an
+ * endpoint reached at `/v1` for chat completions and at `/v1` for responses
+ * both list under `/models`, while Anthropic Messages lists under `/v1/models`
+ * — and each model is tagged with the protocol of the listing that named it,
+ * which is the protocol resolution then serves it with.
+ *
+ * Failure is per endpoint and never fatal: an unreachable, refusing, or empty
+ * endpoint is reported to {@link CatalogSyncOptions.onEndpointFailure} and its
+ * answer dropped, so a route whose endpoint is down keeps whatever cache it
+ * already had. No endpoint answering anything usable answers `undefined`, which
+ * the caller stores as nothing at all.
+ * @param options - the route, its endpoints, and the credential to reach them.
+ * @returns the merged listing, or `undefined` when no endpoint answered models.
+ * @throws LlmError when the caller aborted before any endpoint answered.
+ */
+export async function fetchCatalogListing(
+  options: CatalogSyncOptions,
+): Promise<{ endpoints: string[]; models: CatalogCacheModel[] } | undefined> {
+  const consulted = new Set<string>()
+  const merged = new Map<string, CatalogCacheModel>()
+  const urls: string[] = []
+  for (const endpoint of options.endpoints) {
+    if (!isListableProtocol(endpoint.api)) continue
+    const url = listingUrl(endpoint.baseURL, endpoint.api)
+    // One protocol family per URL: two endpoints that resolve to the same
+    // listing (the same base asked as completions and as responses) would be
+    // asked twice otherwise, and the second answer overwrites the first.
+    if (consulted.has(url)) continue
+    consulted.add(url)
+    let listing: { readonly url: string; readonly models: readonly LlmDiscoveredModel[] } | undefined
+    try {
+      listing = await readEndpoint(endpoint, options)
+    } catch (error: unknown) {
+      if (options.signal?.aborted) {
+        throw new LlmError(`catalog sync aborted for provider "${options.provider}"`, 'ABORTED', { cause: error })
+      }
+      options.onEndpointFailure?.(url, error instanceof Error ? error.message : String(error))
+      continue
+    }
+    if (listing === undefined) {
+      options.onEndpointFailure?.(url, 'reported no models')
+      continue
+    }
+    urls.push(listing.url)
+    for (const model of listing.models) {
+      // First listing wins for a model two endpoints both report: the route is
+      // asked in its own endpoint order, and a model already tagged with a
+      // protocol keeps the one that named it first.
+      if (merged.has(model.id)) continue
+      merged.set(model.id, {
+        id: model.id,
+        api: endpoint.api,
+        ...model.name === undefined ? {} : { name: model.name },
+        ...model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow },
+        ...model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens },
+      })
+    }
+  }
+  if (merged.size === 0) return undefined
+  return { endpoints: urls, models: [...merged.values()] }
 }

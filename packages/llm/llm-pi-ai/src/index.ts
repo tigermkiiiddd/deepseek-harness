@@ -56,19 +56,24 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { assertUsableApiKey, LlmError, resolveImageAttachmentAccess } from '@deepseek-ai/dsh-llm'
 import type { AdapterRegistrationHandle, DirectoryRegistrationHandle, LlmConfigurableProvider } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-settings'
 import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
+import type { Api, Model } from '@earendil-works/pi-ai'
 import { PiAiAdapter } from './adapter.ts'
 import { authContextFrom, credentialStoreFrom } from './auth.ts'
-import { catalogProviderIds } from './catalog.ts'
+import { catalogModels, catalogProviderIds } from './catalog.ts'
+import { CATALOG_CACHE_FORMAT, catalogFingerprint, writeCatalogCache } from './catalog-cache.ts'
+import type { CatalogCacheModel } from './catalog-cache.ts'
 import { assertServiceable, Config, resolveProfiles } from './config.ts'
 import type { ResolvedPiAiProviderProfile } from './config.ts'
-import { discoverModels } from './discovery.ts'
-import type { StoredModelDiscoveryProfile } from './discovery.ts'
+import { discoverModels, fetchCatalogListing, isListableProtocol } from './discovery.ts'
+import type { CatalogSyncEndpoint, StoredModelDiscoveryProfile } from './discovery.ts'
 import { registerPiAiFlows } from './login.ts'
 
 export { PiAiAdapter } from './adapter.ts'
@@ -91,6 +96,17 @@ export const name = 'llm-pi-ai'
 export const inject = ['llm']
 
 const NS = 'llm-pi-ai'
+
+/**
+ * The default catalog cache root: `$DSH_HOME/llm-pi-ai/catalog-cache`, falling
+ * back to `~/.dsh` when the environment does not name a home. `config.ts`
+ * treats the directory as a serving concern, so this resolution happens in the
+ * adapter, not the validator.
+ * @param home - the harness home directory (`$DSH_HOME`), when one is named.
+ */
+export function defaultCatalogCacheDir(home?: string | undefined): string {
+  return join(home ?? join(homedir(), '.dsh'), 'llm-pi-ai', 'catalog-cache')
+}
 
 /**
  * The registry captures these per route; a change here must re-register.
@@ -146,6 +162,16 @@ export function apply(ctx: Context, config: Config): void {
   let current: () => Config = () => config
   let lastRaw: Config | undefined
   let memoized: ReadonlyMap<string, ResolvedPiAiProviderProfile> | undefined
+  // The sync is opt-in (`catalogSyncEnabled` in the section — the settings
+  // source same as the routes). Without it the route serves the frozen
+  // snapshot, no provider endpoint is reached, and no cache file is read.
+  // The flag and the directory are read from the live section so turning the
+  // feature on mid-session engages it at the next resolution.
+  const cacheDir = (): string | undefined => {
+    const section = current()
+    if (section.catalogSyncEnabled !== true) return undefined
+    return section.catalogCacheDir ?? defaultCatalogCacheDir(launchEnvironmentOf(ctx).get('DSH_HOME')?.value)
+  }
   /**
    * The resolved profiles for the current configuration, memoized by the raw
    * snapshot's identity — which is also what makes the adapter's own snapshot
@@ -158,7 +184,7 @@ export function apply(ctx: Context, config: Config): void {
   const profiles = (): ReadonlyMap<string, ResolvedPiAiProviderProfile> => {
     const raw = current()
     if (raw === lastRaw && memoized !== undefined) return memoized
-    const next = resolveProfiles(raw.providers, 'deferred')
+    const next = resolveProfiles(raw.providers, 'deferred', cacheDir())
     lastRaw = raw
     memoized = next
     return next
@@ -194,6 +220,128 @@ export function apply(ctx: Context, config: Config): void {
   // through `ctx` per call, so they stay correct across the collection rebuilds
   // a configuration change causes, and a sign-in survives one.
   const auth = { credentials: credentialStoreFrom(ctx), authContext: authContextFrom(ctx) }
+
+  /**
+   * The sync inputs one catalog route needs: its resolved profile, its frozen
+   * snapshot, and the listable endpoints that snapshot names. `undefined` for a
+   * route that does not take a cache — no profile, or a profile whose `models`
+   * list (or per-model overrides) is the deployment's own answer, which the
+   * cache must not override.
+   */
+  const catalogSyncInputs = (
+    provider: string | undefined,
+  ): {
+    profile: ResolvedPiAiProviderProfile
+    installed: ReadonlyMap<string, Model<Api>>
+    endpoints: readonly CatalogSyncEndpoint[]
+  } | undefined => {
+    if (provider === undefined || cacheDir() === undefined) return undefined
+    const profile = profiles().get(provider)
+    if (profile === undefined) return undefined
+    // The raw source carries `models`/`modelOverrides`; the schema
+    // materializes `[]`/`{}` for the absent case, and resolution reads an
+    // empty one as "no answer here" too — so the cache applies unless the
+    // deployment actually spoke.
+    const rawProfile = current().providers?.[provider]
+    if ((rawProfile?.models?.length ?? 0) > 0 || Object.keys(rawProfile?.modelOverrides ?? {}).length > 0) return undefined
+    // Installed providers only: a hand-declared route already answers its
+    // endpoint on every request, and the cache serves the frozen snapshot,
+    // which is what this layer exists to displace.
+    const installed = catalogModels(provider)
+    if (installed.size === 0) return undefined
+    // The route's effective endpoint, not the frozen catalog's: a profile may
+    // point a catalog route at a proxy or self-hosted replica, and the sync
+    // must ask the endpoint the route actually serves.
+    const endpoints: CatalogSyncEndpoint[] = []
+    for (const model of installed.values()) {
+      const api = rawProfile?.api ?? model.api
+      const baseURL = rawProfile?.baseURL ?? model.baseUrl
+      if (api === undefined || baseURL === undefined || !isListableProtocol(api)) continue
+      if (endpoints.some(endpoint => endpoint.api === api && endpoint.baseURL === baseURL)) continue
+      endpoints.push({ api, baseURL })
+    }
+    if (endpoints.length === 0) return undefined
+    return { profile, installed, endpoints }
+  }
+
+  /**
+   * Interrogate one route's endpoints, store the union in the catalog cache,
+   * and answer the merged listing. `undefined` means no endpoint answered a
+   * usable listing. A credential miss is downgraded to unauthenticated here:
+   * the catalog is fetched for the surface, and the route's own requests still
+   * fail loud exactly where they always did.
+   */
+  const fetchCatalog = async (
+    provider: string,
+    dir: string,
+    inputs: { profile: ResolvedPiAiProviderProfile; installed: ReadonlyMap<string, Model<Api>>; endpoints: readonly CatalogSyncEndpoint[] },
+    signal?: AbortSignal,
+  ): Promise<readonly CatalogCacheModel[] | undefined> => {
+    const listed = await fetchCatalogListing({
+      provider,
+      endpoints: inputs.endpoints,
+      fingerprint: catalogFingerprint(inputs.installed),
+      headers: inputs.profile.headers,
+      resolveApiKey: async () => {
+        try {
+          return await resolveApiKey(provider, inputs.profile)
+        } catch {
+          return undefined
+        }
+      },
+      signal,
+      onEndpointFailure: (url, reason) => {
+        ctx.logger.warn(`llm-pi-ai: catalog sync for "${provider}" could not read ${url}: ${reason}`)
+      },
+    })
+    if (listed === undefined) return undefined
+    await writeCatalogCache(dir, provider, {
+      format: CATALOG_CACHE_FORMAT,
+      fingerprint: catalogFingerprint(inputs.installed),
+      fetchedAt: new Date().toISOString(),
+      endpoints: listed.endpoints,
+      models: listed.models,
+    })
+    // The serve path memoizes profiles against the raw section; a cache that
+    // just landed must be visible to the next operation without a settings
+    // edit, so drop the memo rather than waiting for one.
+    lastRaw = undefined
+    memoized = undefined
+    return listed.models
+  }
+
+  /**
+   * One route's lasting answer to "which models can this provider serve?" —
+   * the forced check at every startup (here: once per route until the process
+   * ends, when the route first appears). Fire-and-forget by design: a route
+   * stays serviceable whether the sync answers or not, so the failure surface
+   * is a diagnostic, never a failed mount.
+   */
+  const syncedRoutes = new Set<string>()
+  const syncCatalogRoute = (provider: string): void => {
+    if (syncedRoutes.has(provider)) return
+    syncedRoutes.add(provider)
+    const dir = cacheDir()
+    if (dir === undefined) return
+    const inputs = catalogSyncInputs(provider)
+    if (inputs === undefined) return
+    void (async () => {
+      try {
+        const models = await fetchCatalog(provider, dir, inputs)
+        if (models === undefined) {
+          ctx.logger.warn(`llm-pi-ai: startup catalog sync for "${provider}" received no usable listing; keeping the previous catalog`)
+        }
+      } catch (error) {
+        // Fetch can also reject with a generic failure (bad proxy, TLS); the
+        // previous catalog keeps serving either way.
+        ctx.logger.warn(
+          `llm-pi-ai: startup catalog sync for "${provider}" failed; keeping the previous catalog:`,
+          error instanceof Error ? error.message : String(error),
+        )
+      }
+    })()
+  }
+
   const adapter = new PiAiAdapter({
     profiles,
     resolveApiKey,
@@ -256,11 +404,38 @@ export function apply(ctx: Context, config: Config): void {
   // a surface is adding does not exist yet. The draft is the whole request
   // except the stored credential and deployment-owned headers: the curated UI
   // accepts neither, so an already-configured route supplies both inside the
-  // Host rather than widening the discovery request.
-  ctx.llm.registerModelDiscovery(NS, (request, signal) => discoverModels(
-    { ...request, ...signal === undefined ? {} : { signal } },
-    () => storedDiscoveryProfile(request.provider),
-  ))
+  // Host rather than widening the discovery request. A catalog route's fetch
+  // doubles as the cache refresh: it interrogates the route's own endpoints,
+  // stores the answer, and surfaces it — the action that shows an upstream
+  // addition without waiting for a restart.
+  ctx.llm.registerModelDiscovery(NS, async (request, signal) => {
+    const refresh = catalogSyncInputs(request.provider)
+    if (refresh !== undefined) {
+      const dir = cacheDir()
+      if (dir !== undefined) {
+        try {
+          const cached = await fetchCatalog(request.provider ?? '', dir, refresh, signal)
+          if (cached !== undefined) {
+            return cached.map(model => ({
+              id: model.id,
+              name: model.name ?? model.id,
+              ...model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow },
+              ...model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens },
+            }))
+          }
+        } catch (error) {
+          // A refused sync surfaces as the fetch failure the surface already
+          // renders, rather than silently echoing the stale installed list.
+          if (error instanceof LlmError && error.code === 'ABORTED') throw error
+          throw new LlmError(`could not refresh the catalog for "${request.provider}": ${error instanceof Error ? error.message : String(error)}`, 'DISCOVERY_FAILED')
+        }
+      }
+    }
+    return discoverModels(
+      { ...request, ...signal === undefined ? {} : { signal } },
+      () => storedDiscoveryProfile(request.provider),
+    )
+  })
   // Route effects bind to this apply fiber via the stable `ctx` reference,
   // even when a swap runs inside the scoped settings callback below. A bare
   // mount (zero routes) is the dormant posture: nothing registers until a
@@ -289,6 +464,11 @@ export function apply(ctx: Context, config: Config): void {
       registration.replace(routes)
     }
     registeredFacts = facts
+    // The startup sync hook: a route first appearing (at mount or when a
+    // settings section names it) gets its forced endpoint check exactly once.
+    // Runs concurrently; the route keeps whatever catalog it already had while
+    // the sync is in flight or failing.
+    for (const provider of routes) syncCatalogRoute(provider)
   }
   ensureRegistrationFacts()
 

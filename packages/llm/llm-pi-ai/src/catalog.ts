@@ -630,6 +630,16 @@ export interface RouteCatalogRequest {
   models?: readonly PiAiModelProfile[]
   /** Installed-catalog customizations by model id; only meaningful while `models` is absent. */
   modelOverrides?: Readonly<Record<string, PiAiModelOverride>>
+  /**
+   * The route's local catalog cache entries (see `catalog-cache.ts`). Only
+   * honored while both `models` and `modelOverrides` are absent — then they
+   * replace the installed catalog: upstream additions appear, upstream
+   * retirements disappear. An entry naming a model the installed catalog also
+   * describes inherits that entry's metadata and takes the cached capacities on
+   * top, so a frozen snapshot keeps supplying what a listing endpoint does not
+   * disclose. Absent means serve the installed catalog unchanged.
+   */
+  cachedModels?: readonly PiAiModelProfile[]
   /** Route-level wire-compatibility switches, landing on each model whose protocol declares them; entries override per field. */
   compat?: PiAiCompatProfile
   /** Context capacity for a model neither the entry nor the catalog sizes. */
@@ -865,9 +875,20 @@ export function resolveRouteModels(
   // An override becomes the catalog entry's configuration, so everything a
   // models entry may declare — capacities, efforts, compat — resolves through
   // the same path with the same diagnostics and request-default semantics.
+  // Precedence: an explicit `models` list is the deployment's own answer; then
+  // per-model overrides applied to the installed catalog; then the route's
+  // synced cache, which is what lets an upstream addition appear without any
+  // configuration change; and only then the frozen snapshot, which is the
+  // offline floor.
+  const overridesPresent = Object.keys(overrides).length > 0
+  const cached = request.cachedModels
   const entries: readonly PiAiModelProfile[] = configured.length > 0
     ? configured
-    : [...defaults.values()].map(model => ({ id: model.id, ...overrides[model.id] }))
+    : overridesPresent
+      ? [...defaults.values()].map(model => ({ id: model.id, ...overrides[model.id] }))
+      : cached !== undefined && cached.length > 0
+        ? cached
+        : [...defaults.values()].map(model => ({ id: model.id }))
   if (entries.length === 0) {
     invalid(provider, 'resolves no models; the installed catalog does not describe this route, so its models'
       + ' must be listed in configuration')

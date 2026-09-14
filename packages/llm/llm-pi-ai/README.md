@@ -87,6 +87,8 @@ Each profile may set a `retryPolicy`; omission uses normal mode with five retrie
 | `sessionHeader` | absent | Request header carrying the conversation id when the request has one |
 | `retryPolicy` | normal, 5 retries | Provider-owned retry policy executed by `dsh-llm-retry` |
 
+The route dicts above sit beside two plugin-level fields: `catalogSyncEnabled` (default `false`) and `catalogCacheDir` (default `$DSH_HOME/llm-pi-ai/catalog-cache`), which own the [startup catalog refresh](#refresh-a-catalog-route-at-startup).
+
 The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-llm-pi-ai) is the exhaustive source for every accepted field and its JSDoc.
 
 ### Sign in to a provider
@@ -110,6 +112,22 @@ Profiles are re-read once per operation through the optional settings seam: the 
 ### Discover models from endpoints
 
 The plugin answers "which models can this provider serve?" for a route a configuration surface is editing or drafting. A route the installed catalog ships is answered from that catalog with no network call; only a route the catalog does not describe is interrogated over the wire. `openai-completions` and `openai-responses` use `GET {baseURL}/models` with bearer auth, while `anthropic-messages` uses native `GET /v1/models?limit=1000` semantics with `x-api-key` and `anthropic-version`; its listing URL accepts the API root with or without a trailing `/v1` because gateway documentation publishes both spellings, and only that listing URL normalizes the segment, so model requests receive the configured `baseURL` unchanged. A named configured route supplies its stored credential and profile `headers` inside the Host, so deployment headers configured through `settings.yaml` or Cordis config reach model discovery without becoming discovery-request or Models-page fields; a key typed into the form still wins over the stored credential. The parser accepts either the standard `data` array or an enriched `models` map, normalizing each candidate's id, display name, context window, and output-token cap; Anthropic's `max_input_tokens` and `max_tokens` feed the same capacity fields, a map key remains the request id even when its entry names a different canonical id, primitive-valued map properties are ignored, and a missing display name falls back to that request id. The reply is candidate metadata a surface may offer for adoption — nothing is stored, and `settings.yaml` remains the only thing that decides what a route serves.
+
+### Refresh a catalog route at startup
+
+The installed pi-ai catalog is a snapshot compiled into the npm package, so a provider that ships a new model keeps serving the old list until pi-ai publishes a release. Set `catalogSyncEnabled: true` and each catalog route is asked at its own listing endpoints once per process, when the route first appears — at mount, or when a settings section names it. The merged reply is written to `<catalogCacheDir>/<provider>.json` and resolution serves it in place of the snapshot from then on: upstream additions appear and upstream retirements disappear without a restart, a settings edit, or a pi-ai upgrade. A model the snapshot also describes keeps that entry's metadata — cost, modalities, reasoning levels, compatibility quirks — with the synced name and capacities on top, so a listing that discloses only ids still yields a fully described model.
+
+The route stays an installed provider throughout: nothing is written to `settings.yaml`, so no surface marks it customized in the Models page. A route with its own `models` list or `modelOverrides` is never synced (that configuration is the deployment's own answer), and a failed, refusing, or empty endpoint leaves the previous catalog serving, which is what keeps a route usable offline. `catalogSyncEnabled` defaults to `false`: without it no provider endpoint is reached and no cache file is read. The Models surface's fetch action also refreshes the route's cache on demand, so an addition can be picked up mid-session.
+
+```yaml
+- id: llm
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    catalogSyncEnabled: true
+    providers:
+      opencode-go:
+        apiKeyEnv: OPENCODE_GO_API_KEY
+```
 
 ### Failures and recovery
 
