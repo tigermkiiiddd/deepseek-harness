@@ -574,6 +574,16 @@ function assertOfferedCompatFields(
 export interface PiAiModelProfile {
   /** Model id sent to the provider and accepted by {@link GenerateOptions.model}. */
   id: string
+  /**
+   * Wire protocol this model speaks, winning over the route's `api` for this
+   * one entry. Only a model the installed catalog does not describe needs it —
+   * on a route whose catalog agrees on one protocol it inherits that answer,
+   * and on a route spanning several (opencode-go serves anthropic-messages,
+   * openai-completions, and openai-responses) nothing else can supply it. A
+   * model the catalog describes keeps its own protocol unless this names a
+   * different one.
+   */
+  api?: string
   /** Display name for selectors; defaults to the catalog name, then the id. */
   name?: string
   /** Maximum combined request and response context in tokens. */
@@ -670,6 +680,44 @@ function sharedCatalogApi(defaults: ReadonlyMap<string, Model<Api>>): string | u
   const apis = new Set<string>()
   for (const model of defaults.values()) apis.add(model.api)
   return apis.size === 1 ? [...apis][0] : undefined
+}
+
+/**
+ * The endpoint base of an installed entry that speaks the same protocol, for a
+ * model the route's profile admits without naming one. A gateway's models
+ * sharing a protocol share its endpoint family — opencode's anthropic models
+ * sit at `/zen/go` while its OpenAI-compatible ones sit at `/zen/go/v1` — so
+ * the sibling's base is the answer the entry's api already chose.
+ * @param defaults - the route's installed catalog entries, indexed by id.
+ * @param api - the protocol this model resolves to.
+ * @returns the first same-protocol sibling's base, or `undefined` when none names one.
+ */
+export function siblingBaseUrl(defaults: ReadonlyMap<string, Model<Api>>, api: string): string | undefined {
+  for (const model of defaults.values()) {
+    if (model.api === api && typeof model.baseUrl === 'string' && model.baseUrl.length > 0) return model.baseUrl
+  }
+  return undefined
+}
+
+/**
+ * One synced-cache entry as a configuration entry.
+ *
+ * A cache's `api` tag records which listing endpoint reported the model, not
+ * the deployment re-pointing it, so it stands only for a model the installed
+ * catalog does not describe — that addition has no other source for its
+ * protocol. For an id the catalog knows, the frozen entry keeps its own
+ * protocol, because its `baseUrl` is spelled for that protocol: opencode
+ * serves anthropic at `/zen/go` and its OpenAI-compatible models at
+ * `/zen/go/v1`, so honoring a listing tag across them pairs one protocol with
+ * the other's path.
+ * @param entry - one cached model.
+ * @param defaults - the route's installed catalog entries, indexed by id.
+ * @returns the entry, without its listing protocol when the catalog knows the model.
+ */
+function cachedProfile(entry: PiAiModelProfile, defaults: ReadonlyMap<string, Model<Api>>): PiAiModelProfile {
+  if (entry.api === undefined || !defaults.has(entry.id)) return entry
+  const { api: _listing, ...rest } = entry
+  return rest
 }
 
 /** The reasoning fields one materialized model carries. */
@@ -887,7 +935,7 @@ export function resolveRouteModels(
     : overridesPresent
       ? [...defaults.values()].map(model => ({ id: model.id, ...overrides[model.id] }))
       : cached !== undefined && cached.length > 0
-        ? cached
+        ? cached.map(entry => cachedProfile(entry, defaults))
         : [...defaults.values()].map(model => ({ id: model.id }))
   if (entries.length === 0) {
     invalid(provider, 'resolves no models; the installed catalog does not describe this route, so its models'
@@ -906,12 +954,20 @@ export function resolveRouteModels(
     if (seen.has(entry.id)) invalid(provider, `lists model "${entry.id}" more than once`)
     seen.add(entry.id)
     const base = defaults.get(entry.id)
-    const api = request.api ?? base?.api ?? routeApi
+    // Per-model first: a route spanning several protocols cannot default one
+    // for all, and an entry naming a protocol different from its catalog
+    // sibling's is a deliberate repoint. This is also what makes a synced
+    // cache entry usable — the listing it came from tagged it with the
+    // protocol that reported it.
+    const api = entry.api ?? request.api ?? base?.api ?? routeApi
     if (api === undefined) {
-      invalid(provider, `model "${entry.id}" needs an api; the installed catalog does not describe it, so set the`
-        + ' route\'s api to the wire protocol its endpoint speaks')
+      invalid(provider, defaults.size > 0
+        ? `model "${entry.id}" needs an api; the installed catalog does not describe it and this route`
+          + ' serves several protocols, so name the wire protocol its endpoint speaks on this model'
+        : `model "${entry.id}" needs an api; the installed catalog does not describe it, so set the`
+          + " route's api to the wire protocol its endpoint speaks")
     }
-    const baseUrl = request.baseURL ?? base?.baseUrl ?? providerBaseUrl
+    const baseUrl = request.baseURL ?? base?.baseUrl ?? providerBaseUrl ?? siblingBaseUrl(defaults, api)
     if (baseUrl === undefined) {
       invalid(provider, `model "${entry.id}" needs a baseURL; the installed catalog does not describe this route`)
     }

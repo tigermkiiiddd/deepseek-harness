@@ -1228,9 +1228,12 @@ export interface PiAiProviderProfile {
   /** Name shown by configuration surfaces; defaults to the route key. */
   displayName?: string
   /**
-   * Wire protocol every model on this route speaks. Omission keeps each
-   * installed catalog model's own protocol, which is why a catalog route needs
-   * no protocol at all; a route the catalog does not ship must name one.
+   * Wire protocol defaulting every model on this route that names none itself.
+   * Omission keeps each installed catalog model's own protocol, which is why a
+   * catalog route needs no protocol at all; a route the catalog does not ship
+   * must name one — or each of its models must. A model entry's own `api`
+   * wins over this for that model, which is how a route spanning several
+   * protocols serves them side by side.
    */
   api?: string
   /** Endpoint for this route's models; defaults to the installed catalog's endpoint. */
@@ -1326,6 +1329,16 @@ export interface PiAiProviderProfile {
 export interface PiAiModelProfile {
   /** Model id sent to the provider and accepted by {@link GenerateOptions.model}. */
   id: string
+  /**
+   * Wire protocol this model speaks, winning over the route's `api` for this
+   * one entry. Only a model the installed catalog does not describe needs it —
+   * on a route whose catalog agrees on one protocol it inherits that answer,
+   * and on a route spanning several (opencode-go serves anthropic-messages,
+   * openai-completions, and openai-responses) nothing else can supply it. A
+   * model the catalog describes keeps its own protocol unless this names a
+   * different one.
+   */
+  api?: string
   /** Display name for selectors; defaults to the catalog name, then the id. */
   name?: string
   /** Maximum combined request and response context in tokens. */
@@ -1484,7 +1497,7 @@ export type PiAiThinkingTokenBudgetField = NonNullable<OpenAICompletionsCompat['
 
 Depends on: `Api` (`@earendil-works/pi-ai`) · `CacheRetention` (`@earendil-works/pi-ai`) · `Model` (`@earendil-works/pi-ai`) · `ModelThinkingLevel` (`@earendil-works/pi-ai`) · `OpenAICompletionsCompat` (`@earendil-works/pi-ai`) · [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts) · `ThinkingBudgets` (`@earendil-works/pi-ai`) · `Transport` (`@earendil-works/pi-ai`)
 
-Source: [`packages/llm/llm-pi-ai/src/config.ts:229`](../packages/llm/llm-pi-ai/src/config.ts)
+Source: [`packages/llm/llm-pi-ai/src/config.ts:232`](../packages/llm/llm-pi-ai/src/config.ts)
 
 <a id="deepseek-aidsh-llm-replay"></a>
 
