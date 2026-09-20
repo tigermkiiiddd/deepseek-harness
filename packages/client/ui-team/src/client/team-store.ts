@@ -7,7 +7,9 @@
  * the component only reads the snapshot and calls the controller's verbs.
  */
 
-import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { ISessions, SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
+// Type-only: pulls the `mainView` reference source the conversation list watches.
+import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { MemberStatus, TeamMemberRow } from '@deepseek-ai/dsh-team/types'
@@ -50,6 +52,8 @@ export class TeamController {
   readonly store: SnapshotStore<TeamViewState> = createSnapshotStore(INITIAL)
 
   private readonly disposeSessionSync: () => void
+  /** The main-view reference held for the opened member topic. */
+  private mainView: SessionReference | undefined
 
   constructor(
     private readonly team: TeamFacade,
@@ -62,6 +66,7 @@ export class TeamController {
   /** Stop following the sessions selection; safe to call more than once. */
   dispose(): void {
     this.disposeSessionSync()
+    this.releaseMainView()
   }
 
   /** Reload the roster from the host (reconnect/refresh baseline). */
@@ -82,7 +87,7 @@ export class TeamController {
   openMember(memberId: string | undefined): void {
     if (memberId === undefined) {
       this.store.update((draft) => { draft.currentAgentId = undefined })
-      this.sessions.clear()
+      this.releaseMainView()
       return
     }
     if (this.store.getSnapshot().currentAgentId === memberId) return
@@ -104,7 +109,7 @@ export class TeamController {
 
   /**
    * Open one member topic as the current session. The topic can be newer than
-   * this client's list baseline (created after the page loaded), and a select
+   * this client's list baseline (created after the page loaded), and a retain
    * that misses it re-baselines the list once and retries before surfacing
    * the failure.
    * @param memberId - the member owning the topic.
@@ -113,9 +118,9 @@ export class TeamController {
   private openMemberTopic(memberId: string, topicId: string): void {
     const sessionId = memberSessionId(memberId, topicId)
     try {
-      this.sessions.open(sessionId)
+      this.replaceMainView(sessionId)
     } catch {
-      void this.sessions.refresh().then(() => { this.sessions.open(sessionId) })
+      void this.sessions.refresh().then(() => { this.replaceMainView(sessionId) })
         .catch((error: unknown) => { this.setError(error) })
     }
   }
@@ -127,11 +132,24 @@ export class TeamController {
    * do not loop.
    */
   private syncCurrentAgentFromSession(): void {
-    const sessionId = this.sessions.list.getSnapshot().current
+    const sessionId = Object.values(this.sessions.list.getSnapshot().byId)
+      .find(session => (session.retainedBy.mainView ?? 0) > 0)?.id
     const owner = sessionId === undefined ? undefined : memberSessionOwner(sessionId)
     const current = this.store.getSnapshot().currentAgentId
     if (owner === current) return
     this.store.update((draft) => { draft.currentAgentId = owner })
+  }
+
+  /** Retain one session as the main view, releasing the previous reference. */
+  private replaceMainView(sessionId: SessionId): void {
+    this.releaseMainView()
+    this.mainView = this.sessions.retain(sessionId, { source: 'mainView' })
+  }
+
+  /** Release the held main-view reference, if any. */
+  private releaseMainView(): void {
+    this.mainView?.release()
+    this.mainView = undefined
   }
 
   /**

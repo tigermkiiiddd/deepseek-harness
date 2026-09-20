@@ -111,7 +111,8 @@ export function TeamTopbar(props: TeamTopbarProps): React.ReactElement {
   const current = useTeamLive(state => state.currentAgentId)
   const members = useTeamLive(state => state.members)
   const sessionRunning = useSessions((state: SessionListState) => {
-    const current = state.current
+    const current = Object.values(state.byId)
+      .find(session => (session.retainedBy.mainView ?? 0) > 0)?.id
     return current !== undefined && state.byId[current]?.running === true
   })
   const [formOpen, setFormOpen] = React.useState(false)

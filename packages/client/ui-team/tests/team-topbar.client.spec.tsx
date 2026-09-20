@@ -4,7 +4,10 @@
  * current topic through the regular session-selection path. */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import type { ISessions, SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
+import type {
+  AgentContext, ISessions, SessionBinding, SessionEventSource, SessionFace,
+  SessionListState, SessionReference, SessionSummary,
+} from '@deepseek-ai/dsh-api-session-controller/client'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-test-runtime'
 import type { InjectFace } from '@deepseek-ai/dsh-client-ui-slots'
@@ -39,20 +42,40 @@ function stubFacade(overrides: Partial<TeamFacade> = {}): TeamFacade {
   }
 }
 
-function sessionsDouble(current?: SessionId) {
+function sessionsDouble() {
   const list = createSnapshotStore<SessionListState>({
-    ids: [], byId: {}, current, phase: 'ready', subagentsByParent: {}, jobsBySession: {}, currentAddress: undefined,
+    ids: [], byId: {}, phase: 'ready', subagentsByParent: {}, jobsBySession: {},
+  })
+  const binding = (sessionId: SessionId): SessionBinding => ({
+    sessionId,
+    session: {} as SessionFace,
+    eventSource: {} as SessionEventSource,
+    ctx: {} as AgentContext,
+  })
+  const retain = vi.fn<ISessions['retain']>((target) => {
+    const sessionId = target as SessionId
+    const reference = {
+      sessionId,
+      binding: binding(sessionId),
+      ready: Promise.resolve(binding(sessionId)),
+      release: () => {},
+      [Symbol.dispose]: () => {},
+    } satisfies SessionReference
+    return reference
   })
   return {
     list,
     searchResultLimit: 20,
     create: vi.fn(async () => 'created' as SessionId),
-    open: vi.fn(),
-    openSubagent: vi.fn(),
+    retain,
+    using: vi.fn(),
+    retainInfo: vi.fn(() => ({
+      getSnapshot: () => ({ referenceCount: 0, retainedBy: {} }),
+      subscribe: () => () => {},
+    })),
     subagentAddress: vi.fn(),
     setSubagentCatalogOpen: vi.fn(),
     refreshSubagents: vi.fn(),
-    clear: vi.fn(),
     refresh: vi.fn(async () => {}),
     search: vi.fn(),
     fork: vi.fn(),
@@ -66,7 +89,7 @@ function sessionsDouble(current?: SessionId) {
 /** Build a sessions hook/store pair; tests may drive the store to assert main-instance status. */
 function sessionsStore(initial: Partial<SessionListState> = {}) {
   const store = createSnapshotStore<SessionListState>({
-    ids: [], byId: {}, current: undefined, phase: 'ready', subagentsByParent: {}, jobsBySession: {}, currentAddress: undefined,
+    ids: [], byId: {}, phase: 'ready', subagentsByParent: {}, jobsBySession: {},
     ...initial,
   })
   return { store, useSessions: bindSnapshotSelector(store) }
@@ -130,7 +153,7 @@ describe('TeamTopbar', () => {
     const { sessionsSvc } = mount(team)
     await waitFor(() => { expect(nodeByLabel('Writer')).toBeDefined() })
     fireEvent.click(nodeByLabel('Writer')!)
-    await waitFor(() => { expect(sessionsSvc.open).toHaveBeenCalledWith('member:writer:topic-b' as SessionId) })
+    await waitFor(() => { expect(sessionsSvc.retain).toHaveBeenCalledWith('member:writer:topic-b' as SessionId, { source: 'mainView' }) })
   })
 
   it('clicking a member with no topics creates one then opens it', async () => {
@@ -142,16 +165,16 @@ describe('TeamTopbar', () => {
     await waitFor(() => { expect(nodeByLabel('Writer')).toBeDefined() })
     fireEvent.click(nodeByLabel('Writer')!)
     await waitFor(() => { expect(team.newSession).toHaveBeenCalledWith('writer') })
-    await waitFor(() => { expect(sessionsSvc.open).toHaveBeenCalledWith('member:writer:topic-fresh' as SessionId) })
+    await waitFor(() => { expect(sessionsSvc.retain).toHaveBeenCalledWith('member:writer:topic-fresh' as SessionId, { source: 'mainView' }) })
   })
 
   it('clicking the main instance node returns to the main instance', async () => {
-    const { sessionsSvc } = mount(stubFacade())
+    const mounted = mount(stubFacade())
     await waitFor(() => { expect(nodeByLabel('Writer')).toBeDefined() })
     fireEvent.click(nodeByLabel('Writer')!)
-    await waitFor(() => { expect(sessionsSvc.open).toHaveBeenCalled() })
+    await waitFor(() => { expect(mounted.sessionsSvc.retain).toHaveBeenCalled() })
     fireEvent.click(nodeByLabel('主实例')!)
-    await waitFor(() => { expect(sessionsSvc.clear).toHaveBeenCalled() })
+    await waitFor(() => { expect(mounted.store.getSnapshot().currentAgentId).toBeUndefined() })
   })
 
   it('adds a member through the new-member form', async () => {
@@ -199,9 +222,9 @@ describe('TeamTopbar', () => {
   it('derives the main instance status from the current session running state', async () => {
     const team = stubFacade()
     const sessionId = 'session-1' as SessionId
-    const summary: SessionSummary = { id: sessionId, displayTitle: 'S1', running: false, blank: false, updatedAt: 0 }
+    const summary: SessionSummary = { id: sessionId, displayTitle: 'S1', running: false, blank: false, updatedAt: 0, retainedBy: { mainView: 1 } }
     const sessions = sessionsStore({
-      current: sessionId,
+      ids: [sessionId],
       byId: { [sessionId]: summary },
     })
     mount(team, sessions)

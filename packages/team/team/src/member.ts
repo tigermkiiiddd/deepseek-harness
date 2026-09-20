@@ -239,7 +239,7 @@ export function sessionConfigToSnapshot(options: readonly SessionConfigOption[])
  */
 function providerToInfo(provider: ProviderInfo): MemberProviderInfo {
   return {
-    id: provider.id,
+    id: provider.providerId,
     required: provider.required,
     supported: provider.supported,
     current: provider.current === null || provider.current === undefined
@@ -632,8 +632,8 @@ export class MemberConnection {
     }
     // `exactOptionalPropertyTypes` forbids passing `undefined` for an optional
     // field, so only attach `headers` when the caller supplied them.
-    const request: { id: string; apiType: string; baseUrl: string; headers?: Record<string, string> } = {
-      id: config.id,
+    const request: { providerId: string; apiType: string; baseUrl: string; headers?: Record<string, string> } = {
+      providerId: config.id,
       apiType: config.apiType,
       baseUrl: config.baseUrl,
     }

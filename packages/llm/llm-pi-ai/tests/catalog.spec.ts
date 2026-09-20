@@ -434,6 +434,29 @@ describe('hand-declared providers', () => {
     expect(declare({ id: 'm', contextWindow: 1, maxTokens: 1.5 })).toThrow(/maxTokens must be a positive integer/)
   })
 
+  it('validates vLLM thinking budgets against their route independently of output caps', () => {
+    const declare = (model: LlmPiAi.PiAiModelProfile, api: Api = 'openai-completions'): (() => unknown) =>
+      () => resolveProfiles({ 'acme-gateway': { api, baseURL: 'https://acme.test', models: [model] } })
+    const valid = resolveProfiles({
+      'acme-gateway': {
+        api: 'openai-completions',
+        baseURL: 'https://acme.test',
+        models: [{ id: 'ornith', maxTokens: 32_768, thinkingTokenBudget: 24_576 }],
+      },
+    })
+
+    expect(valid.get('acme-gateway')?.configuredThinkingTokenBudgets.get('ornith')).toBe(24_576)
+    expect(declare({ id: 'ornith', maxTokens: 32_768, thinkingTokenBudget: 0 }))
+      .toThrow(/thinkingTokenBudget must be a positive/)
+    expect(declare({ id: 'ornith', maxTokens: 32_768, thinkingTokenBudget: 1.5 }))
+      .toThrow(/thinkingTokenBudget/)
+    // Equal caps are legal: the budget is reasoning, the cap is visible output.
+    expect(declare({ id: 'ornith', maxTokens: 8192, thinkingTokenBudget: 8192 }))
+      .not.toThrow()
+    expect(declare({ id: 'ornith', maxTokens: 32_768, thinkingTokenBudget: 24_576 }, 'anthropic-messages'))
+      .toThrow(/thinkingTokenBudget.*api is "anthropic-messages"/)
+  })
+
   it('names the route key when no displayName is configured', () => {
     const resolved = resolveProfiles({
       'acme-gateway': {

@@ -596,6 +596,12 @@ export interface PiAiModelProfile {
    */
   maxTokens?: number
   /**
+   * Per-request reasoning-token cap sent as vLLM's
+   * `thinking_token_budget`; supported only by `openai-completions` models and
+   * independent of this model's visible-output `maxTokens`.
+   */
+  thinkingTokenBudget?: number
+  /**
    * Request modalities this model accepts. Absent — or empty, which describes
    * a model that accepts nothing and so states no answer either — keeps the
    * installed catalog entry's modalities, then the route's `defaultInput`.
@@ -872,6 +878,8 @@ export interface RouteCatalog {
    * picked, so only an explicit configuration lands here.
    */
   configuredMaxTokens: ReadonlyMap<string, number>
+  /** Per-request vLLM reasoning-token caps explicitly configured by model id. */
+  configuredThinkingTokenBudgets: ReadonlyMap<string, number>
 }
 
 /**
@@ -948,6 +956,7 @@ export function resolveRouteModels(
   assertOfferedCompatFields(provider, 'route', request.compat)
   const seen = new Set<string>()
   const configuredMaxTokens = new Map<string, number>()
+  const configuredThinkingTokenBudgets = new Map<string, number>()
   const resolveEntry = (entry: PiAiModelProfile): Model<Api> => {
     assertOfferedCompatFields(provider, `model "${entry.id}"`, entry.compat)
     if (entry.id.length === 0) invalid(provider, 'has a model with an empty id')
@@ -986,6 +995,16 @@ export function resolveRouteModels(
     // Only a value the profile named is a deployment choice; the catalog's is
     // the model's capability and stays out of request defaults.
     if (entry.maxTokens !== undefined) configuredMaxTokens.set(entry.id, entry.maxTokens)
+    if (entry.thinkingTokenBudget !== undefined) {
+      if (!Number.isSafeInteger(entry.thinkingTokenBudget) || entry.thinkingTokenBudget <= 0) {
+        invalid(provider, `model "${entry.id}" thinkingTokenBudget must be a positive safe integer`)
+      }
+      if (api !== 'openai-completions') {
+        invalid(provider, `model "${entry.id}" sets thinkingTokenBudget, but its api is "${api}";`
+          + ' vLLM exposes thinking_token_budget only on OpenAI-compatible completions requests')
+      }
+      configuredThinkingTokenBudgets.set(entry.id, entry.thinkingTokenBudget)
+    }
     return {
       // The installed entry lays the floor, and the fields below override it.
       // Enumerating instead would silently drop every `Model` field this
@@ -1030,5 +1049,5 @@ export function resolveRouteModels(
     invalid(provider, `sets compat "${field}", but no model on the route speaks a protocol that takes it;`
       + ` it exists on ${takers.join(', ')}`)
   }
-  return { models: serviceableModels, configuredMaxTokens, modelErrors }
+  return { models: serviceableModels, configuredMaxTokens, configuredThinkingTokenBudgets, modelErrors }
 }

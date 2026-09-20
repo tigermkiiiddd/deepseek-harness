@@ -30,6 +30,36 @@
  *                        client announced in `session/new` — so a test can assert
  *                        where the child actually ran and what workspace it was
  *                        told it has.
+ * - `MOCK_REJECT_PROMPT` — if `1`, prompt throws, so the client's prompt()
+ *                        rejects with a protocol error (a member that refuses
+ *                        the turn).
+ * - `MOCK_ECHO_USER`   — if `1`, echo the prompt text as `user_message_chunk`
+ *                        updates before answering, exercising the translator's
+ *                        user-message deduplication path.
+ * - `MOCK_ECHO_IMAGES` — if `1`, stream the received prompt block types as
+ *                        `blocks:<type>[+<type>…]` instead of MOCK_TEXT, so a
+ *                        test can assert image blocks crossed the wire.
+ * - `MOCK_EXTRA_SESSIONS` — comma-separated additional session ids the mock
+ *                        reports from `session/list` and accepts in
+ *                        `session/load`.
+ * - `MOCK_SESSION_CWD` — the workspace the mock's sessions belong to; a
+ *                        `session/list` cwd filter naming another workspace
+ *                        returns nothing (default `process.cwd()`).
+ * - `MOCK_SESSION_TITLE` / `MOCK_SESSION_UPDATED_AT` — title and last-activity
+ *                        metadata reported by `session/list`.
+ * - `MOCK_HISTORY`     — if `1`, `session/load` replays a canned user/assistant
+ *                        exchange as session updates.
+ * - `MOCK_HISTORY_RICH` — if `1`, `session/load` replays a tool-calling exchange
+ *                        (thought, tool call, tool result) for the translator's
+ *                        full-fidelity path.
+ * - `MOCK_PROVIDERS`   — if `1`, advertise the `providers` capability and
+ *                        answer the unstable `providers/list` + `providers/set`
+ *                        methods with one canned mock provider.
+ * - `MOCK_CONFIG_OPTIONS` — if `1`, return a model-selector config option from
+ *                        `session/new` and `session/load`, and answer
+ *                        `session/set_config_option`.
+ * - `MOCK_MODEL`       — the current model id the mock advertises when
+ *                        MOCK_CONFIG_OPTIONS is on (default `mock-model-1`).
  * - `MOCK_READY_FILE`  — if set, the path the agent touches once its `prompt`
  *                        handler is in flight (it has streamed its chunk). A test
  *                        polls for this file to cancel on a CONDITION rather than
@@ -69,16 +99,26 @@ import {
   methods,
   ndJsonStream,
   PROTOCOL_VERSION,
+  RequestError,
   type AgentContext,
   type CancelNotification,
   type AuthenticateRequest,
   type InitializeRequest,
   type InitializeResponse,
+  type ListProvidersRequest,
+  type ListProvidersResponse,
+  type ListSessionsRequest,
+  type ListSessionsResponse,
   type NewSessionRequest,
   type NewSessionResponse,
   type PromptRequest,
   type PromptResponse,
   type RequestPermissionResponse,
+  type SetProviderRequest,
+  type SetProviderResponse,
+  type SetSessionConfigOptionRequest,
+  type SetSessionConfigOptionResponse,
+  type SessionConfigOption,
   type StopReason,
   type ToolKind,
 } from '@agentclientprotocol/sdk'
@@ -90,6 +130,13 @@ const TEXT = echoEnvName !== undefined
   ? process.env[echoEnvName] ?? `<${echoEnvName} unset>`
   : process.env.MOCK_TEXT ?? 'mock child answer'
 const ECHO_CWD = process.env.MOCK_ECHO_CWD === '1'
+const REJECT_ON_PROMPT = process.env.MOCK_REJECT_PROMPT === '1'
+const ECHO_USER = process.env.MOCK_ECHO_USER === '1'
+const ECHO_IMAGES = process.env.MOCK_ECHO_IMAGES === '1'
+const HISTORY_RICH = process.env.MOCK_HISTORY_RICH === '1'
+const WANT_PROVIDERS = process.env.MOCK_PROVIDERS === '1'
+const WANT_CONFIG = process.env.MOCK_CONFIG_OPTIONS === '1'
+const MODEL = process.env.MOCK_MODEL ?? 'mock-model-1'
 const STOP = (process.env.MOCK_STOP ?? 'end_turn') as StopReason
 const HANG = process.env.MOCK_HANG === '1'
 const WANT_PERMISSION = process.env.MOCK_PERMISSION === '1'
@@ -110,6 +157,21 @@ const NEWSESSION_GATE = process.env.MOCK_NEWSESSION_READY !== undefined && proce
   ? { ready: process.env.MOCK_NEWSESSION_READY, go: process.env.MOCK_NEWSESSION_GO }
   : undefined
 
+/** The canned model selector the mock advertises when config options are on. */
+function buildConfigOptions(currentModel: string): SessionConfigOption[] {
+  return [{
+    id: 'model',
+    name: 'Model',
+    category: 'model',
+    type: 'select',
+    currentValue: currentModel,
+    options: [
+      { value: 'mock-model-1', name: 'Mock Model 1', description: 'Fast mock model' },
+      { value: 'mock-model-2', name: 'Mock Model 2', description: 'Powerful mock model' },
+    ],
+  }]
+}
+
 function makeAgent() {
   // Pending cancel resolver for the HANG path: a `session/cancel` resolves the
   // prompt with `cancelled`.
@@ -122,9 +184,81 @@ function makeAgent() {
       if (CRASH_ON_INITIALIZE) process.exit(11)
       return Promise.resolve({
         protocolVersion: PROTOCOL_VERSION,
-        agentCapabilities: { promptCapabilities: { image: false, audio: false, embeddedContext: false } },
+        agentCapabilities: {
+          loadSession: true,
+          sessionCapabilities: { list: {} },
+          promptCapabilities: { image: false, audio: false, embeddedContext: false },
+          // Advertise provider configuration only when MOCK_PROVIDERS is set, so
+          // the client gates list/set on the capability.
+          ...WANT_PROVIDERS ? { providers: {} } : {},
+        },
         authMethods: [],
       })
+    },
+    async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
+      // The mock's persisted topic set: the fixed session id plus any extras.
+      // Like a real agent, topics belong to one workspace: a cwd filter that
+      // names another workspace returns nothing.
+      const storeCwd = process.env.MOCK_SESSION_CWD ?? process.cwd()
+      if (params?.cwd !== undefined && params.cwd !== storeCwd) return { sessions: [] }
+      const extras = (process.env.MOCK_EXTRA_SESSIONS ?? '').split(',').filter(Boolean)
+      const ids = [process.env.MOCK_SESSION_ID ?? 'mock-session', ...extras]
+      const title = process.env.MOCK_SESSION_TITLE
+      const updatedAt = process.env.MOCK_SESSION_UPDATED_AT
+      return {
+        sessions: ids.map(sessionId => ({
+          sessionId,
+          cwd: storeCwd,
+          ...title === undefined ? {} : { title },
+          ...updatedAt === undefined ? {} : { updatedAt },
+        })),
+      }
+    },
+    async loadSession(params: { sessionId: string }, conn: AgentContext): Promise<Record<string, unknown>> {
+      const extras = (process.env.MOCK_EXTRA_SESSIONS ?? '').split(',').filter(Boolean)
+      const known = [process.env.MOCK_SESSION_ID ?? 'mock-session', ...extras]
+      if (!known.includes(params.sessionId)) {
+        throw new RequestError(-32602, `Invalid params: unknown session: ${params.sessionId}`, undefined)
+      }
+      // Replay a canned history like a real server's loadSession contract.
+      if (process.env.MOCK_HISTORY === '1') {
+        await conn.notify(methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'earlier question' } },
+        })
+        await conn.notify(methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'earlier answer' } },
+        })
+      }
+      if (HISTORY_RICH) {
+        await conn.notify(methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'run the tool' } },
+        })
+        await conn.notify(methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'I will help.' } },
+        })
+        await conn.notify(methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking' } },
+        })
+        await conn.notify(methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: { sessionUpdate: 'tool_call', toolCallId: 'rich-call', title: 'rich_tool', rawInput: { query: 'value' } },
+        })
+        await conn.notify(methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'rich-call',
+            status: 'completed',
+            content: [{ type: 'content', content: { type: 'text', text: 'tool output' } }],
+          },
+        })
+      }
+      return { ...WANT_CONFIG ? { configOptions: buildConfigOptions(MODEL) } : {} }
     },
     async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
       sessionCwd = params.cwd
@@ -136,7 +270,43 @@ function makeAgent() {
         while (!existsSync(NEWSESSION_GATE.go)) await new Promise(r => setTimeout(r, 10))
       }
       if (process.env.MOCK_MISSING_SESSION_ID === '1') return {} as NewSessionResponse
-      return { sessionId: process.env.MOCK_SESSION_ID ?? randomUUID() }
+      return {
+        sessionId: process.env.MOCK_SESSION_ID ?? randomUUID(),
+        ...WANT_CONFIG ? { configOptions: buildConfigOptions(MODEL) } : {},
+      }
+    },
+    // Session config: answer session/set_config_option when the mock advertises
+    // config options, returning the updated model selector.
+    async setSessionConfigOption(
+      params: SetSessionConfigOptionRequest,
+    ): Promise<SetSessionConfigOptionResponse> {
+      if (!WANT_CONFIG) {
+        throw new RequestError(-32601, 'Method not found: session/set_config_option', undefined)
+      }
+      // A select option's value is a bare string; a boolean option carries
+      // `{ type: 'boolean', value: boolean }`. The mock only models the model
+      // selector, so read the string value id when present.
+      const newValue = params.value
+      const updated = buildConfigOptions(MODEL).map(option =>
+        option.type === 'select' && option.id === params.configId
+          ? { ...option, currentValue: String(newValue) }
+          : option,
+      )
+      return { configOptions: updated }
+    },
+    // Unstable provider methods, gated on the capability the client checks.
+    async unstable_listProviders(_params: ListProvidersRequest): Promise<ListProvidersResponse> {
+      return {
+        providers: [{
+          providerId: 'mock-provider',
+          required: false,
+          supported: ['openai'],
+          current: { apiType: 'openai', baseUrl: 'https://mock.example/v1' },
+        }],
+      }
+    },
+    async unstable_setProvider(_params: SetProviderRequest): Promise<SetProviderResponse> {
+      return {}
     },
     authenticate(_params: AuthenticateRequest): Promise<void> {
       // No auth methods advertised; nothing to do.
@@ -144,6 +314,9 @@ function makeAgent() {
     },
     async prompt(params: PromptRequest, conn: AgentContext): Promise<PromptResponse> {
       if (CRASH_ON_PROMPT) process.exit(1)
+      // A member that refuses the turn: the SDK maps the throw to a protocol
+      // error response, so the client's prompt() rejects with a RequestError.
+      if (REJECT_ON_PROMPT) throw new Error('mock: prompt rejected by member')
       const hold = process.env.MOCK_PROMPT_HOLD
       if (hold !== undefined) {
         const released = Promise.withResolvers<undefined>()
@@ -180,6 +353,17 @@ function makeAgent() {
           return { stopReason: 'cancelled' }
         }
       }
+      // Optionally echo the user's prompt as user_message_chunk updates before
+      // answering, so the translator's deduplication path can be exercised.
+      if (ECHO_USER) {
+        const text = params.prompt.map(part => part.type === 'text' ? part.text : '').join('')
+        for (const chunk of text.split(' ').filter(Boolean)) {
+          await conn.notify(methods.client.session.update, {
+            sessionId: params.sessionId,
+            update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: chunk + ' ' } },
+          })
+        }
+      }
       // Optionally emit a NON-message update first (a thought), so the client's
       // sessionUpdate sees an update it must consume-but-not-accumulate.
       if (THOUGHT) {
@@ -188,13 +372,15 @@ function makeAgent() {
           update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking…' } },
         })
       }
-      // Stream the canned assistant text as one chunk (or, under MOCK_ECHO_CWD,
-      // the observable process cwd + announced session cwd).
+      // Stream the canned assistant text as one chunk (or, under MOCK_ECHO_CWD, the
+      // observable process cwd + announced session cwd; under MOCK_ECHO_IMAGES,
+      // the received prompt block types).
+      const echoImages = ECHO_IMAGES ? `blocks:${params.prompt.map(part => part.type).join('+')}` : undefined
       await conn.notify(methods.client.session.update, {
         sessionId: params.sessionId,
         update: {
           sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text: ECHO_CWD ? `${process.cwd()}\n${sessionCwd ?? ''}` : TEXT },
+          content: { type: 'text', text: echoImages ?? (ECHO_CWD ? `${process.cwd()}\n${sessionCwd ?? ''}` : TEXT) },
         },
       })
       if (CRASH_AFTER_CHUNK) {
@@ -242,6 +428,11 @@ createAcpAgentApp({ name: 'dsh-subagent-acp-test-agent' })
     return {}
   })
   .onRequest(methods.agent.session.new, ({ params }) => implementation.newSession(params))
+  .onRequest(methods.agent.session.list, ({ params }) => implementation.listSessions(params))
+  .onRequest(methods.agent.session.load, ({ params, client }) => implementation.loadSession(params, client))
+  .onRequest(methods.agent.session.setConfigOption, ({ params }) => implementation.setSessionConfigOption(params))
+  .onRequest(methods.agent.providers.list, ({ params }) => implementation.unstable_listProviders(params))
+  .onRequest(methods.agent.providers.set, ({ params }) => implementation.unstable_setProvider(params))
   .onRequest(methods.agent.session.prompt, ({ params, client }) => implementation.prompt(params, client))
   .onNotification(methods.agent.session.cancel, ({ params }) => implementation.cancel(params))
   .connect(ndJsonStream(
