@@ -47,3 +47,9 @@ worktrees/
 .agents/worktrees/
 .typert-*/
 native/system/test/bin/
+*.log
+*.tmp
+*.bak
+tmp-cdp-profile-*/
+apps/desktop/release/
+undefined/
