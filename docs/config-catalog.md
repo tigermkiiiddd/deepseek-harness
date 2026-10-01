@@ -1602,7 +1602,7 @@ export interface Config extends ProtocolConfig {
 
 - `inject`: `llm`
 - `refs`: `Api` (`@earendil-works/pi-ai`) · `CacheRetention` (`@earendil-works/pi-ai`) · `Model` (`@earendil-works/pi-ai`) · `ModelThinkingLevel` (`@earendil-works/pi-ai`) · `OpenAICompletionsCompat` (`@earendil-works/pi-ai`) · [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts) · `ThinkingBudgets` (`@earendil-works/pi-ai`) · `Transport` (`@earendil-works/pi-ai`) · `Volatile` (`@deepseek-ai/cordis`)
-- `source`: [`packages/llm/llm-pi-ai/src/config.ts:222`](../packages/llm/llm-pi-ai/src/config.ts)
+- `source`: [`packages/llm/llm-pi-ai/src/config.ts:235`](../packages/llm/llm-pi-ai/src/config.ts)
 
 ```ts config-catalog
 /** Plugin configuration: the provider routes this instance owns. */
@@ -1613,6 +1613,22 @@ export interface Config {
    * and registers them the moment a settings section supplies profiles.
    */
   providers: Volatile<Record<string, PiAiProviderProfile>>
+  /**
+   * Directory holding the per-route catalog cache files, which a startup sync
+   * refreshes and resolution serves in place of the frozen pi-ai snapshot (see
+   * `catalog-cache.ts`). Defaults to `$DSH_HOME/llm-pi-ai/catalog-cache`. A
+   * deployment that must never reach a provider endpoint keeps the directory
+   * and sets `catalogSyncEnabled` false.
+   */
+  catalogCacheDir?: string
+  /**
+   * Whether the adapter syncs each route's catalog from its own endpoints at
+   * mount — the "ask the route at every startup" refresh — and serves the
+   * synced cache in place of the frozen pi-ai snapshot while it exists. False
+   * (default) keeps every route serving the installed snapshot, with no
+   * network attempt; the Models surface can still fetch a listing on demand.
+   */
+  catalogSyncEnabled?: boolean
 }
 
 /** Configuration for one pi-ai provider route; the `providers` dict key IS the route. */
@@ -1622,9 +1638,12 @@ export interface PiAiProviderProfile {
   /** Name shown by configuration surfaces; defaults to the route key. */
   displayName?: string
   /**
-   * Wire protocol every model on this route speaks. Omission keeps each
-   * installed catalog model's own protocol, which is why a catalog route needs
-   * no protocol at all; a route the catalog does not ship must name one.
+   * Wire protocol defaulting every model on this route that names none itself.
+   * Omission keeps each installed catalog model's own protocol, which is why a
+   * catalog route needs no protocol at all; a route the catalog does not ship
+   * must name one — or each of its models must. A model entry's own `api`
+   * wins over this for that model, which is how a route spanning several
+   * protocols serves them side by side.
    */
   api?: string
   /** Endpoint for this route's models; defaults to the installed catalog's endpoint. */
@@ -1677,6 +1696,13 @@ export interface PiAiProviderProfile {
   defaultInput?: PiAiModality[]
   /** Provider request headers, validated against Fetch when the profile resolves; Harness attribution wins reserved names. */
   headers?: Record<string, string>
+  /**
+   * Request header that carries the conversation id, for gateways that route
+   * or optimize per session (example: `x-opencode-session`). A request without
+   * a session id sends nothing, and the value replaces the same name in
+   * {@link PiAiProviderProfile.headers}.
+   */
+  sessionHeader?: string
   /** Provider-neutral pi-ai reasoning level. */
   reasoning?: ModelThinkingLevel
   /** Token budgets used by reasoning providers that support them. */
@@ -1713,6 +1739,16 @@ export interface PiAiProviderProfile {
 export interface PiAiModelProfile {
   /** Model id sent to the provider and accepted by {@link GenerateOptions.model}. */
   id: string
+  /**
+   * Wire protocol this model speaks, winning over the route's `api` for this
+   * one entry. Only a model the installed catalog does not describe needs it —
+   * on a route whose catalog agrees on one protocol it inherits that answer,
+   * and on a route spanning several (opencode-go serves anthropic-messages,
+   * openai-completions, and openai-responses) nothing else can supply it. A
+   * model the catalog describes keeps its own protocol unless this names a
+   * different one.
+   */
+  api?: string
   /** Display name for selectors; defaults to the catalog name, then the id. */
   name?: string
   /** Maximum combined request and response context in tokens. */
@@ -1724,6 +1760,12 @@ export interface PiAiModelProfile {
    * default on its own.
    */
   maxTokens?: number
+  /**
+   * Per-request reasoning-token cap sent as vLLM's
+   * `thinking_token_budget`; supported only by `openai-completions` models and
+   * independent of this model's visible-output `maxTokens`.
+   */
+  thinkingTokenBudget?: number
   /**
    * Request modalities this model accepts. Absent — or empty, which describes
    * a model that accepts nothing and so states no answer either — keeps the
@@ -3347,6 +3389,69 @@ export interface Config {
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-system-prompt -->
 
+<!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-team -->
+<a id="deepseek-aidsh-team"></a>
+
+## `@deepseek-ai/dsh-team`
+
+- `inject`: `subprocess`
+- `source`: [`packages/team/team/src/index.ts:55`](../packages/team/team/src/index.ts)
+
+```ts config-catalog
+/** Plugin config: the deployment's team roster. */
+export interface Config {
+  /** The team members, one persistent process each. */
+  readonly members: MemberConfig[]
+}
+
+/** One configured team member: how to spawn its persistent ACP process. */
+export interface MemberConfig {
+  /** Stable member id (unique within one deployment). */
+  readonly id: string
+  /** Display name shown in team views. */
+  readonly title?: string
+  /** One-line role/persona description shown in team views. */
+  readonly description?: string
+  /**
+   * Member kind. When `'dsh'` the harness relaunches the current installation
+   * (`dsh --profile acp`) with a per-member harness home; `command` and `args`
+   * must be absent. When omitted, `command` is required and the member runs
+   * any ACP server.
+   */
+  readonly kind?: 'dsh'
+  /** Executable spawned for the member process (any ACP server, e.g. `dsh-acp-demo`). Required unless `kind: 'dsh'`. */
+  readonly command?: string
+  /** Arguments passed to {@link MemberConfig.command}. */
+  readonly args?: string[]
+  /**
+   * Working directory for the member process and its ACP sessions. When
+   * omitted, the member runs in the harness process's launch directory; no
+   * caller session workspace is ever bound to a member.
+   */
+  readonly cwd?: string
+  /**
+   * Extra environment layered over the FULL parent environment. Members are
+   * trusted peers: they inherit the main process's environment (credentials
+   * included) unless a key is overridden or removed here.
+   */
+  readonly env?: Record<string, string>
+  /** Auto-answer the member's `session/request_permission` prompts when no GUI subscriber answers them. */
+  readonly permission?: 'allow' | 'reject'
+  /** Spawn and connect this member when the service loads (default `true`). */
+  readonly autostart?: boolean
+  /**
+   * The member's own agent preset composition: a YAML top-level list of plugin
+   * rows (persona, tools, prompt sections) that makes this member unique.
+   * Only `kind: 'dsh'` members carry one — they are the members with a harness
+   * home to hold it. Seeded once at creation into the member home's preset
+   * root and made the member's default preset; a restart never re-seeds, so
+   * the composition is fixed for the member's lifetime in that home.
+   */
+  readonly preset?: string
+}
+```
+<!-- END GENERATED config-catalog:@deepseek-ai/dsh-team -->
+
 <!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-terminal-bash -->
 <a id="deepseek-aidsh-terminal-bash"></a>
 
@@ -4380,6 +4485,7 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 | `@deepseek-ai/dsh-client-ui-sidebar-terminal` | — | [`packages/client/ui-sidebar-terminal/src/index.ts`](../packages/client/ui-sidebar-terminal/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-skill` | — | [`packages/client/ui-skill/src/index.ts`](../packages/client/ui-skill/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-subagent` | — | [`packages/client/ui-subagent/src/index.ts`](../packages/client/ui-subagent/src/index.ts) |
+| `@deepseek-ai/dsh-client-ui-team` | — | [`packages/client/ui-team/src/index.ts`](../packages/client/ui-team/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-tool` | — | [`packages/client/ui-tool/src/index.ts`](../packages/client/ui-tool/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-trajectory` | — | [`packages/client/ui-trajectory/src/index.ts`](../packages/client/ui-trajectory/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-user-questions` | — | [`packages/client/ui-user-questions/src/index.ts`](../packages/client/ui-user-questions/src/index.ts) |
@@ -4423,6 +4529,7 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 | `@deepseek-ai/dsh-tool-call-timeout-policy` | `tools` | [`packages/guard/timeout-policy/src/index.ts`](../packages/guard/timeout-policy/src/index.ts) |
 | `@deepseek-ai/dsh-tool-cordis` | `tools` · `cordisInspect` | [`packages/extensions/tool-cordis/src/index.ts`](../packages/extensions/tool-cordis/src/index.ts) |
 | `@deepseek-ai/dsh-tool-subagent-control` | `tools` · `subagents` | [`packages/subagent/tool-subagent-control/src/index.ts`](../packages/subagent/tool-subagent-control/src/index.ts) |
+| `@deepseek-ai/dsh-tool-team` | `team` · `tools` | [`packages/team/tool-team/src/index.ts`](../packages/team/tool-team/src/index.ts) |
 | `@deepseek-ai/dsh-user-questions` | — | [`packages/interaction/user-questions/src/index.ts`](../packages/interaction/user-questions/src/index.ts) |
 | `@deepseek-ai/dsh-webhook` | `agents` · `agentDefaultModel` · `agentPresets` · `permissionPresets` · `sessionTitle` · `workspaceRegistry` | [`packages/webhook/webhook/src/index.ts`](../packages/webhook/webhook/src/index.ts) |
 | `@deepseek-ai/dsh-workspace` | `storageDomain` · `sessionPersistence` | [`packages/workspace/workspace/src/index.ts`](../packages/workspace/workspace/src/index.ts) |
