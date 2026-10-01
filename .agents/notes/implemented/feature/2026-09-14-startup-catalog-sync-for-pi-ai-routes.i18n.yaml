@@ -1,6 +1,19 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
+# Bilingual-pair consistency record for 2026-09-14-startup-catalog-sync-for-pi-ai-routes.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-09-14-startup-catalog-sync-for-pi-ai-routes.md
-2026-09-14-startup-catalog-sync-for-pi-ai-routes.md: 1d168bc35b9ba69cee926a1f1150549923caa13b
-2026-09-14-startup-catalog-sync-for-pi-ai-routes.zh.md: 12689494aa312ef7bfb3ecaa9b5e056a847f8035
+/agent-note-startup-catalog-sync-for-pi-ai-catalog-routes:
+  en: 65f5427bfcbeeb60
+  zh: e95ba92e32d83a4d
+/agent-note-startup-catalog-sync-for-pi-ai-catalog-routes/problem:
+  en: d56d8eace179b1b6
+  zh: 76f53ab05e9d6795
+/agent-note-startup-catalog-sync-for-pi-ai-catalog-routes/decision:
+  en: 9bcabf883f599b75
+  zh: bc29ca87f265d161
+/agent-note-startup-catalog-sync-for-pi-ai-catalog-routes/alternatives-considered:
+  en: bdea38c471d38252
+  zh: 6d8fb29ee0e98e27
+/agent-note-startup-catalog-sync-for-pi-ai-catalog-routes/consequences:
+  en: ba1d9848cad047e1
+  zh: 89bb1acc74ba4d01

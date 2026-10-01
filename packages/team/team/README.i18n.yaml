@@ -1,6 +1,49 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/team/team/README.md
-README.md: 91ac343f237a93abf78b7c6f0ae51a0421afe70e
-README.zh.md: 355864654d931e8ce7e499ee244600048c2c9d51
+/deepseek-ai-dsh-team:
+  en: 2215f26cb7cb2b3a
+  zh: 0d2a264507efd3f9
+/deepseek-ai-dsh-team/service:
+  en: 77dde2932d79b572
+  zh: c293c1ea5f5b63d2
+/deepseek-ai-dsh-team/member-configuration:
+  en: cec558b63777a8f0
+  zh: 1d853a3c6282eafc
+/deepseek-ai-dsh-team/member-configuration/first-class-dsh-members:
+  en: 092676d8e8fee33a
+  zh: aa4de60e34d12552
+/deepseek-ai-dsh-team/member-configuration/durable-roster-and-offline-cache:
+  en: 0b21e672e54a09f2
+  zh: d5275353544e0165
+/deepseek-ai-dsh-team/member-configuration/session-config-options:
+  en: 3ae876deaff03b90
+  zh: 68e4c8f05382827c
+/deepseek-ai-dsh-team/events:
+  en: 76d5005ec097bbab
+  zh: 65c2cf0f83a914d3
+/deepseek-ai-dsh-team/full-fidelity-history-rendering:
+  en: b5a00f0d6f98e01c
+  zh: 19086bf80ed1b87f
+/deepseek-ai-dsh-team/process-boundary:
+  en: 6deb74f703ecccc1
+  zh: 0c8a2940d7f8002b
+/deepseek-ai-dsh-team/model-experience:
+  en: 215e7ba838619b7b
+  zh: a311da3843709f90
+/deepseek-ai-dsh-team/model-experience/member-request:
+  en: e2dc92f9e38e5aa7
+  zh: 5e07d709effe0f1c
+/deepseek-ai-dsh-team/model-experience/member-request/what-the-model-sees:
+  en: dc8483a720d614bf
+  zh: 3a35eedcc0c5289c
+/deepseek-ai-dsh-team/model-experience/member-request/token-effect:
+  en: 46a06744736e7186
+  zh: a7338392bb21c200
+/deepseek-ai-dsh-team/model-experience/member-request/kv-cache-effect:
+  en: 4bf572d3b8e6829e
+  zh: a1c5edd4b0d8028d
+/deepseek-ai-dsh-team/known-limitations-and-deferred-work:
+  en: fc6804e181a7085e
+  zh: 7adecf21c94dc461

@@ -1,6 +1,22 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/client/ui-team/README.md
-README.md: bb91dbc6ab75d2c47c4cbbe644ea4723e1208a91
-README.zh.md: 9767f53e41571e6d553037cdcc7a9242561807ec
+/deepseek-ai-dsh-client-ui-team:
+  en: eb6a179f90c84011
+  zh: db26ad1b16a41c9e
+/deepseek-ai-dsh-client-ui-team/architecture:
+  en: a1610ba4f58cbcec
+  zh: 0781fe7a94ef0212
+/deepseek-ai-dsh-client-ui-team/data-ownership:
+  en: 98e180d9c5276389
+  zh: 6e8cef06182e4f44
+/deepseek-ai-dsh-client-ui-team/model-experience:
+  en: b624f40a1e0b7531
+  zh: 5da74d031b44b43f
+/deepseek-ai-dsh-client-ui-team/model-experience/kv-cache-effect:
+  en: ca75c51c89c2c9b0
+  zh: de54f3467ef3b9be
+/deepseek-ai-dsh-client-ui-team/known-limitations-and-deferred-work:
+  en: dcfa18c550d3b1b5
+  zh: e7b7ae29ab4bd1c6

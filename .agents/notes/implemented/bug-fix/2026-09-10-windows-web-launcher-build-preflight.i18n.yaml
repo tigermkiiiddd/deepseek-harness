@@ -1,6 +1,22 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
+# Bilingual-pair consistency record for 2026-09-10-windows-web-launcher-build-preflight.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-09-10-windows-web-launcher-build-preflight.md
-2026-09-10-windows-web-launcher-build-preflight.md: e49a0fc69ec218873c16dfcc2edb2a7719730848
-2026-09-10-windows-web-launcher-build-preflight.zh.md: c6a9a216534ce6bc92349bdb62f08897514abdf7
+/agent-note-make-the-windows-web-desktop-launcher-build-aware:
+  en: b45b5278843f5056
+  zh: c551f12a0e4ef3b8
+/agent-note-make-the-windows-web-desktop-launcher-build-aware/problem:
+  en: efd45eba3d986b37
+  zh: f91a8300c69912fa
+/agent-note-make-the-windows-web-desktop-launcher-build-aware/decision:
+  en: 103527b23acd7aa4
+  zh: c435d36d6681e7b0
+/agent-note-make-the-windows-web-desktop-launcher-build-aware/testing:
+  en: 75fec2d26ec5da24
+  zh: 0e3ef498a8091b9a
+/agent-note-make-the-windows-web-desktop-launcher-build-aware/alternatives-considered:
+  en: a595e3f1bd4acbca
+  zh: 56698e93b92b915d
+/agent-note-make-the-windows-web-desktop-launcher-build-aware/consequences:
+  en: 6bec76938f317621
+  zh: 5a998319406b41da

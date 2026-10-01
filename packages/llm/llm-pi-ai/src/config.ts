@@ -12,6 +12,7 @@
  *
  * @module dsh-llm-pi-ai/config
  */
+import type { Volatile } from '@deepseek-ai/cordis'
 
 import type { CacheRetention, ChatTemplateKwargValue, ModelThinkingLevel, Provider, ThinkingBudgets, Transport } from '@earendil-works/pi-ai'
 import z from '@deepseek-ai/schemastery'
@@ -237,7 +238,7 @@ export interface Config {
    * the dormant settings-driven posture: the adapter mounts with no routes
    * and registers them the moment a settings section supplies profiles.
    */
-  providers?: Record<string, PiAiProviderProfile>
+  providers: Volatile<Record<string, PiAiProviderProfile>>
   /**
    * Directory holding the per-route catalog cache files, which a startup sync
    * refreshes and resolution serves in place of the frozen pi-ai snapshot (see
@@ -255,6 +256,9 @@ export interface Config {
    */
   catalogSyncEnabled?: boolean
 }
+
+/** Plain options accepted by the provider resolver. */
+export type Options = { [K in keyof Config]?: Config[K] extends Volatile<infer T> ? T : never }
 
 const thinkingBudgets = z.object({
   minimal: z.number(),
@@ -377,8 +381,8 @@ const profile = z.object({
 })
 
 /** Runtime schema for {@link Config}. */
-export const Config: z<Config> = z.object({
-  providers: z.dict(profile).default({}),
+export const Config = z.object({
+  providers: z.dict(profile).default({}).volatile(),
   catalogCacheDir: z.string(),
   catalogSyncEnabled: z.boolean().default(false),
 })
@@ -391,7 +395,7 @@ export const Config: z<Config> = z.object({
  * @param previous - current resolved section; omission checks every provider.
  * @throws Error naming the route and configuration entry that cannot be served.
  */
-export function assertServiceable(config: Config, previous?: Config): void {
+export function assertServiceable(config: Options, previous?: Options): void {
   const changed = Object.fromEntries(Object.entries(config.providers ?? {}).filter(([provider, profile]) =>
     !deepEqualJson(profile, previous?.providers?.[provider])))
   resolveProfiles(changed)

@@ -25,7 +25,6 @@
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { Document, parseDocument } from 'yaml'
-import { COMPOSITION_FILE, SETTINGS_NAMESPACE } from '@deepseek-ai/dsh-agent-presets'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { MemberConfig } from './types.ts'
 
@@ -36,6 +35,10 @@ const CREDENTIALS_FILENAME = '.credentials.yaml'
 const SETTINGS_EXTENSIONS = ['.yaml', '.yml', '.json']
 const PRESET_ID = /^[a-z0-9][a-z0-9-]*$/
 const USER_PRESET_DIR = '.agent-presets'
+/** Composition filename under a user preset directory; the on-disk preset layout contract. */
+const COMPOSITION_FILE = 'agent.cordis.yml'
+/** Settings section that names a member's default preset. */
+const SETTINGS_NAMESPACE = 'agent-presets'
 
 function compositionTextProblem(composition: string): string | undefined {
   const document = parseDocument(composition)

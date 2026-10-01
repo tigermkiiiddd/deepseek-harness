@@ -54,6 +54,9 @@
  *
  * @module @deepseek-ai/dsh-llm-pi-ai
  */
+import type {} from '@deepseek-ai/dsh-settings'
+
+import type {} from '@deepseek-ai/cordis-plugin-loader'
 
 import type { Context } from '@deepseek-ai/cordis'
 import { homedir } from 'node:os'
@@ -62,7 +65,6 @@ import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { assertUsableApiKey, LlmError, resolveImageAttachmentAccess } from '@deepseek-ai/dsh-llm'
 import type { AdapterRegistrationHandle, DirectoryRegistrationHandle, LlmConfigurableProvider } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-fs'
-import type {} from '@deepseek-ai/dsh-settings'
 import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
 import type { Api, Model } from '@earendil-works/pi-ai'
 import { PiAiAdapter } from './adapter.ts'
@@ -80,6 +82,7 @@ export { PiAiAdapter } from './adapter.ts'
 export type { PiAiAdapterOptions } from './adapter.ts'
 export { Config } from './config.ts'
 export type {
+  Options,
   PiAiCompatProfile,
   PiAiModality,
   PiAiModelOverride,
@@ -136,6 +139,7 @@ function registrationFacts(profiles: ReadonlyMap<string, ResolvedPiAiProviderPro
  */
 function directoryEntries(
   profiles: ReadonlyMap<string, ResolvedPiAiProviderProfile>,
+  settingsNs: string,
 ): LlmConfigurableProvider[] {
   const catalog = new Set(catalogProviderIds())
   const entries = new Map<string, LlmConfigurableProvider>()
@@ -143,7 +147,7 @@ function directoryEntries(
     entries.set(provider, {
       provider,
       displayName,
-      settingsNs: NS,
+      settingsNs,
       settingsPath: ['providers', provider],
       // Membership of the installed catalog, not of the settings document:
       // narrowing a shipped provider's models stores a profile too, and that
@@ -159,18 +163,18 @@ function directoryEntries(
 
 /** Register one generic pi-ai adapter for all configured provider routes. */
 export function apply(ctx: Context, config: Config): void {
-  let current: () => Config = () => config
-  let lastRaw: Config | undefined
+  ctx.inject(['settings'], (child) => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)) })
+  const settingsNs = ctx.fiber.entry?.options.id ?? NS
+  let lastRaw: ReturnType<Config['providers']['get']> | undefined
   let memoized: ReadonlyMap<string, ResolvedPiAiProviderProfile> | undefined
   // The sync is opt-in (`catalogSyncEnabled` in the section — the settings
   // source same as the routes). Without it the route serves the frozen
   // snapshot, no provider endpoint is reached, and no cache file is read.
-  // The flag and the directory are read from the live section so turning the
-  // feature on mid-session engages it at the next resolution.
+  // The flag and the directory are plain (non-volatile) configuration, so a
+  // change reloads the plugin and these apply-time reads are always current.
   const cacheDir = (): string | undefined => {
-    const section = current()
-    if (section.catalogSyncEnabled !== true) return undefined
-    return section.catalogCacheDir ?? defaultCatalogCacheDir(launchEnvironmentOf(ctx).get('DSH_HOME')?.value)
+    if (config.catalogSyncEnabled !== true) return undefined
+    return config.catalogCacheDir ?? defaultCatalogCacheDir(launchEnvironmentOf(ctx).get('DSH_HOME')?.value)
   }
   /**
    * The resolved profiles for the current configuration, memoized by the raw
@@ -182,14 +186,24 @@ export function apply(ctx: Context, config: Config): void {
    * Scalar configuration errors still reject resolution.
    */
   const profiles = (): ReadonlyMap<string, ResolvedPiAiProviderProfile> => {
-    const raw = current()
+    const raw = config.providers.get()
     if (raw === lastRaw && memoized !== undefined) return memoized
-    const next = resolveProfiles(raw.providers, 'deferred', cacheDir())
+    const next = resolveProfiles(structuredClone(raw) as import('./config.ts').Options['providers'], 'deferred', cacheDir())
     lastRaw = raw
     memoized = next
     return next
   }
   profiles()
+  ctx.on('internal/config', function (this: import('@deepseek-ai/cordis').Fiber, _raw, next) {
+    const raw: unknown = next()
+    if (this !== ctx.fiber) return raw
+    const candidate = Config(raw as import('./config.ts').Options)
+    assertServiceable(
+      { providers: structuredClone(candidate.providers.get()) } as import('./config.ts').Options,
+      { providers: structuredClone(config.providers.get()) } as import('./config.ts').Options,
+    )
+    return raw
+  })
 
   const resolveApiKey = async (
     provider: string,
@@ -242,7 +256,7 @@ export function apply(ctx: Context, config: Config): void {
     // materializes `[]`/`{}` for the absent case, and resolution reads an
     // empty one as "no answer here" too — so the cache applies unless the
     // deployment actually spoke.
-    const rawProfile = current().providers?.[provider]
+    const rawProfile = config.providers.get()?.[provider]
     if ((rawProfile?.models?.length ?? 0) > 0 || Object.keys(rawProfile?.modelOverrides ?? {}).length > 0) return undefined
     // Installed providers only: a hand-declared route already answers its
     // endpoint on every request, and the cache serves the frozen snapshot,
@@ -372,7 +386,7 @@ export function apply(ctx: Context, config: Config): void {
   let directory: DirectoryRegistrationHandle | undefined
   let directoryFacts: unknown
   const ensureDirectory = (): void => {
-    const entries = directoryEntries(profiles())
+    const entries = directoryEntries(profiles(), settingsNs)
     if (deepEqualJson(entries, directoryFacts)) return
     // Atomic replace, never dispose-then-register: a route another adapter
     // family already declares (a profile keyed `deepseek-official`) would
@@ -408,7 +422,7 @@ export function apply(ctx: Context, config: Config): void {
   // doubles as the cache refresh: it interrogates the route's own endpoints,
   // stores the answer, and surfaces it — the action that shows an upstream
   // addition without waiting for a restart.
-  ctx.llm.registerModelDiscovery(NS, async (request, signal) => {
+  ctx.llm.registerModelDiscovery(settingsNs, async (request, signal) => {
     const refresh = catalogSyncInputs(request.provider)
     if (refresh !== undefined) {
       const dir = cacheDir()
@@ -472,46 +486,11 @@ export function apply(ctx: Context, config: Config): void {
   }
   ensureRegistrationFacts()
 
-  ctx.inject(['settings'], (settingsCtx) => {
-    let registering = true
-    settingsCtx.settings.installSection(ctx, NS, Config, config, {
-      validate: (value) => {
-        // Stored catalog drift must not prevent registration of the repair UI.
-        if (registering) {
-          resolveProfiles(value.providers, 'deferred')
-        } else {
-          assertServiceable(value, current())
-        }
-      },
-      setSource: (source) => {
-        current = source
-      },
-      onChange: () => {
-        // Named here rather than left to the settings watcher: `assertServiceable`
-        // cannot see the llm registry, so a profile claiming a route another
-        // adapter family owns is stored successfully and only fails at this swap.
-        // Without its own diagnostic that refusal reaches the operator as a
-        // generic "settings: watcher failed", naming neither the route nor why it
-        // is not serving. The previous routes keep serving either way.
-        try {
-          ensureRegistrationFacts()
-        } catch (error) {
-          ctx.logger.error('llm-pi-ai: keeping the previously registered routes after a refused update')
-          ctx.logger.error(error)
-        }
-        // The directory follows the profiles the registry accepted, so a route
-        // that failed to register is not advertised as configurable. A refused
-        // directory swap is contained here for the same reason the registry's
-        // is: the previous entries keep serving, and `directoryFacts` stays put
-        // so returning to a working configuration re-applies.
-        try {
-          ensureDirectory()
-        } catch (error) {
-          ctx.logger.error('llm-pi-ai: keeping the previous configurable-provider directory after a refused update')
-          ctx.logger.error(error)
-        }
-      },
-    })
-    registering = false
+  ctx.on('loader/volatile-update', () => {
+    try { ensureRegistrationFacts(); ensureDirectory() }
+    catch (error) {
+      ctx.logger.error('llm-pi-ai: configuration conflicts with an existing provider route')
+      ctx.logger.error(error)
+    }
   })
 }
