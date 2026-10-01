@@ -118,7 +118,7 @@ describe('session header', () => {
         sessionHeader,
       },
     },
-  } as unknown as Config)
+  } as unknown as Options)
 
   it('refuses an empty header name at service resolution', () => {
     // The schema admits the empty string as well-typed; the namespace

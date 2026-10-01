@@ -85,9 +85,7 @@ async function bench(
     ids: [SESSION_ID],
     byId: { [SESSION_ID]: { id: SESSION_ID } },
     phase: 'ready',
-    subagentsByParent: {},
-    jobsBySession: {},
-    currentAddress: undefined,
+    projectionsBySession: {},
   })
   const binding = vi.fn((sessionId: SessionId) => sessionId === SESSION_ID
     ? ({ sessionId: SESSION_ID, session: { projections: { faceOf: (name: string) => name === 'inbox' ? inbox : projection } } })

@@ -78,7 +78,6 @@ describe('Sidebar chat registration', () => {
         },
         phase: 'ready',
         projectionsBySession: {},
-        jobsBySession: {},
       } as unknown as SessionListState),
       subscribe: () => () => {},
     }
@@ -209,7 +208,7 @@ describe('Sidebar chat components', () => {
       useSession: (select: (value: SessionSnapshot) => unknown) => select(snapshot),
       useConversation: (select: (value: { activeTargets: ReadonlySet<string> }) => unknown) => select({ activeTargets: new Set() }),
       useSessions: (select: (value: SessionListState) => unknown) => select({
-        ids: [], byId: { [CHILD]: { blank: summaryBlank } }, phase: 'ready', projectionsBySession: {}, jobsBySession: {},
+        ids: [], byId: { [CHILD]: { blank: summaryBlank } }, phase: 'ready', projectionsBySession: {},
       } as unknown as SessionListState),
       renderFactorySlot,
     } as unknown as Parameters<typeof ConversationSlotPanel>[0])} />)

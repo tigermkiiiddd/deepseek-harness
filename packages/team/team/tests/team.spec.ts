@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Fiber } from '@deepseek-ai/cordis'
 import { Context } from '@deepseek-ai/cordis'
+import type { ToolResultMessage } from '@deepseek-ai/dsh-llm'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import Storage from '@deepseek-ai/dsh-storage'
 import { JsonStorageBackend } from '@deepseek-ai/dsh-storage-json'
@@ -395,8 +396,8 @@ describe('member sessions (owned by the member process)', () => {
     expect(events.map(e => e.type)).toContain('tool/result')
     expect(call?.data).toMatchObject({ callId: 'rich-call', name: 'rich_tool', arguments: '{"query":"value"}' })
     expect((result as { surfaceOp: string }).surfaceOp).toBe('append')
-    expect((result?.data as { message: { content: [{ content: { type: string; text: string }[] }] } }).message.content[0].content)
-      .toEqual([{ type: 'text', text: 'tool output' }])
+    expect((result?.data as { message: ToolResultMessage }).message.content[0])
+      .toEqual({ type: 'text', text: 'tool output' })
   })
 
   it('retains capabilities from the initialize handshake', async () => {

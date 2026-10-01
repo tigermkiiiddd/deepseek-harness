@@ -270,7 +270,6 @@ describe('ReadImageRow keyed toolview', () => {
     byId: { [SID]: { id: SID, displayTitle: 'r', running: false, blank: false, updatedAt: 0, cwd: '/w/app' } },
     current: SID,
     phase: 'ready',
-    projectionsBySession: {}, jobsBySession: {},
     currentAddress: undefined,
   } as unknown as SessionListState)
 

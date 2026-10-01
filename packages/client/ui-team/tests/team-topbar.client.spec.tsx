@@ -44,7 +44,7 @@ function stubFacade(overrides: Partial<TeamFacade> = {}): TeamFacade {
 
 function sessionsDouble() {
   const list = createSnapshotStore<SessionListState>({
-    ids: [], byId: {}, phase: 'ready', subagentsByParent: {}, jobsBySession: {},
+    ids: [], byId: {}, phase: 'ready', projectionsBySession: {},
   })
   const binding = (sessionId: SessionId): SessionBinding => ({
     sessionId,
@@ -74,8 +74,7 @@ function sessionsDouble() {
       subscribe: () => () => {},
     })),
     subagentAddress: vi.fn(),
-    setSubagentCatalogOpen: vi.fn(),
-    refreshSubagents: vi.fn(),
+    refreshProjections: vi.fn(async () => {}),
     refresh: vi.fn(async () => {}),
     search: vi.fn(),
     fork: vi.fn(),
@@ -89,7 +88,7 @@ function sessionsDouble() {
 /** Build a sessions hook/store pair; tests may drive the store to assert main-instance status. */
 function sessionsStore(initial: Partial<SessionListState> = {}) {
   const store = createSnapshotStore<SessionListState>({
-    ids: [], byId: {}, phase: 'ready', subagentsByParent: {}, jobsBySession: {},
+    ids: [], byId: {}, phase: 'ready', projectionsBySession: {},
     ...initial,
   })
   return { store, useSessions: bindSnapshotSelector(store) }

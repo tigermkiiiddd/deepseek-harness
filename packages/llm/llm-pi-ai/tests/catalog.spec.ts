@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
@@ -31,6 +34,8 @@ declare module '@deepseek-ai/dsh-llm' {
 // mounted credentials seam.
 const KEY_ENV = 'PI_TEST_KEY'
 
+const homes: string[] = []
+
 beforeEach(() => {
   vi.stubEnv(KEY_ENV, 'test-key')
 })
@@ -38,7 +43,15 @@ beforeEach(() => {
 afterEach(async () => {
   vi.unstubAllEnvs()
   await closeMockServers()
+  await Promise.all(homes.splice(0).map(dir => rm(dir, { recursive: true, force: true })))
 })
+
+/** A throwaway directory for one test's catalog cache files. */
+async function home(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-pi-catalog-'))
+  homes.push(dir)
+  return dir
+}
 
 /** The dormant composition with Loader-managed live Config. */
 async function bootWithSettings(config: LlmPiAi.Options): Promise<Context> {

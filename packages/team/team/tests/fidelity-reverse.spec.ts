@@ -140,8 +140,8 @@ describe('AcpUpdateTranslator tool calls', () => {
     ]
     expect(events.map(e => e.type)).toEqual(['turn/start', 'step/start', 'tool/call', 'tool/result'])
     const result = events.find(e => e.type === 'tool/result')?.data
-    expect(result?.message.content[0]?.content).toEqual([{ type: 'text', text: 'result text' }])
-    expect((result as { message: { content: [{ isError?: boolean }] } }).message.content[0]?.isError).toBe(false)
+    expect(result?.message.content[0]).toEqual({ type: 'text', text: 'result text' })
+    expect(result?.message.isError).toBe(false)
     expect((events.find(e => e.type === 'tool/result') as { surfaceOp: string }).surfaceOp).toBe('append')
   })
 
@@ -152,7 +152,7 @@ describe('AcpUpdateTranslator tool calls', () => {
       ...translator.update(toolResult('tc-1', 'failed', [{ type: 'content', content: { type: 'text', text: 'boom' } }])),
     ]
     const result = events.find(e => e.type === 'tool/result')?.data
-    expect((result as { message: { content: [{ isError?: boolean }] } }).message.content[0]?.isError).toBe(true)
+    expect(result?.message.isError).toBe(true)
   })
 
   it('drops progress-only tool_call_update statuses', () => {

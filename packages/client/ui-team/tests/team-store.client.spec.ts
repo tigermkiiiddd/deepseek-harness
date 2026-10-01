@@ -38,7 +38,7 @@ function sessionsDouble(currentMainView?: SessionId) {
     ? {}
     : { [currentMainView]: summary(String(currentMainView), { mainView: 1 }) }
   const list = createSnapshotStore<SessionListState>({
-    ids: Object.keys(byId) as SessionId[], byId, phase: 'ready', subagentsByParent: {}, jobsBySession: {},
+    ids: Object.keys(byId) as SessionId[], byId, phase: 'ready', projectionsBySession: {},
   })
   const references = new Map<SessionId, SessionReference>()
   const bindingOf = (id: SessionId): SessionBinding => ({
@@ -108,8 +108,7 @@ function sessionsDouble(currentMainView?: SessionId) {
       subscribe: () => () => {},
     })),
     subagentAddress: vi.fn(),
-    setSubagentCatalogOpen: vi.fn(),
-    refreshSubagents: vi.fn(),
+    refreshProjections: vi.fn(async () => {}),
     refresh: vi.fn(async () => {}),
     search: vi.fn(),
     fork: vi.fn(),

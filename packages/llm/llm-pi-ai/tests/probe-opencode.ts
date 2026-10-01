@@ -41,7 +41,7 @@ async function main(): Promise<void> {
   } catch (error) {
     console.error('minimax-m3 FAILED:', error instanceof Error ? error.message : String(error))
   }
-  await ctx.dispose()
+  await ctx.fiber.dispose()
 }
 
 void main()
