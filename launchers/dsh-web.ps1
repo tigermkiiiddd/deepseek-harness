@@ -57,8 +57,20 @@ function Get-MissingClientBundles {
             if ($null -eq $dshProperty) { continue }
             $clientProperty = $dshProperty.Value.PSObject.Properties['client']
             if ($null -eq $clientProperty) { continue }
-            $bundle = Join-Path $packageDir.FullName 'lib\client.js'
-            if (-not (Test-Path $bundle)) { $missing += $bundle }
+            # dualClient 布局(packages/client/tsdown.client.ts):声明 dualClient: true 的包
+            # 不出单一 client.js,而是 client.browser.js + client.node.js 两个入口
+            # (api/gateway、client/connection、typert/registry);其余包仍是 lib\client.js。
+            $tsdownConfig = Join-Path $packageDir.FullName 'tsdown.config.ts'
+            $dual = (Test-Path $tsdownConfig) -and (Select-String -Path $tsdownConfig -Pattern 'dualClient:\s*true' -Quiet)
+            if ($dual) {
+                foreach ($name in @('lib\client.browser.js', 'lib\client.node.js')) {
+                    $bundle = Join-Path $packageDir.FullName $name
+                    if (-not (Test-Path $bundle)) { $missing += $bundle }
+                }
+            } else {
+                $bundle = Join-Path $packageDir.FullName 'lib\client.js'
+                if (-not (Test-Path $bundle)) { $missing += $bundle }
+            }
         }
     }
     return $missing
