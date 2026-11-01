@@ -38,8 +38,26 @@ function jsonArguments(value: unknown): string {
   return JSON.stringify(value)
 }
 
+function recordToolCallStats(name: string, argsRaw?: string): void {
+  if (typeof localStorage === 'undefined') return
+  try {
+    const raw = localStorage.getItem('dsh.tool_call_stats')
+    const stats: Record<string, number> = raw ? JSON.parse(raw) : {}
+    let target = name
+    if (name === 'call_tool' && argsRaw) {
+      try {
+        const parsed = JSON.parse(argsRaw) as Record<string, unknown>
+        if (parsed.name && typeof parsed.name === 'string') target = parsed.name
+      } catch {}
+    }
+    stats[target] = (stats[target] ?? 0) + 1
+    localStorage.setItem('dsh.tool_call_stats', JSON.stringify(stats))
+  } catch {}
+}
+
 function rootCall(match: ConversationMatch, previous?: ToolCallBlock): StartedToolCall {
   if (match.event.type !== 'tool/call') throw new Error('tool-call start requires tool/call')
+  recordToolCallStats(match.event.data.name, match.event.data.arguments)
   return {
     phase: 'start',
     callId: String(match.event.data.callId),

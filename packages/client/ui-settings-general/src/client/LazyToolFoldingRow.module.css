@@ -1,0 +1,180 @@
+.container {
+  padding: 16px 0;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.title {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+}
+
+.description {
+  margin-top: 4px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.toggleStatsButton {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-surface-muted, rgba(125, 125, 125, 0.08));
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.toggleStatsButton:hover {
+  background: var(--dsw-alias-surface-hover, rgba(125, 125, 125, 0.15));
+  border-color: var(--dsw-alias-border-l1, #888);
+}
+
+.statsPanel {
+  margin-top: 16px;
+  padding: 14px;
+  border-radius: 8px;
+  background: var(--dsw-alias-surface-subtle, rgba(0, 0, 0, 0.03));
+  border: 1px solid var(--dsw-alias-border-l2);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.metricsGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.metricCard {
+  background: var(--dsw-alias-surface-default, #fff);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.metricValue {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.metricHighlight {
+  color: #10b981;
+}
+
+.metricLabel {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.toolsTableContainer {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: var(--dsw-alias-surface-default, #fff);
+}
+
+.toolsTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  text-align: left;
+}
+
+.toolsTable th {
+  position: sticky;
+  top: 0;
+  background: var(--dsw-alias-surface-muted, #f8f9fa);
+  color: var(--dsw-alias-label-secondary);
+  padding: 6px 10px;
+  font-weight: 500;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  z-index: 1;
+}
+
+.toolsTable td {
+  padding: 6px 10px;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l3, rgba(125, 125, 125, 0.1));
+}
+
+.toolNameCode {
+  font-family: var(--dsw-font-mono, monospace);
+  font-weight: 500;
+}
+
+.badgePinned {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(16, 185, 129, 0.15);
+  color: #059669;
+  font-weight: 500;
+}
+
+.badgeFolded {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(99, 102, 241, 0.15);
+  color: #4f46e5;
+  font-weight: 500;
+}
+
+.pinnedToolsConfigRow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pinnedInputRow {
+  display: flex;
+  gap: 8px;
+}
+
+.pinnedInput {
+  flex: 1;
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-surface-default, #fff);
+  color: var(--dsw-alias-label-primary);
+}
+
+.miniButton {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-surface-muted, #f3f4f6);
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+
+.miniButton:hover {
+  background: var(--dsw-alias-surface-hover, #e5e7eb);
+}

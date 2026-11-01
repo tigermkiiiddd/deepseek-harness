@@ -10,11 +10,17 @@ import { DeveloperToolsSettingsFields } from './developer-tools-settings.ts'
 export interface Config {
   /** Whether developer tools are enabled. */
   enabled: Volatile<boolean>
+  /** Whether lazy tool folding is enabled. */
+  lazyToolFolding?: Volatile<boolean>
+  /** Pinned tools list. */
+  pinnedTools?: Volatile<string>
 }
 
 /** Live preferences projected to the browser. */
 export const Config = z.object({
   enabled: DeveloperToolsSettingsFields['enabled'].volatile(),
+  lazyToolFolding: DeveloperToolsSettingsFields['lazyToolFolding'].volatile(),
+  pinnedTools: DeveloperToolsSettingsFields['pinnedTools'].volatile(),
 })
 
 /** Host preferences are consumed through the configuration form projection.

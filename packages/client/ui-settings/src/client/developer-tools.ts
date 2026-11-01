@@ -7,6 +7,10 @@ import type { ConfigForm } from './config-form-types.ts'
 export class DeveloperToolsPreference {
   /** Accepted enablement, observable through renderer-bound hooks. */
   readonly enabled: ObservableSnapshot<boolean>
+  /** Lazy tool folding toggle. */
+  readonly lazyToolFolding: ObservableSnapshot<boolean>
+  /** Custom pinned tools string. */
+  readonly pinnedTools: ObservableSnapshot<string>
 
   /**
    * @param scope - settings-owned namespace controller.
@@ -24,6 +28,32 @@ export class DeveloperToolsPreference {
         })
       },
     }
+
+    this.lazyToolFolding = {
+      getSnapshot: () => scope.getSnapshot().value?.lazyToolFolding ?? true,
+      subscribe: (listener) => {
+        let previous = this.lazyToolFolding.getSnapshot()
+        return scope.subscribe(() => {
+          const next = this.lazyToolFolding.getSnapshot()
+          if (next === previous) return
+          previous = next
+          listener()
+        })
+      },
+    }
+
+    this.pinnedTools = {
+      getSnapshot: () => scope.getSnapshot().value?.pinnedTools ?? '',
+      subscribe: (listener) => {
+        let previous = this.pinnedTools.getSnapshot()
+        return scope.subscribe(() => {
+          const next = this.pinnedTools.getSnapshot()
+          if (next === previous) return
+          previous = next
+          listener()
+        })
+      },
+    }
   }
 
   /**
@@ -33,5 +63,13 @@ export class DeveloperToolsPreference {
    */
   async setEnabled(enabled: boolean): Promise<void> {
     if (!await this.scope.set('enabled', enabled)) throw new Error('Developer tools preference was not saved')
+  }
+
+  async setLazyToolFolding(lazyToolFolding: boolean): Promise<void> {
+    if (!await this.scope.set('lazyToolFolding', lazyToolFolding)) throw new Error('Lazy tool folding preference was not saved')
+  }
+
+  async setPinnedTools(pinnedTools: string): Promise<void> {
+    if (!await this.scope.set('pinnedTools', pinnedTools)) throw new Error('Pinned tools preference was not saved')
   }
 }

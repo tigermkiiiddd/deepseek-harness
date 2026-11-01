@@ -29,6 +29,10 @@
             config:
               - id: compaction-basic
                 name: '@deepseek-ai/dsh-compaction-basic'
+                config:
+                  thresholdRatio: 0.8
+                  headroomTokens: 8192
+                  retainTokens: 8192
               - id: command-compact
                 name: '@deepseek-ai/dsh-command-compact'
           - id: persistent-shell

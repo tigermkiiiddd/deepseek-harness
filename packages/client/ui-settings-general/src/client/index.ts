@@ -37,6 +37,8 @@ import { CloseLabel, HeaderContent, TriggerContent } from './chrome.tsx'
 import { GeneralSection } from './GeneralSection.tsx'
 import { CurrentVersionRow } from './CurrentVersionRow.tsx'
 import { DeveloperToolsRow, type DeveloperToolsRowInjected } from './DeveloperToolsRow.tsx'
+import { LazyToolFoldingRow, type LazyToolFoldingRowInjected } from './LazyToolFoldingRow.tsx'
+import { ToolFoldingSection, ToolFoldingTab } from './ToolFoldingSection.tsx'
 import { SettingsDocumentAction } from './SettingsDocumentAction.tsx'
 import type { SettingsDocumentActionInjected } from './SettingsDocumentAction.tsx'
 import { SettingsDocumentStore } from './settings-document-store.ts'
@@ -84,6 +86,17 @@ export function apply(ctx: ClientContext): void {
       setEnabled: enabled => ctx.configForms.developerTools.setEnabled(enabled),
     }),
   }, DeveloperToolsRow))
+  ctx.slots.inject('settings.general.item', () => ctx.slots.register({
+    name: 'settings.general.item', id: 'lazy-tool-folding', order: 16, locale: NS,
+    inject: (): LazyToolFoldingRowInjected => ({
+      hooks: {
+        lazyToolFolding: ctx.configForms.developerTools.lazyToolFolding,
+        pinnedTools: ctx.configForms.developerTools.pinnedTools,
+      },
+      setLazyToolFolding: (enabled: boolean) => ctx.configForms.developerTools.setLazyToolFolding(enabled),
+      setPinnedTools: (pinned: string) => ctx.configForms.developerTools.setPinnedTools(pinned),
+    }),
+  }, LazyToolFoldingRow))
   // Version information follows the core preferences.
   ctx.slots.inject('settings.general.item', () => ctx.slots.register({
     name: 'settings.general.item', id: 'current-version', order: 100, locale: NS,
@@ -240,6 +253,36 @@ export function apply(ctx: ClientContext): void {
     locale: NS,
     children: { 'settings.general.item': { kind: 'list', scope: 'root' } },
   }, GeneralSection))
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'tool-folding',
+    order: 25,
+    label: () => t('toolFolding.nav'),
+    locale: NS,
+    inject: (): LazyToolFoldingRowInjected => ({
+      hooks: {
+        lazyToolFolding: ctx.configForms.developerTools.lazyToolFolding,
+        pinnedTools: ctx.configForms.developerTools.pinnedTools,
+      },
+      setLazyToolFolding: (enabled: boolean) => ctx.configForms.developerTools.setLazyToolFolding(enabled),
+      setPinnedTools: (pinned: string) => ctx.configForms.developerTools.setPinnedTools(pinned),
+    }),
+  }, ToolFoldingSection))
+  ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
+    name: 'settings.plugins.tab',
+    id: 'tool-folding-tab',
+    order: 20,
+    label: () => t('toolFolding.nav'),
+    locale: NS,
+    inject: (): LazyToolFoldingRowInjected => ({
+      hooks: {
+        lazyToolFolding: ctx.configForms.developerTools.lazyToolFolding,
+        pinnedTools: ctx.configForms.developerTools.pinnedTools,
+      },
+      setLazyToolFolding: (enabled: boolean) => ctx.configForms.developerTools.setLazyToolFolding(enabled),
+      setPinnedTools: (pinned: string) => ctx.configForms.developerTools.setPinnedTools(pinned),
+    }),
+  }, ToolFoldingTab))
   // The page's module system applies no plugin update from another Host release; this dialog offers the reload.
   const releasePromptInjected = (): HostReleasePromptInjected => ({
     dismissRelease: () => { ctx.modules.entries.dismissRelease() },

@@ -173,6 +173,9 @@
     - id: cordis-host-runner
       name: '@deepseek-ai/dsh-cordis-host-runner'
 
+    - id: tool-lazy-dispatcher
+      name: '@deepseek-ai/dsh-tool-lazy-dispatcher'
+
     # The Host inspect providers are process-global: the registry rejects a
     # duplicate id, so they register here once and every preset's `tool-cordis`
     # row reads them.

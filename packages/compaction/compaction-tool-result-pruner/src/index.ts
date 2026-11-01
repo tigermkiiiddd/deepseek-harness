@@ -13,7 +13,7 @@ import type { Session, SessionEvent, SessionSeq, ToolResultMessage } from '@deep
 import type {} from '@deepseek-ai/dsh-compaction'
 // Type-only: the `ctx.tokenMeter` Context merge for the declared injection.
 import type {} from '@deepseek-ai/dsh-token-meter'
-import { codePointLength, DEFAULTS, PRUNE_MARKER, resolveConfig } from './config.ts'
+import { codePointLength, DEFAULTS, resolveConfig } from './config.ts'
 import type {
   PrunedEntry,
   PruneResult,
@@ -80,45 +80,9 @@ export class ToolResultPruner extends Service {
    * @param blocks - original tool-result content.
    * @returns pruned content, or `null` when the text is within budget.
    */
-  pruneContent(blocks: readonly ContentBlock[]): ContentBlock[] | null {
-    const totalChars = this.measureContent(blocks)
-    if (totalChars <= this.config.thresholdChars) return null
-
-    const removedStart = this.config.headChars
-    const removedEnd = totalChars - this.config.tailChars
-    const pruned: ContentBlock[] = []
-    let consumed = 0
-    let markerInserted = false
-
-    for (const block of blocks) {
-      if (block.type !== 'text') {
-        pruned.push(block)
-        continue
-      }
-
-      const points = Array.from(block.text)
-      const blockStart = consumed
-      const blockEnd = blockStart + points.length
-      const headEnd = Math.min(points.length, Math.max(0, removedStart - blockStart))
-      const tailStart = Math.min(points.length, Math.max(0, removedEnd - blockStart))
-      const intersectsRemoved = blockStart < removedEnd && blockEnd > removedStart
-      const marker = intersectsRemoved && !markerInserted ? PRUNE_MARKER : ''
-      if (marker.length > 0) markerInserted = true
-      const text = points.slice(0, headEnd).join('')
-        + marker
-        + points.slice(tailStart).join('')
-      if (text.length > 0) pruned.push({ ...block, text })
-      consumed = blockEnd
-    }
-
-    /* v8 ignore next -- totalChars > threshold and valid budgets guarantee a removed text span. */
-    if (!markerInserted) throw new Error('tool-result prune: failed to locate the removed text span')
-    const charsAfter = this.measureContent(pruned)
-    /* v8 ignore next -- config validation fixes the emitted head + marker + tail budget. */
-    if (charsAfter > this.config.thresholdChars || charsAfter >= totalChars) {
-      throw new Error('tool-result prune: replacement must be smaller and within threshold')
-    }
-    return pruned
+  pruneContent(_blocks: readonly ContentBlock[]): ContentBlock[] | null {
+    // Disabled in local mode to protect LLM KV-cache reuse and prevent context rewriting.
+    return null
   }
 
   /**
