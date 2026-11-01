@@ -55,13 +55,19 @@ afterEach(async () => {
 })
 
 let callCounter = 0
-function execute(ctx: Context, name: string, args: unknown): Promise<{ content: { type: string; text?: string }[] }> {
-  return ctx.tools.execute({
+async function execute(ctx: Context, name: string, args: unknown): Promise<{ content: { type: string; text?: string }[] }> {
+  const batch = await ctx.tools.execute({
     signal: new AbortController().signal,
-    callId: ToolCallId(`call-${++callCounter}`),
-    name,
-    arguments: args,
+    calls: [{
+      type: 'tool-call',
+      id: ToolCallId(`call-${++callCounter}`),
+      name,
+      arguments: JSON.stringify(args),
+    }],
   })
+  const outcome = batch.results[0]?.result
+  if (!outcome) throw new Error('no result')
+  return { content: outcome.content as { type: string; text?: string }[] }
 }
 
 function text(result: { content: { type: string; text?: string }[] }): string {
@@ -278,16 +284,20 @@ describe('member lifecycle tools', () => {
     const controller = new AbortController()
     const pending = ctx.tools.execute({
       signal: controller.signal,
-      callId: ToolCallId(`call-${++callCounter}`),
-      name: 'member_chat',
-      arguments: { member_id: 'architect', topic: 'topic-design', text: 'hang' },
+      calls: [{
+        type: 'tool-call',
+        id: ToolCallId(`call-${++callCounter}`),
+        name: 'member_chat',
+        arguments: JSON.stringify({ member_id: 'architect', topic: 'topic-design', text: 'hang' }),
+      }],
     })
     await new Promise(resolve => setTimeout(resolve, 300))
     controller.abort()
     // The tool registry surfaces the aborted call as an error result; the
     // important fact is that the member's turn was cancelled through the ACP
     // wire (covered by the team service's cancel test) rather than leaked.
-    const result = await pending
-    expect(text(result)).toMatch(/aborted/)
+    const batch = await pending
+    const outcome = batch.results[0]?.result
+    expect(text({ content: (outcome?.content ?? []) as { type: string; text?: string }[] })).toMatch(/aborted/)
   })
 })

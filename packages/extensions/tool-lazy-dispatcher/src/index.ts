@@ -467,27 +467,37 @@ export function apply(ctx: Context, config: Config = {}): void {
       const targetArgs = parseInnerArgs(args.arguments)
       const subCallId = ToolCallId(`${String(exec.callId)}:dispatch:${++subCallCounter}:${targetName}`)
 
-      const result = await ctx.tools.execute({
-        callId: subCallId,
-        rootCallId: exec.rootCallId ?? exec.callId,
-        name: targetName,
-        arguments: targetArgs,
-        ...(exec.agent !== undefined ? { agent: exec.agent } : {}),
-        parent: exec.token,
+      const batchResult = await ctx.tools.execute({
+        calls: [{
+          type: 'tool-call',
+          id: subCallId,
+          name: targetName,
+          arguments: JSON.stringify(targetArgs),
+        }],
         signal: exec.signal,
+        ...(exec.agent !== undefined ? { agent: exec.agent } : {}),
       })
 
-      if (result.additionalContexts) {
-        for (const extra of result.additionalContexts) {
+      if (batchResult.additionalContexts) {
+        for (const extra of batchResult.additionalContexts) {
           exec.deferContext(extra)
         }
       }
 
-      if (result.concludesTurn) {
+      if (batchResult.concluded) {
         exec.concludeTurn()
       }
 
-      if (result.isError) {
+      const outcome = batchResult.results[0]?.result
+      if (!outcome) {
+        throw new Error(`Tool "${targetName}" returned no result`)
+      }
+
+      if (outcome.concludesTurn) {
+        exec.concludeTurn()
+      }
+
+      if (outcome.isError) {
         let hint = ''
         const targetDef = ctx.tools.get(targetName, exec.agent)
         const params = targetDef?.parameters as Record<string, unknown> | undefined
@@ -501,23 +511,23 @@ export function apply(ctx: Context, config: Config = {}): void {
             hint = `\nHint: "${targetName}" does not declare parameter(s) ${unknownKeys.join(', ')}. Declared parameters: ${declared.join(', ')}.`
           }
         }
-        throw new Error(`${result.error.message}${hint}`)
+        throw new Error(`${outcome.error.message}${hint}`)
       }
 
       // Preserve full ContentBlocks including ImageBlock, FileBlock, TextBlock, etc.
-      const content = result.content.length > 0
-        ? result.content
+      const content = outcome.content.length > 0
+        ? outcome.content
         : [{
           type: 'text' as const,
-          text: result.value !== undefined
-            ? (typeof result.value === 'string' ? result.value : JSON.stringify(result.value, null, 2))
+          text: outcome.value !== undefined
+            ? (typeof outcome.value === 'string' ? outcome.value : JSON.stringify(outcome.value, null, 2))
             : `Tool "${targetName}" completed successfully with no output.`,
         }]
 
       const returnValue = {
         name: targetName,
         content,
-        ...(result.meta !== undefined ? { meta: result.meta } : {}),
+        ...(outcome.meta !== undefined ? { meta: outcome.meta } : {}),
       }
 
       // Return canonical value matching output.schema (narrow cast)
@@ -566,21 +576,22 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   // 4. Intercept system-prompt assembly to fold non-pinned tools and append concise progressive disclosure guide
   ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
-    const assembly = await next()
-    if (!isFoldingEnabled(ctx, config)) return assembly
+    const res = await next()
+    const assemblyAny = res as any
+    if (!isFoldingEnabled(ctx, config) || !Array.isArray(assemblyAny.tools)) return res
 
     // In PTC mode, only run_code is visible on wire anyway
-    if (assembly.tools.length <= 1 && assembly.tools[0]?.name === 'run_code') {
-      return assembly
+    if (assemblyAny.tools.length <= 1 && assemblyAny.tools[0]?.name === 'run_code') {
+      return res
     }
 
     const pinnedSet = resolvePinnedTools(ctx, config)
-    const activeTools = assembly.tools.filter(t => pinnedSet.has(t.name) || t.name === 'list_tools' || t.name === 'get_tool_schema' || t.name === 'call_tool')
-    const foldedTools = assembly.tools.filter(t => !pinnedSet.has(t.name) && t.name !== 'list_tools' && t.name !== 'get_tool_schema' && t.name !== 'call_tool')
+    const activeTools = assemblyAny.tools.filter((t: any) => pinnedSet.has(t.name) || t.name === 'list_tools' || t.name === 'get_tool_schema' || t.name === 'call_tool')
+    const foldedTools = assemblyAny.tools.filter((t: any) => !pinnedSet.has(t.name) && t.name !== 'list_tools' && t.name !== 'get_tool_schema' && t.name !== 'call_tool')
 
-    if (foldedTools.length === 0) return assembly
+    if (foldedTools.length === 0) return res
 
-    assembly.tools = activeTools
+    assemblyAny.tools = activeTools
 
     // Summarize descriptions (up to 140 chars) so the prompt stays compact and predictable
     const inventoryLines = [
@@ -592,16 +603,16 @@ export function apply(ctx: Context, config: Config = {}): void {
       '- To execute any folded tool: call `call_tool({ name: "<tool_name>", arguments: { ... } })`.',
       '',
       '### Directory of Folded Tools:',
-      ...foldedTools.map((t) => {
+      ...foldedTools.map((t: any) => {
         return `- \`${formatSignature(t)}\`: ${summarizeDescription(t.description, 140)}`
       }),
     ]
 
-    assembly.sections.push({
+    res.sections.push({
       name: 'tools:lazy-directory',
       text: inventoryLines.join('\n'),
     })
 
-    return assembly
+    return res
   })
 }

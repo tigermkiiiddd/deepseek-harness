@@ -15,6 +15,21 @@ async function setup(config: LazyDispatcher.Config = {}) {
   return ctx
 }
 
+async function runSingleTool(ctx: Context, name: string, args: unknown, callId = 'test-call') {
+  const batch = await ctx.tools.execute({
+    calls: [{
+      type: 'tool-call',
+      id: ToolCallId(callId),
+      name,
+      arguments: JSON.stringify(args),
+    }],
+    signal: testSignal,
+  })
+  const outcome = batch.results[0]?.result
+  if (!outcome) throw new Error('no result')
+  return outcome
+}
+
 const mockHeavyTool = defineTool({
   name: 'heavy_domain_tool',
   description: 'A heavy specialized tool that should be folded by default to save tokens.',
@@ -42,12 +57,7 @@ describe('tool-lazy-dispatcher plugin', () => {
     const ctx = await setup()
     ctx.tools.register(mockHeavyTool)
 
-    const result = await ctx.tools.execute({
-      callId: ToolCallId('test-call-1'),
-      name: 'get_tool_schema',
-      arguments: { name: 'heavy_domain_tool' },
-      signal: testSignal,
-    })
+    const result = await runSingleTool(ctx, 'get_tool_schema', { name: 'heavy_domain_tool' }, 'test-call-1')
 
     expect(result.isError).toBe(false)
     if (!result.isError) {
@@ -62,15 +72,10 @@ describe('tool-lazy-dispatcher plugin', () => {
     const ctx = await setup()
     ctx.tools.register(mockHeavyTool)
 
-    const result = await ctx.tools.execute({
-      callId: ToolCallId('test-call-2'),
-      name: 'call_tool',
-      arguments: {
-        name: 'heavy_domain_tool',
-        arguments: { dataset: 'sales_2026', iterations: 5 },
-      },
-      signal: testSignal,
-    })
+    const result = await runSingleTool(ctx, 'call_tool', {
+      name: 'heavy_domain_tool',
+      arguments: { dataset: 'sales_2026', iterations: 5 },
+    }, 'test-call-2')
 
     expect(result.isError).toBe(false)
     if (!result.isError) {
@@ -171,12 +176,7 @@ describe('tool-lazy-dispatcher plugin', () => {
     ctx.tools.register(mockHeavyTool)
 
     // 1. Search by keyword
-    const searchResult = await ctx.tools.execute({
-      callId: ToolCallId('search-call-1'),
-      name: 'list_tools',
-      arguments: { action: 'search', query: 'heavy' },
-      signal: testSignal,
-    })
+    const searchResult = await runSingleTool(ctx, 'list_tools', { action: 'search', query: 'heavy' }, 'search-call-1')
     expect(searchResult.isError).toBe(false)
     if (!searchResult.isError) {
       const block = searchResult.content[0]
@@ -188,12 +188,7 @@ describe('tool-lazy-dispatcher plugin', () => {
     }
 
     // 2. Search non-matching query
-    const missResult = await ctx.tools.execute({
-      callId: ToolCallId('search-call-2'),
-      name: 'list_tools',
-      arguments: { action: 'search', query: 'non_existent_xyz' },
-      signal: testSignal,
-    })
+    const missResult = await runSingleTool(ctx, 'list_tools', { action: 'search', query: 'non_existent_xyz' }, 'search-call-2')
     expect(missResult.isError).toBe(false)
     if (!missResult.isError) {
       const block = missResult.content[0]
@@ -232,12 +227,7 @@ describe('tool-lazy-dispatcher plugin', () => {
     })
     ctx.tools.register(mockImageTool)
 
-    const result = await ctx.tools.execute({
-      callId: ToolCallId('call-img-1'),
-      name: 'call_tool',
-      arguments: { name: 'screenshot_tool' },
-      signal: testSignal,
-    })
+    const result = await runSingleTool(ctx, 'call_tool', { name: 'screenshot_tool' }, 'call-img-1')
 
     expect(result.isError).toBe(false)
     if (!result.isError) {
@@ -572,15 +562,10 @@ describe('tool-lazy-dispatcher plugin', () => {
     expect(extractedMeta).toEqual({ score: 99 })
 
     // Test execution through tool runner forwards meta
-    const execResult = await ctx.tools.execute({
-      callId: ToolCallId('meta-test-call'),
-      name: 'call_tool',
-      arguments: {
-        name: 'tool_with_meta',
-        arguments: { key: 'alpha' },
-      },
-      signal: testSignal,
-    })
+    const execResult = await runSingleTool(ctx, 'call_tool', {
+      name: 'tool_with_meta',
+      arguments: { key: 'alpha' },
+    }, 'meta-test-call')
 
     expect(execResult.isError).toBe(false)
     if (!execResult.isError) {
@@ -622,12 +607,7 @@ describe('tool-lazy-dispatcher plugin', () => {
     }))
 
     // Search query matches all 3 tools
-    const searchResult = await ctx.tools.execute({
-      callId: ToolCallId('search-full-usage-call'),
-      name: 'list_tools',
-      arguments: { action: 'search', query: 'batch_match' },
-      signal: testSignal,
-    })
+    const searchResult = await runSingleTool(ctx, 'list_tools', { action: 'search', query: 'batch_match' }, 'search-full-usage-call')
 
     expect(searchResult.isError).toBe(false)
     if (!searchResult.isError) {
@@ -655,12 +635,7 @@ describe('tool-lazy-dispatcher plugin', () => {
     const ctx = await setup()
     ctx.tools.register(mockHeavyTool)
 
-    const listResult = await ctx.tools.execute({
-      callId: ToolCallId('list-catalog-call'),
-      name: 'list_tools',
-      arguments: { action: 'list' },
-      signal: testSignal,
-    })
+    const listResult = await runSingleTool(ctx, 'list_tools', { action: 'list' }, 'list-catalog-call')
 
     expect(listResult.isError).toBe(false)
     if (!listResult.isError) {
@@ -678,14 +653,9 @@ describe('tool-lazy-dispatcher plugin', () => {
     const ctx = await setup()
     ctx.tools.register(mockHeavyTool)
 
-    const result = await ctx.tools.execute({
-      callId: ToolCallId('batch-schema-call'),
-      name: 'get_tool_schema',
-      arguments: {
-        names: ['heavy_domain_tool', 'non_existent_tool_123'],
-      },
-      signal: testSignal,
-    })
+    const result = await runSingleTool(ctx, 'get_tool_schema', {
+      names: ['heavy_domain_tool', 'non_existent_tool_123'],
+    }, 'batch-schema-call')
 
     expect(result.isError).toBe(false)
     if (!result.isError) {
@@ -707,12 +677,7 @@ describe('tool-lazy-dispatcher plugin', () => {
   it('get_tool_schema throws error when neither name nor names is provided', async () => {
     const ctx = await setup()
 
-    const result = await ctx.tools.execute({
-      callId: ToolCallId('empty-schema-call'),
-      name: 'get_tool_schema',
-      arguments: {},
-      signal: testSignal,
-    })
+    const result = await runSingleTool(ctx, 'get_tool_schema', {}, 'empty-schema-call')
 
     expect(result.isError).toBe(true)
     if (result.isError) {
@@ -741,15 +706,10 @@ describe('tool-lazy-dispatcher plugin', () => {
     ctx.tools.register(mockTool)
 
     // Call with unknown key 'arguments' instead of declared 'args'
-    const errorResult = await ctx.tools.execute({
-      callId: ToolCallId('unknown-keys-call'),
-      name: 'call_tool',
-      arguments: {
-        name: 'mcp__mock_gateway',
-        arguments: { name: 'test_node', arguments: { foo: 'bar' } },
-      },
-      signal: testSignal,
-    })
+    const errorResult = await runSingleTool(ctx, 'call_tool', {
+      name: 'mcp__mock_gateway',
+      arguments: { name: 'test_node', arguments: { foo: 'bar' } },
+    }, 'unknown-keys-call')
 
     expect(errorResult.isError).toBe(true)
     if (errorResult.isError) {
@@ -759,15 +719,10 @@ describe('tool-lazy-dispatcher plugin', () => {
     }
 
     // Call with valid declared keys succeeds and does not alter output
-    const successResult = await ctx.tools.execute({
-      callId: ToolCallId('success-keys-call'),
-      name: 'call_tool',
-      arguments: {
-        name: 'mcp__mock_gateway',
-        arguments: { name: 'test_node', args: { foo: 'bar' } },
-      },
-      signal: testSignal,
-    })
+    const successResult = await runSingleTool(ctx, 'call_tool', {
+      name: 'mcp__mock_gateway',
+      arguments: { name: 'test_node', args: { foo: 'bar' } },
+    }, 'success-keys-call')
 
     expect(successResult.isError).toBe(false)
     if (!successResult.isError) {

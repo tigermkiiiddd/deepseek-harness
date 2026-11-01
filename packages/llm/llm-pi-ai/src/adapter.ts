@@ -268,8 +268,6 @@ function requestHeaders(
     )
   }
 }
-  }
-}
 
 /** Add a vLLM reasoning cap while preserving Harness's visible-output allowance. */
 function withThinkingTokenBudget(payload: unknown, budget: number): Record<string, unknown> {

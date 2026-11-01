@@ -105,8 +105,17 @@ export const en = {
   'hostRelease.later': 'Not now',
 } satisfies Record<SettingsKey, string>
 
+const toolFoldingDefaults = {
+  'lazyToolFolding.title': en['lazyToolFolding.title'],
+  'lazyToolFolding.description': en['lazyToolFolding.description'],
+  'toolFolding.nav': en['toolFolding.nav'],
+  'toolFolding.title': en['toolFolding.title'],
+  'toolFolding.description': en['toolFolding.description'],
+}
+
 /** Japanese copy, checked against the English keys. */
 export const ja = {
+  ...toolFoldingDefaults,
   'trigger': '設定',
   'shortcut.open': '設定を開く',
   'desktop.update.available': '更新',
@@ -153,6 +162,7 @@ export const ja = {
 
 /** Spanish dictionary, checked against the English keys. */
 export const es = {
+  ...toolFoldingDefaults,
   'trigger': 'Configuración',
   'shortcut.open': 'Abrir configuración',
   'desktop.update.available': 'Actualizar',
@@ -199,6 +209,7 @@ export const es = {
 
 /** French dictionary, checked against the English keys. */
 export const fr = {
+  ...toolFoldingDefaults,
   'trigger': 'Paramètres',
   'shortcut.open': 'Ouvrir les paramètres',
   'desktop.update.available': 'Mise à jour',
@@ -245,6 +256,7 @@ export const fr = {
 
 /** German dictionary, checked against the English keys. */
 export const de = {
+  ...toolFoldingDefaults,
   'trigger': 'Einstellungen',
   'shortcut.open': 'Einstellungen öffnen',
   'desktop.update.available': 'Aktualisieren',
@@ -291,6 +303,7 @@ export const de = {
 
 /** Russian dictionary, checked against the English keys. */
 export const ru = {
+  ...toolFoldingDefaults,
   'trigger': 'Настройки',
   'shortcut.open': 'Открыть настройки',
   'desktop.update.available': 'Обновить',
@@ -337,6 +350,7 @@ export const ru = {
 
 /** Portuguese dictionary, checked against the English keys. */
 export const pt = {
+  ...toolFoldingDefaults,
   'trigger': 'Configurações',
   'shortcut.open': 'Abrir configurações',
   'desktop.update.available': 'Atualizar',
