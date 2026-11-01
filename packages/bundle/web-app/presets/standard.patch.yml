@@ -126,8 +126,6 @@
               searchTimeoutMs: 60000
           - id: present
             name: '@deepseek-ai/dsh-tool-present'
-          - id: tool-lazy-dispatcher
-            name: '@deepseek-ai/dsh-tool-lazy-dispatcher'
           - id: tool-plugin-manager
             name: '@deepseek-ai/dsh-plugin-manager/tools'
             disabled: !!js "!ctx.get('profileContext')"

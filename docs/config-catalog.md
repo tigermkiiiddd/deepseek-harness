@@ -203,7 +203,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-api-gateway`
 
 - `inject`: `typert` · `remoteAccess`
-- `source`: [`packages/api/gateway/src/index.ts:158`](../packages/api/gateway/src/index.ts)
+- `source`: [`packages/api/gateway/src/index.ts:159`](../packages/api/gateway/src/index.ts)
 
 ```ts config-catalog
 /** Gateway transport configuration. */
@@ -4235,26 +4235,6 @@ export interface Config {
 export type CompletionDelivery = 'quiet' | 'wakeup'
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-tool-jobs -->
-
-<!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-tool-lazy-dispatcher -->
-<a id="deepseek-aidsh-tool-lazy-dispatcher"></a>
-
-## `@deepseek-ai/dsh-tool-lazy-dispatcher`
-
-- `inject`: `tools` · `systemPrompt`
-- `source`: [`packages/extensions/tool-lazy-dispatcher/src/index.ts:72`](../packages/extensions/tool-lazy-dispatcher/src/index.ts)
-
-```ts config-catalog
-export interface Config {
-  /** Whether dynamic lazy tool folding is active (default true). */
-  lazyToolFolding?: boolean
-  /** List of additional tool names to keep pinned alongside the defaults. */
-  pinnedTools?: string[]
-  /** Maximum number of search matches to return with full schema and usage (default 10). */
-  maxFullResults?: number
-}
-```
-<!-- END GENERATED config-catalog:@deepseek-ai/dsh-tool-lazy-dispatcher -->
 
 <!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-tool-lsp -->
 <a id="deepseek-aidsh-tool-lsp"></a>

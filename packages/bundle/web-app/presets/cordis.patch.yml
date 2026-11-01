@@ -134,13 +134,6 @@
             name: '@deepseek-ai/dsh-tool-skill'
           - id: present
             name: '@deepseek-ai/dsh-tool-present'
-          - id: tool-lazy-dispatcher
-            name: '@deepseek-ai/dsh-tool-lazy-dispatcher'
-            config:
-              pinnedTools:
-                - read_image
-                - mcp__chrome__take_screenshot
-                - mcp__sprite-pipeline__inspect_node_media
           - id: tool-plugin-manager
             name: '@deepseek-ai/dsh-plugin-manager/tools'
             disabled: !!js "!ctx.get('profileContext')"
