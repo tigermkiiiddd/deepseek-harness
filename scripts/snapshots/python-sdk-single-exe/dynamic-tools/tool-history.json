@@ -30,7 +30,7 @@
   "events": [
     {
       "type": "request/header",
-      "seq": 12,
+      "seq": 13,
       "time": 0,
       "data": {
         "header": {
@@ -45,13 +45,13 @@
             "maxTokens": true
           },
           "tools": [
+            "apply_patch",
             "ask_user_question",
             "create_goal",
             "edit",
             "get_goal",
             "glob",
             "grep",
-            "interrupt_agent",
             "job_kill",
             "job_list",
             "job_output",
@@ -70,10 +70,10 @@
             "subagent_fork",
             "todo_write",
             "update_goal",
+            "wait_agent",
             "web_fetch",
             "web_search",
             "workflow",
-            "working_directory",
             "write"
           ]
         },
@@ -82,7 +82,7 @@
     },
     {
       "type": "request/context",
-      "seq": 13,
+      "seq": 14,
       "time": 0,
       "data": {
         "provider": "deepseek-official",
@@ -92,7 +92,7 @@
     },
     {
       "type": "request/header",
-      "seq": 20,
+      "seq": 21,
       "time": 0,
       "data": {
         "header": {
@@ -107,13 +107,13 @@
             "maxTokens": true
           },
           "tools": [
+            "apply_patch",
             "ask_user_question",
             "create_goal",
             "edit",
             "get_goal",
             "glob",
             "grep",
-            "interrupt_agent",
             "job_kill",
             "job_list",
             "job_output",
@@ -133,10 +133,10 @@
             "subagent_fork",
             "todo_write",
             "update_goal",
+            "wait_agent",
             "web_fetch",
             "web_search",
             "workflow",
-            "working_directory",
             "write"
           ]
         },
@@ -145,7 +145,7 @@
     },
     {
       "type": "developer/message",
-      "seq": 21,
+      "seq": 22,
       "time": 0,
       "data": {
         "turn": 1,
@@ -169,7 +169,7 @@
     },
     {
       "type": "request/header",
-      "seq": 27,
+      "seq": 28,
       "time": 0,
       "data": {
         "header": {
@@ -184,13 +184,13 @@
             "maxTokens": true
           },
           "tools": [
+            "apply_patch",
             "ask_user_question",
             "create_goal",
             "edit",
             "get_goal",
             "glob",
             "grep",
-            "interrupt_agent",
             "job_kill",
             "job_list",
             "job_output",
@@ -209,10 +209,10 @@
             "subagent_fork",
             "todo_write",
             "update_goal",
+            "wait_agent",
             "web_fetch",
             "web_search",
             "workflow",
-            "working_directory",
             "write"
           ]
         },
@@ -221,7 +221,7 @@
     },
     {
       "type": "developer/message",
-      "seq": 28,
+      "seq": 29,
       "time": 0,
       "data": {
         "turn": 1,

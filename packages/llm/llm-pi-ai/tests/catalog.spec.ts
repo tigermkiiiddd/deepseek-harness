@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import LlmRuntime, { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { brandString } from '@deepseek-ai/dsh-brand'
+import LlmRuntime, { createUserMessage, type ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { liveConfig } from '../../../settings/settings/tests/live-config.ts'
 const configurations = new WeakMap<Context, Awaited<ReturnType<typeof liveConfig>>>()
@@ -1112,7 +1113,7 @@ describe('compat switches', () => {
     await assemble(ctx, {
       provider: 'acme-gateway',
       model: 'acme-think',
-      reasoningEffort: ReasoningEffortId('high'),
+      reasoningEffort: brandString<ReasoningEffortId>('high'),
       system: 'you are a harness',
       messages: [],
     })
@@ -1451,8 +1452,8 @@ describe('catalog cache overlay', () => {
 })
 
 describe('catalog cache overlay on a route spanning several protocols', () => {
-  // opencode-go ships anthropic-messages at `/zen/go` and OpenAI-compatible
-  // models at `/zen/go/v1`: no single protocol can stand for the route, so a
+  // opencode-go ships anthropic-messages at `/inference/go` and OpenAI-compatible
+  // models at `/inference/go/v1`: no single protocol can stand for the route, so a
   // listing's tag is the only answer an addition has — and it must not be
   // crossed with the base a sibling spells for the other protocol.
   function request(
@@ -1477,28 +1478,28 @@ describe('catalog cache overlay on a route spanning several protocols', () => {
     expect(added?.api).toBe('anthropic-messages')
     // The anthropic siblings' base, not the OpenAI-compatible one the tag
     // would otherwise be paired with: crossing them builds a 404.
-    expect(added?.baseUrl).toBe('https://opencode.ai/zen/go')
+    expect(added?.baseUrl).toBe('https://opencode.ai/inference/go')
     // A listing that discloses ids alone leaves the route's defaults to size it.
     expect(added?.contextWindow).toBe(200_000)
     expect(added?.maxTokens).toBe(20_000)
   })
 
   it('keeps the installed protocol and endpoint of a model the snapshot describes', () => {
-    const installed = catalogModels('opencode-go').get('deepseek-v4-flash')
+    const installed = catalogModels('opencode-go').get('deepseek-v4.1-flash')
     expect(installed?.api).toBe('openai-completions')
     // The listing that reported this model is the anthropic one; honoring that
     // tag would re-point a working model at another protocol's path.
-    const catalog = resolveRouteModels(request([{ id: 'deepseek-v4-flash', api: 'anthropic-messages' }]))
+    const catalog = resolveRouteModels(request([{ id: 'deepseek-v4.1-flash', api: 'anthropic-messages' }]))
     const served = catalog.models[0]
     expect(served?.api).toBe('openai-completions')
     expect(served?.baseUrl).toBe(installed?.baseUrl)
   })
 
   it('retains an addition no sibling endpoint can serve as a diagnostic', () => {
-    // Nothing on this route speaks google-generative-ai, so the entry reaches
+    // Nothing on this route speaks bedrock-converse-stream, so the entry reaches
     // no endpoint; it is dropped with a diagnostic rather than served broken.
     const catalog = resolveRouteModels(request([
-      { id: 'brand-new-model', api: 'google-generative-ai' },
+      { id: 'brand-new-model', api: 'bedrock-converse-stream' },
     ]), 'deferred')
     expect(catalog.models).toEqual([])
     expect([...catalog.modelErrors.keys()]).toEqual(['brand-new-model'])

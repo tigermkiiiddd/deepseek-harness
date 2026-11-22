@@ -17,7 +17,10 @@ import { inject } from '../src/client/index.ts'
 import type { DeveloperToolsRowInjected } from '../src/client/DeveloperToolsRow.tsx'
 import { HostReleasePrompt, type HostReleasePromptInjected } from '../src/client/HostReleasePrompt.tsx'
 import { CloseLabel, HeaderContent, TriggerContent } from '../src/client/chrome.tsx'
+import type { DesktopChannelRowInjected, DesktopChannelToastInjected } from '../src/client/DesktopChannelRow.tsx'
+import type { DesktopChannelBridge } from '../src/types.ts'
 import { GeneralSection } from '../src/client/GeneralSection.tsx'
+import { ToolFoldingSection } from '../src/client/ToolFoldingSection.tsx'
 import { SettingsDocumentAction } from '../src/client/SettingsDocumentAction.tsx'
 import type { SettingsDocumentActionInjected } from '../src/client/SettingsDocumentAction.tsx'
 
@@ -29,13 +32,13 @@ const COLD_BOOT_TIMEOUT_MS = 60_000
 /** Dictionary namespace this plugin owns; every seat it fills declares it. */
 const NS = 'settings'
 
-/** The seats this plugin fills for a loopback browser (slot name → expected component). */
+/** The seats this plugin fills for a loopback browser (slot name → expected components). */
 const SEATS = [
-  ['settings.trigger', TriggerContent],
-  ['settings.header', HeaderContent],
-  ['settings.action', SettingsDocumentAction],
-  ['settings.close', CloseLabel],
-  ['settings.section', GeneralSection],
+  ['settings.trigger', [TriggerContent]],
+  ['settings.header', [HeaderContent]],
+  ['settings.action', [SettingsDocumentAction]],
+  ['settings.close', [CloseLabel]],
+  ['settings.section', [GeneralSection, ToolFoldingSection]],
 ] as const
 
 /** One Host view of the locale preference, including its revision fence. */
@@ -84,8 +87,8 @@ function actionInjectedOf(c: TestClient): SettingsDocumentActionInjected {
 }
 
 function expectSeated(c: TestClient): void {
-  for (const [name, component] of SEATS) {
-    expect(ownEntries(c, name).map(entry => entry.component)).toEqual([component])
+  for (const [name, components] of SEATS) {
+    expect(ownEntries(c, name).map(entry => entry.component)).toEqual([...components])
   }
 }
 
@@ -109,7 +112,7 @@ describe('ui-settings-general apply', () => {
     expect(generalLabel(c)).toBe('通用设置')
     expect(c.ctx.slots.spec('settings.general.item')).toEqual({ kind: 'list', scope: 'root' })
     // The shared developer-tool control belongs to General; onboarding remains feature-owned.
-    expect(c.ctx.slots.entries('settings.general.item').filter(row => row.locale === NS).map(row => row.options.id)).toEqual(['developer-tools', 'current-version'])
+    expect(c.ctx.slots.entries('settings.general.item').filter(row => row.locale === NS).map(row => row.options.id)).toEqual(['developer-tools', 'lazy-tool-folding', 'current-version'])
     expect(c.ctx.slots.entries('settings.onboarding').filter(row => row.locale === NS)).toEqual([])
     const developer = developerToolsRowOf(c)
     expect(developer.hooks.developerTools).toBe(c.ctx.configForms.developerTools.enabled)
@@ -121,8 +124,10 @@ describe('ui-settings-general apply', () => {
     expect(controller.store.getSnapshot().status).toBe('idle')
     expect(hooks.snapshot).toBe(controller.store)
     // Copy rides the standard locale seat: every row this plugin seats declares the namespace.
-    for (const [name, component] of SEATS) {
-      expect(c.ctx.slots.entries(name).find(row => row.component === component)!.locale).toBe(NS)
+    for (const [name, components] of SEATS) {
+      for (const component of components) {
+        expect(c.ctx.slots.entries(name).find(row => row.component === component)!.locale).toBe(NS)
+      }
     }
   }, COLD_BOOT_TIMEOUT_MS)
 
@@ -208,6 +213,38 @@ describe('ui-settings-general apply', () => {
     expect(() => { c.ctx.locale.register(NS, 'en', {})() }).not.toThrow()
   })
 
+  it('removes the Desktop channel row and shell subscription when its plugin unloads', async ({ mock, start }) => {
+    const unsubscribe = vi.fn()
+    const state = { channel: 'nightly', packagedChannel: 'nightly', changing: false } as const
+    const save = vi.fn(async () => ({ kind: 'applied' as const, state }))
+    const channels: DesktopChannelBridge = { get: async () => state, set: save,
+      subscribe: () => unsubscribe }
+    const open = vi.fn(async () => {})
+    vi.stubGlobal('dshDesktop', { protocolVersion: 1, updates: { channels,
+      status: async () => ({ phase: 'idle' }), open, subscribe: () => () => {} } })
+    onTestFinished(() => { vi.unstubAllGlobals() })
+    const { c } = await client(mock, start)
+    const row = c.ctx.slots.entries('settings.general.item').find(row => row.options.id === 'desktop-update-channel')!
+    expect(c.ctx.slots.entries('shell.overlay').some(entry => entry.options.id === 'desktop-channel-toast')).toBe(true)
+    const select = row.inject!().select as DesktopChannelRowInjected['select']
+    await select('stable')
+    expect(save).toHaveBeenCalledWith('stable')
+    const toast = c.ctx.slots.entries('shell.overlay').find(entry => entry.options.id === 'desktop-channel-toast')!
+    const injected = toast.inject!()
+    const hooks = injected.hooks as DesktopChannelToastInjected['hooks']
+    const dismiss = injected.dismiss as DesktopChannelToastInjected['dismiss']
+    const openConfiguration = injected.openConfiguration as DesktopChannelToastInjected['openConfiguration']
+    openConfiguration()
+    expect(open).toHaveBeenCalledOnce()
+    expect(hooks.channel.getSnapshot().notice?.outcome).toBe('applied')
+    dismiss(1)
+    expect(hooks.channel.getSnapshot().notice).toBeUndefined()
+    await c.unload(SELF)
+    await c.flush()
+    expect(unsubscribe).toHaveBeenCalledOnce()
+    expect(c.ctx.slots.entries('shell.overlay').some(entry => entry.options.id === 'desktop-channel-toast')).toBe(false)
+  })
+
   it('the nav label thunk follows the active locale without re-registration', async ({ mock, start }) => {
     const { c, settings } = await client(mock, start)
     const english = localeView('en', 1)
@@ -217,9 +254,9 @@ describe('ui-settings-general apply', () => {
     c.ctx.locale.setLocale('en')
     // No ledger churn: freshness rides the thunk (and the renderer's locale
     // subscription), not re-registration.
-    SEATS.forEach(([name], i) => {
+    SEATS.forEach(([name, components], i) => {
       expect(c.ctx.slots.getVersion(name)).toBe(zhVersions[i]!)
-      expect(ownEntries(c, name)).toHaveLength(1)
+      expect(ownEntries(c, name)).toHaveLength(components.length)
     })
     expect(generalLabel(c)).toBe('General')
     await vi.waitFor(() => {
@@ -309,11 +346,13 @@ describe('ui-settings-general apply', () => {
     await c.reload(SIDEBAR)
     await c.flush()
     expectSeated(c)
+    // The General page sits in the Factory-declared `settings.section`, which the sidebar rebuild does not collapse.
     SEATS.forEach(([name], index) => {
-      expect(ownEntries(c, name)[0]).not.toBe(before[index])
+      if (name === 'settings.section') expect(ownEntries(c, name)[0]).toBe(before[index])
+      else expect(ownEntries(c, name)[0]).not.toBe(before[index])
     })
     expect(c.ctx.slots.spec('settings.general.item')).toEqual({ kind: 'list', scope: 'root' })
-    expect(c.ctx.slots.entries('settings.general.item').filter(row => row.locale === NS).map(row => row.options.id)).toEqual(['developer-tools', 'current-version'])
+    expect(c.ctx.slots.entries('settings.general.item').filter(row => row.locale === NS).map(row => row.options.id)).toEqual(['developer-tools', 'lazy-tool-folding', 'current-version'])
     // The recovered registrations still ride the locale path.
     const english = localeView('en', 1)
     const chinese = localeView('zh', 2)

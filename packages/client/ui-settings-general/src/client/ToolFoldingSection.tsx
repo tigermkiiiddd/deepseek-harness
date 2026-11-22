@@ -372,9 +372,3 @@ export function ToolFoldingSection({
     </div>
   )
 }
-
-export function ToolFoldingTab(
-  props: PropsRuntime<'settings.plugins.tab'> & PropsLocale<'settings'> & InjectFace<LazyToolFoldingRowInjected>,
-) {
-  return <ToolFoldingSection {...(props as unknown as Parameters<typeof ToolFoldingSection>[0])} />
-}

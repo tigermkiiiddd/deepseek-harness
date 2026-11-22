@@ -9,13 +9,15 @@ import { Context } from '@deepseek-ai/cordis'
 import Loader, { type ModuleLoaderV2 } from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import LlmRuntime, { createMessage, createUserMessage, userAgent } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import AuthorizationService from '@deepseek-ai/dsh-authorization'
 import LocalCredentialProvider from '@deepseek-ai/dsh-credentials-local'
 import { profileComposition } from '../../../settings/settings/tests/profile-composition.ts'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
+import { recordKeyFor } from '../src/auth.ts'
 import { assemble } from './assemble.ts'
 import { closeMockServers, mockServer, textEvents } from './mock-server.ts'
+import { brandString } from '@deepseek-ai/dsh-brand'
 
 /** One text block, then a tool call truncated by the output-token ceiling. */
 const truncatedToolCallEvents = [
@@ -102,7 +104,7 @@ describe('llm-pi-ai real dormant composition', () => {
     await vi.waitFor(() => {
       expect(ctx.llm.listProviders().map(provider => provider.id)).toEqual(['deepseek'])
     }, { timeout: 5000 })
-    const result = await assemble(ctx, { model: 'deepseek-flash', messages: [], sessionId: SessionId('loader-session') })
+    const result = await assemble(ctx, { model: 'deepseek-flash', messages: [], sessionId: brandString<SessionId>('loader-session') })
     expect(result.finish).toEqual({ kind: 'stop' })
     expect(server.headers[0]?.['x-request-session']).toBe('loader-session')
   })
@@ -154,13 +156,14 @@ describe('llm-pi-ai real dormant composition', () => {
     const cacheDir = join(root ?? '', 'catalog-cache')
 
     await writeFile(settingsPath, [
-      'llm-pi-ai:',
-      '  providers:',
-      '    deepseek:',
-      '      apiKeyEnv: PI_COMPOSITION_KEY',
-      `      baseURL: ${server.url}`,
-      '  catalogSyncEnabled: true',
-      `  catalogCacheDir: ${JSON.stringify(cacheDir)}`,
+      '- id: llm-pi-ai',
+      '  config:',
+      '    providers:',
+      '      deepseek:',
+      '        apiKeyEnv: PI_COMPOSITION_KEY',
+      `        baseURL: ${server.url}`,
+      '    catalogSyncEnabled: true',
+      `    catalogCacheDir: ${JSON.stringify(cacheDir)}`,
       '',
     ].join('\n'))
 
@@ -188,11 +191,12 @@ describe('llm-pi-ai real dormant composition', () => {
     const { ctx, settingsPath } = await loadComposition()
 
     await writeFile(settingsPath, [
-      'llm-pi-ai:',
-      '  providers:',
-      '    deepseek:',
-      '      apiKeyEnv: PI_COMPOSITION_KEY',
-      `      baseURL: ${server.url}`,
+      '- id: llm-pi-ai',
+      '  config:',
+      '    providers:',
+      '      deepseek:',
+      '        apiKeyEnv: PI_COMPOSITION_KEY',
+      `        baseURL: ${server.url}`,
       '',
     ].join('\n'))
     await vi.waitFor(async () => {
@@ -207,7 +211,7 @@ describe('llm-pi-ai real dormant composition', () => {
   it('offers OpenAI sign-in by API key only, while other subscription logins stay', async () => {
     const { ctx } = await loadComposition()
     const methods = (provider: string): string[] | undefined => ctx.authorization.list()
-      .find(entry => entry.key === LlmPiAi.recordKeyFor(provider))?.methods.map(method => method.id)
+      .find(entry => entry.key === recordKeyFor(provider))?.methods.map(method => method.id)
 
     // pi-ai's Sign in with ChatGPT needs an installation ID the harness does
     // not supply, so the route offers only its key login.
@@ -309,7 +313,7 @@ describe('llm-pi-ai real dormant composition', () => {
     expect(server.requests[1]).toMatchObject({
       messages: [
         { role: 'assistant', content: 'partial' },
-        { role: 'user', content: 'continue' },
+        { role: 'user', content: [{ type: 'text', text: 'continue' }] },
       ],
     })
     const followup = server.requests[1] as { messages?: unknown[] }
@@ -368,7 +372,7 @@ describe('llm-pi-ai real dormant composition', () => {
     expect(server.requests[0]).toMatchObject({
       messages: [
         { role: 'assistant', content: 'partial' },
-        { role: 'user', content: 'continue' },
+        { role: 'user', content: [{ type: 'text', text: 'continue' }] },
       ],
     })
   })

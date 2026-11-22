@@ -3,8 +3,10 @@ import { fileURLToPath } from 'node:url'
 import type { Fiber } from '@deepseek-ai/cordis'
 import { Context } from '@deepseek-ai/cordis'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import * as team from '@deepseek-ai/dsh-team'
 import * as toolTeam from '../src/index.ts'
@@ -26,7 +28,7 @@ const fibers: Fiber[] = []
 
 async function setup(options: SetupOptions = {}) {
   const ctx = new Context()
-  for (const plugin of [SystemPrompt, LocalSubprocessRuntime, ToolRuntime]) {
+  for (const plugin of [SessionProjectionRegistry, SystemPrompt, LocalSubprocessRuntime, ToolRuntime, NativeToolExecutor]) {
     const fiber = ctx.plugin(plugin)
     fibers.push(fiber)
     await fiber

@@ -37,23 +37,12 @@ function registerUi(ctx: ClientContext): void {
 }
 
 /**
- * Mount the generated Team Remote contribution before the UI fiber requires
- * `remote.team`, then dispose both in reverse order.
+ * Mount the generated Team Remote contribution, then register the sidebar lane
+ * once `remote.team` resolves.
  * @param ctx - browser plugin context.
- * @returns disposer for the UI registrations and Remote namespace.
+ * @returns After the Remote namespace is mounted and the UI registrations are ready.
  */
-export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
-  const disposeRemote = await ctx.remote.$mount(teamRemote)
-  const ui = ctx.inject(['remote.team', 'sessions', 'slots'], registerUi)
-  try {
-    await ui
-  } catch (error) {
-    await ui.dispose()
-    await disposeRemote()
-    throw error
-  }
-  return async () => {
-    await ui.dispose()
-    await disposeRemote()
-  }
+export async function apply(ctx: ClientContext): Promise<void> {
+  await ctx.remote.$mount(teamRemote)
+  await ctx.inject(['remote.team', 'sessions', 'slots'], registerUi)
 }
